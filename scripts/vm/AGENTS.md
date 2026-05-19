@@ -40,7 +40,7 @@ network experiments must stay inside disposable guests.
   operations.
 - `guest.py` owns guest definitions and lifecycle commands.
 - `smoke.py` owns VM guest cold-start smoke checks that exercise dynet CLI
-  contracts inside a disposable guest.
+  contracts and loopback API health inside a disposable guest.
 - `snapshot.py` owns offline qcow2 snapshot create/revert/delete operations.
 - `setup.py` owns staging and installing local dynet artifacts into guests.
 

@@ -133,4 +133,8 @@ preview candidates by default and require `--yes` before deletion.
 `setup install-bin` rejects non-ELF host binaries by default so a macOS build is
 not accidentally installed into a Linux guest.
 `dev guest` builds the Linux guest artifact with `cargo zigbuild`, installs it,
-runs smoke checks, and finishes with guest readiness checks.
+runs smoke checks, and finishes with guest readiness checks. If install, smoke,
+or readiness fails after the guest has been touched, `dev guest` collects a
+host/guest evidence bundle by default. Add `--capture-on-failure` when packet
+evidence is useful. `smoke guest` also probes the real loopback API `/health`
+endpoint through `dynet api serve --once`.

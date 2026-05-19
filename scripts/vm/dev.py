@@ -74,51 +74,59 @@ def build_command(lab: Lab, args: argparse.Namespace) -> None:
 def guest_command(lab: Lab, args: argparse.Namespace) -> None:
     guest = validate_name(args.guest, "guest")
     label = validate_name(args.label, "label")
-    if args.artifact:
-        artifact = Path(args.artifact).expanduser().resolve()
-        if not lab.dry_run:
-            require_guest_elf(artifact, allow_any_binary=args.allow_any_binary)
-    else:
-        artifact = build_artifact(lab, args)
+    guest_touched = False
+    try:
+        if args.artifact:
+            artifact = Path(args.artifact).expanduser().resolve()
+            if not lab.dry_run:
+                require_guest_elf(artifact, allow_any_binary=args.allow_any_binary)
+        else:
+            artifact = build_artifact(lab, args)
 
-    if not args.no_install:
-        run_vmctl(
-            lab,
-            [
-                "setup",
+        if not args.no_install:
+            guest_touched = True
+            run_vmctl(
+                lab,
+                [
+                    "setup",
+                    *lab_args(lab),
+                    "install-bin",
+                    guest,
+                    str(artifact),
+                    "--user",
+                    args.user,
+                    "--source",
+                    args.source,
+                ]
+                + (["--allow-any-binary"] if args.allow_any_binary else []),
+            )
+
+        if not args.no_smoke:
+            guest_touched = True
+            smoke_args = [
+                "smoke",
                 *lab_args(lab),
-                "install-bin",
+                "guest",
                 guest,
-                str(artifact),
+                "--label",
+                label,
                 "--user",
                 args.user,
                 "--source",
                 args.source,
             ]
-            + (["--allow-any-binary"] if args.allow_any_binary else []),
-        )
+            if args.collect:
+                smoke_args.append("--collect")
+            if args.capture:
+                smoke_args.append("--capture")
+            run_vmctl(lab, smoke_args)
 
-    if not args.no_smoke:
-        smoke_args = [
-            "smoke",
-            *lab_args(lab),
-            "guest",
-            guest,
-            "--label",
-            label,
-            "--user",
-            args.user,
-            "--source",
-            args.source,
-        ]
-        if args.collect:
-            smoke_args.append("--collect")
-        if args.capture:
-            smoke_args.append("--capture")
-        run_vmctl(lab, smoke_args)
-
-    if not args.no_check:
-        run_vmctl(lab, ["check", *lab_args(lab), "guest", guest])
+        if not args.no_check:
+            guest_touched = True
+            run_vmctl(lab, ["check", *lab_args(lab), "guest", guest])
+    except subprocess.CalledProcessError as error:
+        collect_failure_evidence(lab, args, guest, label, guest_touched)
+        raise error
 
 
 def lab_args(lab: Lab) -> list[str]:
@@ -130,12 +138,81 @@ def lab_args(lab: Lab) -> list[str]:
     return args
 
 
-def run_vmctl(lab: Lab, args: list[str]) -> None:
+def failure_label(label: str) -> str:
+    suffix = "-failure"
+    return f"{label[: 63 - len(suffix)]}{suffix}"
+
+
+def collect_failure_evidence(
+    lab: Lab,
+    args: argparse.Namespace,
+    guest: str,
+    label: str,
+    guest_touched: bool,
+) -> None:
+    if lab.dry_run or not guest_touched:
+        return
+    if args.no_collect_on_failure and not args.capture_on_failure:
+        return
+    evidence_label = validate_name(args.failure_label or failure_label(label), "label")
+    print(
+        f"[dev] guest loop failed; collecting failure evidence with label {evidence_label}",
+        file=sys.stderr,
+    )
+    if not args.no_collect_on_failure:
+        run_vmctl(
+            lab,
+            [
+                "collect",
+                *lab_args(lab),
+                "guest",
+                guest,
+                "--label",
+                evidence_label,
+                "--user",
+                args.user,
+                "--source",
+                args.source,
+            ],
+            check=False,
+        )
+    if args.capture_on_failure:
+        run_vmctl(
+            lab,
+            [
+                "capture",
+                *lab_args(lab),
+                "host",
+                guest,
+                "--label",
+                evidence_label,
+                "--duration",
+                str(args.failure_capture_duration),
+                "--filter",
+                "icmp or arp",
+                "--probe",
+                "ping -c 1 192.168.122.1",
+                "--user",
+                args.user,
+                "--source",
+                args.source,
+                "--allow-empty",
+            ],
+            check=False,
+        )
+
+
+def run_vmctl(lab: Lab, args: list[str], *, check: bool = True) -> None:
     command = [sys.executable, str(ROOT / "scripts" / "vmctl.py"), *args]
     print("+ " + join(command), file=sys.stderr)
     if lab.dry_run:
         return
-    subprocess.run(command, check=True)
+    result = subprocess.run(command, check=check)
+    if not check and result.returncode != 0:
+        print(
+            f"[dev] evidence command failed with exit code {result.returncode}: {join(command)}",
+            file=sys.stderr,
+        )
 
 
 def add_build_options(parser: argparse.ArgumentParser) -> None:
@@ -168,6 +245,14 @@ def build_parser() -> argparse.ArgumentParser:
     guest_parser.add_argument("--no-check", action="store_true")
     guest_parser.add_argument("--collect", action="store_true")
     guest_parser.add_argument("--capture", action="store_true")
+    guest_parser.add_argument("--failure-label")
+    guest_parser.add_argument(
+        "--no-collect-on-failure",
+        action="store_true",
+        help="do not collect host/guest evidence when install, smoke, or check fails",
+    )
+    guest_parser.add_argument("--capture-on-failure", action="store_true")
+    guest_parser.add_argument("--failure-capture-duration", type=int, default=4)
     guest_parser.add_argument(
         "--allow-any-binary",
         action="store_true",

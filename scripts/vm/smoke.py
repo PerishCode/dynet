@@ -33,6 +33,28 @@ COLD_START_CONFIG = """{
 """
 
 
+def api_health_command(port: int) -> str:
+    return (
+        "set -e; "
+        f"port={int(port)}; "
+        "out=/tmp/dynet-api-health.json; "
+        "log=/tmp/dynet-api-serve.log; "
+        "err=/tmp/dynet-api-serve.err; "
+        "rm -f \"$out\" \"$log\" \"$err\"; "
+        "(dynet api serve --bind 127.0.0.1:${port} --once >\"$log\" 2>\"$err\") & pid=$!; "
+        "for i in $(seq 1 40); do "
+        "if curl -fsS \"http://127.0.0.1:${port}/health\" >\"$out\"; then "
+        "wait \"$pid\"; cat \"$out\"; printf \"\\n\"; exit 0; "
+        "fi; "
+        "sleep 0.25; "
+        "done; "
+        "kill \"$pid\" >/dev/null 2>&1 || true; "
+        "wait \"$pid\" >/dev/null 2>&1 || true; "
+        "cat \"$err\" >&2; "
+        "exit 1"
+    )
+
+
 def guest(lab: Lab, args: argparse.Namespace) -> None:
     name = validate_name(args.guest, "guest")
     label = validate_name(args.label, "label")
@@ -50,6 +72,8 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         f"dynet plan --config {q(config_path)} --format json",
         "dynet api capabilities --format json",
     ]
+    if not args.no_api_serve:
+        commands.append(api_health_command(args.api_port))
     for command in commands:
         print(f"[smoke] {command}", flush=True)
         guest_ssh(lab, name, command, user=args.user, source=args.source)
@@ -128,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     guest_parser.add_argument("--label", default="cold-start")
     guest_parser.add_argument("--user", default=DEFAULT_VM_USER)
     guest_parser.add_argument("--source", default="lease", choices=["lease", "agent"])
+    guest_parser.add_argument("--no-api-serve", action="store_true")
+    guest_parser.add_argument("--api-port", type=int, default=19977)
     guest_parser.add_argument("--collect", action="store_true")
     guest_parser.add_argument("--capture", action="store_true")
     guest_parser.add_argument("--capture-duration", type=int, default=4)
