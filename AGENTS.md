@@ -51,6 +51,10 @@ When adding or removing a core subtree, update this file in the same change.
 - The loopback-only `dynet api serve` skeleton is an explicit cold-start API
   boundary. Do not turn it into product runtime/network execution without a
   separate runtime crate/boundary.
+- `dynet install --check`, `status`, `verify`, `repair`, and `uninstall` are
+  the first platform ownership lifecycle boundary. Keep them CLI-only for now:
+  they may report and prove dynet-owned nft/tun/DNS/routing scope, but real
+  network mutation must stay gated until VM evidence proves the invariants.
 
 ## Common Commands
 
@@ -62,6 +66,9 @@ cargo test --locked --workspace
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
 cargo run --locked -p dynet-cli -- doctor --config dynet.json
 cargo run --locked -p dynet-cli -- plan --config dynet.json
+cargo run --locked -p dynet-cli -- install --check --config dynet.json
+cargo run --locked -p dynet-cli -- status
+cargo run --locked -p dynet-cli -- verify
 cargo run --locked -p dynet-cli -- api capabilities
 python3 scripts/vmctl.py --help
 python3 scripts/vmctl.py guest --host fuisp status

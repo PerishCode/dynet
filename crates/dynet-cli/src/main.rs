@@ -5,11 +5,16 @@ mod cli;
 mod config;
 mod model;
 mod output;
+mod platform;
 
 use cli::{help_text, parse_args, ApiCommand, CliCommand, LogLevel};
 use config::ConfigSource;
 use model::{ApiCapabilityReport, DoctorReport, PlanReport, Report, ReportMode};
-use output::{print_api_capabilities, print_doctor_report, print_plan_report, print_report};
+use output::{
+    print_api_capabilities, print_doctor_report, print_lifecycle_report, print_plan_report,
+    print_report,
+};
+use platform::LifecycleAction;
 use tracing::debug;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -50,6 +55,22 @@ fn run() -> Result<i32, String> {
             print_doctor_report(&report, options.format)?;
             Ok(report.exit_code())
         }
+        CliCommand::Install(options) => {
+            let resolved = config::resolve(options.lifecycle.root, options.lifecycle.config)?;
+            if matches!(resolved.source, ConfigSource::BuiltIn) {
+                return Err(
+                    "install requires a config; pass --config or create dynet.json".to_string(),
+                );
+            }
+            let report = platform::install_report(
+                &resolved.root,
+                &resolved.source,
+                &resolved.config,
+                options.check,
+            );
+            print_lifecycle_report(&report, options.lifecycle.format)?;
+            Ok(report.exit_code())
+        }
         CliCommand::Plan(options) => {
             let resolved = config::resolve(options.root, options.config)?;
             if matches!(resolved.source, ConfigSource::BuiltIn) {
@@ -79,6 +100,26 @@ fn run() -> Result<i32, String> {
             }
             eprintln!("dynet: runtime execution is not implemented in this skeleton");
             Ok(1)
+        }
+        CliCommand::Status(options) => {
+            let report = platform::status_report(LifecycleAction::Status);
+            print_lifecycle_report(&report, options.format)?;
+            Ok(report.exit_code())
+        }
+        CliCommand::Verify(options) => {
+            let report = platform::status_report(LifecycleAction::Verify);
+            print_lifecycle_report(&report, options.format)?;
+            Ok(report.exit_code())
+        }
+        CliCommand::Repair(options) => {
+            let report = platform::status_report(LifecycleAction::Repair);
+            print_lifecycle_report(&report, options.format)?;
+            Ok(report.exit_code())
+        }
+        CliCommand::Uninstall(options) => {
+            let report = platform::status_report(LifecycleAction::Uninstall);
+            print_lifecycle_report(&report, options.format)?;
+            Ok(report.exit_code())
         }
         CliCommand::Api(ApiCommand::Capabilities(options)) => {
             let report = ApiCapabilityReport::current();

@@ -15,6 +15,11 @@ dynet check --config dynet.json   # explicit path
 dynet check --format json
 dynet doctor --config dynet.json  # local/VM cold-start readiness checks
 dynet plan --config dynet.json    # explain explicit route plan ordering
+dynet install --check --config dynet.json
+dynet status
+dynet verify
+dynet repair
+dynet uninstall
 dynet api capabilities            # list local API surface
 dynet api serve --bind 127.0.0.1:9977
 dynet run --config dynet.json     # validates config; runtime is not implemented yet
@@ -24,8 +29,13 @@ dynet help
 
 `dynet check` exits `1` when the config cannot be read, parsed, or validated.
 `dynet doctor` reports config, platform, tun, resolver, and API bind readiness.
-`dynet plan` turns explicit route rules into an explainable plan. `dynet api
-serve` is a loopback-only HTTP skeleton with `/health` and `/v1/capabilities`.
+`dynet plan` turns explicit route rules into an explainable plan. `dynet
+install --check` validates network ownership preflight and lists dynet-owned
+resources without mutating system network paths. `status`, `verify`, `repair`,
+and `uninstall` report the current dynet-owned resource state; mutating network
+apply/cleanup is intentionally gated until the ownership invariants are proven.
+`dynet api serve` is a loopback-only HTTP skeleton with `/health` and
+`/v1/capabilities`.
 `dynet run` currently validates config and exits `1` after reporting that
 runtime execution has not been implemented.
 
@@ -76,6 +86,9 @@ cargo test --locked --workspace
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
 cargo run --locked -p dynet-cli -- doctor --config dynet.json
 cargo run --locked -p dynet-cli -- plan --config dynet.json
+cargo run --locked -p dynet-cli -- install --check --config dynet.json
+cargo run --locked -p dynet-cli -- status
+cargo run --locked -p dynet-cli -- verify
 cargo run --locked -p dynet-cli -- api capabilities
 cargo zigbuild --locked --target x86_64-unknown-linux-gnu -p dynet-cli
 python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu

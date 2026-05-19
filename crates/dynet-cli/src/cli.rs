@@ -28,11 +28,30 @@ pub(crate) struct CommandOptions {
 pub(crate) enum CliCommand {
     Check(CommandOptions),
     Doctor(CommandOptions),
+    Install(InstallOptions),
     Plan(CommandOptions),
+    Repair(LifecycleOptions),
     Run(CommandOptions),
+    Status(LifecycleOptions),
+    Uninstall(LifecycleOptions),
+    Verify(LifecycleOptions),
     Api(ApiCommand),
     Help,
     Version,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct InstallOptions {
+    pub(crate) lifecycle: LifecycleOptions,
+    pub(crate) check: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct LifecycleOptions {
+    pub(crate) root: PathBuf,
+    pub(crate) config: Option<PathBuf>,
+    pub(crate) format: OutputFormat,
+    pub(crate) log_level: LogLevel,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -62,6 +81,11 @@ impl CliCommand {
             | CliCommand::Doctor(options)
             | CliCommand::Plan(options)
             | CliCommand::Run(options) => options.log_level,
+            CliCommand::Install(options) => options.lifecycle.log_level,
+            CliCommand::Repair(options)
+            | CliCommand::Status(options)
+            | CliCommand::Uninstall(options)
+            | CliCommand::Verify(options) => options.log_level,
             CliCommand::Api(ApiCommand::Capabilities(options)) => options.log_level,
             CliCommand::Api(ApiCommand::Serve(options)) => options.log_level,
             CliCommand::Help | CliCommand::Version => LogLevel::Off,
@@ -73,8 +97,13 @@ impl CliCommand {
 enum CommandMode {
     Check,
     Doctor,
+    Install,
     Plan,
+    Repair,
     Run,
+    Status,
+    Uninstall,
+    Verify,
     Api,
 }
 
@@ -100,6 +129,7 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     let mut api_bind = "127.0.0.1:9977".to_string();
     let mut api_once = false;
     let mut api_allow_non_loopback = false;
+    let mut install_check = false;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -116,13 +146,33 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
                 command_seen = true;
                 mode = CommandMode::Doctor;
             }
+            "install" if !command_seen => {
+                command_seen = true;
+                mode = CommandMode::Install;
+            }
             "plan" if !command_seen => {
                 command_seen = true;
                 mode = CommandMode::Plan;
             }
+            "repair" if !command_seen => {
+                command_seen = true;
+                mode = CommandMode::Repair;
+            }
             "run" if !command_seen => {
                 command_seen = true;
                 mode = CommandMode::Run;
+            }
+            "status" if !command_seen => {
+                command_seen = true;
+                mode = CommandMode::Status;
+            }
+            "uninstall" if !command_seen => {
+                command_seen = true;
+                mode = CommandMode::Uninstall;
+            }
+            "verify" if !command_seen => {
+                command_seen = true;
+                mode = CommandMode::Verify;
             }
             "capabilities" if mode == CommandMode::Api && !api_subcommand_seen => {
                 api_subcommand_seen = true;
@@ -169,6 +219,9 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             "--allow-non-loopback" if mode == CommandMode::Api => {
                 api_allow_non_loopback = true;
             }
+            "--check" if mode == CommandMode::Install => {
+                install_check = true;
+            }
             other if other.starts_with("--root=") => {
                 root = PathBuf::from(&other["--root=".len()..]);
             }
@@ -202,11 +255,25 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
         format,
         log_level,
     };
+    let lifecycle = LifecycleOptions {
+        root: options.root.clone(),
+        config: options.config.clone(),
+        format,
+        log_level,
+    };
     Ok(match mode {
         CommandMode::Check => CliCommand::Check(options),
         CommandMode::Doctor => CliCommand::Doctor(options),
+        CommandMode::Install => CliCommand::Install(InstallOptions {
+            lifecycle,
+            check: install_check,
+        }),
         CommandMode::Plan => CliCommand::Plan(options),
+        CommandMode::Repair => CliCommand::Repair(lifecycle),
         CommandMode::Run => CliCommand::Run(options),
+        CommandMode::Status => CliCommand::Status(lifecycle),
+        CommandMode::Uninstall => CliCommand::Uninstall(lifecycle),
+        CommandMode::Verify => CliCommand::Verify(lifecycle),
         CommandMode::Api => match api_mode {
             ApiMode::Capabilities => {
                 CliCommand::Api(ApiCommand::Capabilities(ApiOptions { format, log_level }))
@@ -233,10 +300,16 @@ Commands:
         [--log-level off|error|warn|info|debug|trace]
   doctor [--root <path>] [--config <path>] [--format text|json]
          [--log-level off|error|warn|info|debug|trace]
+  install --check [--root <path>] [--config <path>] [--format text|json]
+        [--log-level off|error|warn|info|debug|trace]
   plan  [--root <path>] [--config <path>] [--format text|json]
         [--log-level off|error|warn|info|debug|trace]
+  repair [--format text|json]
   run   [--root <path>] [--config <path>] [--format text|json]
         [--log-level off|error|warn|info|debug|trace]
+  status [--format text|json]
+  uninstall [--format text|json]
+  verify [--format text|json]
   help
   version
 
@@ -250,7 +323,9 @@ Config:
 Reports:
   check reports config summary and validation diagnostics in text or JSON.
   doctor reports config, platform, tun, resolver, and API bind readiness.
+  install --check reports network ownership preflight and owned-resource scope.
   plan derives the current explicit route plan and explains rule ordering.
+  status, verify, repair, and uninstall report dynet-owned resource state.
 
 API:
   capabilities prints the local API surface. serve starts a loopback-only HTTP
@@ -261,8 +336,9 @@ Runtime:
   land behind a separate boundary.
 
 Exit codes:
-  0  check loaded and validated config successfully.
-  1  config read/parse/validation failure, or run reached the runtime skeleton.
+  0  report completed without deny-level issues.
+  1  config read/parse/validation failure, lifecycle deny issue, or runtime
+     skeleton reached.
 
 Project:
   Source:  https://github.com/PerishCode/dynet

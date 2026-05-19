@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::{
     cli::OutputFormat,
     model::{ApiCapabilityReport, DoctorReport, DoctorStatus, PlanReport, Report, ReportMode},
+    platform::{LifecycleAction, LifecycleReport, LifecycleStatus},
 };
 
 pub(crate) fn print_report(report: &Report, format: OutputFormat) -> Result<(), String> {
@@ -47,6 +48,19 @@ pub(crate) fn print_api_capabilities(
     match format {
         OutputFormat::Text => {
             print!("{}", text_api_capabilities(report));
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+pub(crate) fn print_lifecycle_report(
+    report: &LifecycleReport,
+    format: OutputFormat,
+) -> Result<(), String> {
+    match format {
+        OutputFormat::Text => {
+            print!("{}", text_lifecycle_report(report));
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -246,9 +260,104 @@ pub(crate) fn text_api_capabilities(report: &ApiCapabilityReport) -> String {
     text
 }
 
+pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
+    let mut text = String::new();
+    let action = lifecycle_action_label(report.action);
+    if report.deny_count() == 0 {
+        writeln!(
+            &mut text,
+            "dynet {action} passed with {} warning(s)",
+            report.warning_count()
+        )
+        .expect("write string");
+    } else {
+        writeln!(
+            &mut text,
+            "dynet {action} found {} deny issue(s) and {} warning(s)",
+            report.deny_count(),
+            report.warning_count()
+        )
+        .expect("write string");
+    }
+    if let Some(config_source) = &report.config_source {
+        writeln!(
+            &mut text,
+            "config: {}, root: {}",
+            config_source,
+            report.root.as_deref().unwrap_or("-")
+        )
+        .expect("write string");
+    }
+    if let Some(summary) = report.summary {
+        writeln!(
+            &mut text,
+            "summary: inbounds {}, outbounds {}, routes {}",
+            summary.inbounds, summary.outbounds, summary.routes
+        )
+        .expect("write string");
+    }
+    text.push_str("\nchecks:\n");
+    for check in &report.checks {
+        writeln!(
+            &mut text,
+            "{} {} - {}",
+            lifecycle_status_label(check.status),
+            check.name,
+            check.message
+        )
+        .expect("write string");
+    }
+    text.push_str("\nowned resources:\n");
+    for resource in &report.resources {
+        let presence = if resource.present {
+            "present"
+        } else {
+            "absent"
+        };
+        writeln!(
+            &mut text,
+            "{} {} {} - {}",
+            presence, resource.kind, resource.name, resource.detail
+        )
+        .expect("write string");
+    }
+    if !report.diagnostics.is_empty() {
+        text.push_str("\nconfig diagnostics:\n");
+        for diagnostic in &report.diagnostics {
+            writeln!(
+                &mut text,
+                "{} {} - {}",
+                severity_label(diagnostic.severity),
+                diagnostic.path,
+                diagnostic.message
+            )
+            .expect("write string");
+        }
+    }
+    text
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     println!("{}", json_string(value)?);
     Ok(())
+}
+
+fn lifecycle_action_label(action: LifecycleAction) -> &'static str {
+    match action {
+        LifecycleAction::Install => "install",
+        LifecycleAction::Status => "status",
+        LifecycleAction::Verify => "verify",
+        LifecycleAction::Repair => "repair",
+        LifecycleAction::Uninstall => "uninstall",
+    }
+}
+
+fn lifecycle_status_label(status: LifecycleStatus) -> &'static str {
+    match status {
+        LifecycleStatus::Pass => "pass",
+        LifecycleStatus::Warn => "warning",
+        LifecycleStatus::Deny => "deny",
+    }
 }
 
 fn severity_label(severity: dynet_core::Severity) -> &'static str {

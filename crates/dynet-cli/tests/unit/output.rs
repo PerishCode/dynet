@@ -7,9 +7,11 @@ use crate::{
     config::ConfigSource,
     model::{ApiCapabilityReport, DoctorReport, PlanReport, Report, ReportMode},
     output::{
-        print_api_capabilities, print_doctor_report, print_plan_report, print_report,
-        text_api_capabilities, text_doctor_report, text_plan_report, text_report,
+        print_api_capabilities, print_doctor_report, print_lifecycle_report, print_plan_report,
+        print_report, text_api_capabilities, text_doctor_report, text_lifecycle_report,
+        text_plan_report, text_report,
     },
+    platform::{install_report, status_report, LifecycleAction},
 };
 
 #[test]
@@ -106,4 +108,59 @@ fn api_capability_output_lists_endpoints() {
     assert!(text.contains("/health"));
     assert!(text.contains("/v1/capabilities"));
     print_api_capabilities(&report, OutputFormat::Json).unwrap();
+}
+
+#[test]
+fn lifecycle_output_lists_owned_resources() {
+    let report = status_report(LifecycleAction::Status);
+    let text = text_lifecycle_report(&report);
+
+    assert!(text.contains("dynet status"));
+    assert!(text.contains("owned resources:"));
+    assert!(text.contains("nft-table inet dynet"));
+    print_lifecycle_report(&report, OutputFormat::Json).unwrap();
+}
+
+#[test]
+fn install_check_output_lists_preflight() {
+    let config = DynetConfig::default();
+    let report = install_report(
+        PathBuf::from(".").as_path(),
+        &ConfigSource::BuiltIn,
+        &config,
+        true,
+    );
+    let text = text_lifecycle_report(&report);
+
+    assert!(text.contains("dynet install"));
+    assert!(text.contains("apply-engine"));
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn install_apply_is_gated_until_platform_ownership_is_proven() {
+    let config = DynetConfig::default();
+    let report = install_report(
+        PathBuf::from(".").as_path(),
+        &ConfigSource::BuiltIn,
+        &config,
+        false,
+    );
+    let text = text_lifecycle_report(&report);
+
+    assert!(text.contains("network apply is intentionally gated"));
+    assert_eq!(report.exit_code(), 1);
+}
+
+#[test]
+fn lifecycle_output_covers_cleanup_actions() {
+    for action in [
+        LifecycleAction::Verify,
+        LifecycleAction::Repair,
+        LifecycleAction::Uninstall,
+    ] {
+        let report = status_report(action);
+        let text = text_lifecycle_report(&report);
+        assert!(text.contains("owned resources:"));
+    }
 }

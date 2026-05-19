@@ -12,6 +12,10 @@ config discovery, report output, and exit behavior.
 - `src/config.rs` owns config file discovery and filesystem loading.
 - `src/model.rs` and `src/output.rs` own CLI-facing report modeling and
   text/JSON output.
+- `src/platform.rs` owns the CLI-only platform lifecycle reports for
+  `install --check`, `status`, `verify`, `repair`, and `uninstall`. It may
+  inventory dynet-owned nft/tun/DNS/routing resources, but real network
+  mutation stays gated until the VM evidence loop proves the lifecycle.
 - `tests/unit/` contains CLI unit coverage. Register modules in
   `tests/unit.rs`.
 
@@ -26,6 +30,9 @@ cargo test --locked -p dynet-cli --test unit
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
 cargo run --locked -p dynet-cli -- doctor --config dynet.json
 cargo run --locked -p dynet-cli -- plan --config dynet.json
+cargo run --locked -p dynet-cli -- install --check --config dynet.json
+cargo run --locked -p dynet-cli -- status
+cargo run --locked -p dynet-cli -- verify
 cargo run --locked -p dynet-cli -- api capabilities
 ```
 

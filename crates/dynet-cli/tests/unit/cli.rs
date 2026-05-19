@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::cli::{
     help_text, parse_args, ApiCommand, ApiOptions, ApiServeOptions, CliCommand, CommandOptions,
-    LogLevel, OutputFormat,
+    InstallOptions, LifecycleOptions, LogLevel, OutputFormat,
 };
 
 #[test]
@@ -68,6 +68,42 @@ fn parses_plan_options() {
     };
 
     assert_eq!(options.config, Some(PathBuf::from("plan.json")));
+}
+
+#[test]
+fn parses_install_check_options() {
+    assert_eq!(
+        parse_args(vec![
+            "install".into(),
+            "--check".into(),
+            "--config".into(),
+            "dynet.json".into(),
+            "--format=json".into(),
+        ])
+        .unwrap(),
+        CliCommand::Install(InstallOptions {
+            lifecycle: LifecycleOptions {
+                root: PathBuf::from("."),
+                config: Some(PathBuf::from("dynet.json")),
+                format: OutputFormat::Json,
+                log_level: LogLevel::Off,
+            },
+            check: true,
+        })
+    );
+}
+
+#[test]
+fn parses_lifecycle_status_options() {
+    assert_eq!(
+        parse_args(vec!["verify".into(), "--format=json".into()]).unwrap(),
+        CliCommand::Verify(LifecycleOptions {
+            root: PathBuf::from("."),
+            config: None,
+            format: OutputFormat::Json,
+            log_level: LogLevel::Off,
+        })
+    );
 }
 
 #[test]
@@ -139,8 +175,10 @@ fn help_text_describes_boundaries() {
     assert!(help.contains("Sing-box-like proxy CLI skeleton"));
     assert!(help.contains("check [--root <path>]"));
     assert!(help.contains("doctor [--root <path>]"));
+    assert!(help.contains("install --check"));
     assert!(help.contains("plan  [--root <path>]"));
     assert!(help.contains("api capabilities"));
+    assert!(help.contains("status [--format text|json]"));
     assert!(help.contains("run   [--root <path>]"));
     assert!(help.contains("runtime"));
     assert!(help.contains("does not start a proxy yet"));

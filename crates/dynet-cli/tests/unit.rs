@@ -6,6 +6,8 @@ mod config;
 mod model;
 #[path = "../src/output.rs"]
 mod output;
+#[path = "../src/platform.rs"]
+mod platform;
 
 #[path = "unit/boundary.rs"]
 mod boundary_cases;

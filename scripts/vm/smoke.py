@@ -70,6 +70,11 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         f"dynet check --config {q(config_path)} --format json",
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
+        f"dynet install --check --config {q(config_path)} --format json",
+        "dynet status --format json",
+        "dynet verify --format json",
+        "dynet repair --format json",
+        "dynet uninstall --format json",
         "dynet api capabilities --format json",
     ]
     if not args.no_api_serve:
