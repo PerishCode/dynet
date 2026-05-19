@@ -23,5 +23,8 @@ cargo test --locked -p dynet-core
 
 - Keep core contracts serializable and boring.
 - Add harness fixtures when config shape changes in a meaningful way.
+- Model inbound/outbound nodes as stable identity/capability objects plus
+  protocol payload. Pure `tcp` and `udp` nodes are first-class model fixtures,
+  not runtime backends.
 - Keep future protocol/runtime details behind explicit core or runtime
   contracts; do not leak CLI behavior into this crate.

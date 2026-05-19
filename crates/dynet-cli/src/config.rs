@@ -14,7 +14,7 @@ pub(crate) enum ConfigSource {
     BuiltIn,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedConfig {
     pub(crate) root: PathBuf,
     pub(crate) config: DynetConfig,

@@ -1,0 +1,46 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "tag": "tcp-in",
+      "type": "tcp",
+      "listen": "127.0.0.1",
+      "listenPort": 1080,
+      "metadata": {
+        "purpose": "model-fixture"
+      }
+    },
+    {
+      "tag": "udp-in",
+      "type": "udp",
+      "listen": "127.0.0.1",
+      "listenPort": 1053
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "tcp-out",
+      "type": "tcp",
+      "server": "example.com",
+      "serverPort": 443
+    },
+    {
+      "tag": "udp-out",
+      "type": "udp",
+      "server": "1.1.1.1",
+      "serverPort": 53
+    }
+  ],
+  "routes": [
+    {
+      "inbound": "tcp-in",
+      "outbound": "tcp-out"
+    },
+    {
+      "inbound": "udp-in",
+      "outbound": "udp-out"
+    }
+  ]
+}

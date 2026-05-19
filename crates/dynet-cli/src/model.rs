@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::path::Path;
 
 use dynet_core::{
-    build_plan, validate_config, ConfigDiagnostic, ConfigSummary, DynetConfig, Plan, PlanSummary,
-    Severity,
+    build_plan, validate_config, ConfigDiagnostic, ConfigSummary, DynetConfig, NetworkModel, Plan,
+    PlanSummary, Severity,
 };
 use serde::Serialize;
 
@@ -40,6 +40,7 @@ pub(crate) struct Report {
     pub(crate) root: String,
     pub(crate) config_source: String,
     pub(crate) summary: ConfigSummary,
+    pub(crate) network: NetworkModel,
     pub(crate) diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -49,6 +50,7 @@ pub(crate) struct DoctorReport {
     pub(crate) root: String,
     pub(crate) config_source: String,
     pub(crate) summary: ConfigSummary,
+    pub(crate) network: NetworkModel,
     pub(crate) diagnostics: Vec<ConfigDiagnostic>,
     pub(crate) checks: Vec<DoctorCheck>,
 }
@@ -92,6 +94,7 @@ impl Report {
             root: root.display().to_string(),
             config_source: source_label(source),
             summary: config.summary(),
+            network: config.network_model(),
             diagnostics: validate_config(config),
         }
     }
@@ -171,12 +174,23 @@ impl DoctorReport {
                 format!("{} explicit route rule(s)", config.routes.len())
             },
         });
+        let network = config.network_model();
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            name: "network-model".to_string(),
+            message: format!(
+                "{} inbound model(s), {} outbound model(s)",
+                network.inbounds.len(),
+                network.outbounds.len()
+            ),
+        });
         checks.extend(environment_checks());
 
         Self {
             root: root.as_ref().display().to_string(),
             config_source: source_label(source),
             summary: config.summary(),
+            network,
             diagnostics,
             checks,
         }

@@ -103,6 +103,7 @@ pub(crate) fn text_report(report: &Report) -> String {
         report.summary.inbounds, report.summary.outbounds, report.summary.routes
     )
     .expect("write string");
+    write_network_model(&mut text, &report.network);
 
     if !report.diagnostics.is_empty() {
         text.push_str("\ndiagnostics:\n");
@@ -151,6 +152,7 @@ pub(crate) fn text_doctor_report(report: &DoctorReport) -> String {
         report.summary.inbounds, report.summary.outbounds, report.summary.routes
     )
     .expect("write string");
+    write_network_model(&mut text, &report.network);
     text.push_str("\nchecks:\n");
     for check in &report.checks {
         writeln!(
@@ -381,6 +383,36 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     println!("{}", json_string(value)?);
     Ok(())
+}
+
+fn write_network_model(text: &mut String, network: &dynet_core::NetworkModel) {
+    writeln!(text, "network model: {}", network.schema).expect("write string");
+    if !network.inbounds.is_empty() {
+        text.push_str("inbounds:\n");
+        for node in &network.inbounds {
+            writeln!(
+                text,
+                "- {} {} [{}]",
+                node.tag,
+                node.kind,
+                node.capabilities.join(", ")
+            )
+            .expect("write string");
+        }
+    }
+    if !network.outbounds.is_empty() {
+        text.push_str("outbounds:\n");
+        for node in &network.outbounds {
+            writeln!(
+                text,
+                "- {} {} [{}]",
+                node.tag,
+                node.kind,
+                node.capabilities.join(", ")
+            )
+            .expect("write string");
+        }
+    }
 }
 
 fn lifecycle_action_label(action: LifecycleAction) -> &'static str {

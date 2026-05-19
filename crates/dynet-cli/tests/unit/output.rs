@@ -28,6 +28,7 @@ fn text_report_summarizes_valid_config() {
 
     assert!(text.contains("dynet check passed"));
     assert!(text.contains("summary: inbounds 0, outbounds 0, routes 0"));
+    assert!(text.contains("network model: dynet-network/v1alpha1"));
 }
 
 #[test]
@@ -87,6 +88,27 @@ fn text_plan_report_lists_explicit_rules() {
 }
 
 #[test]
+fn text_report_lists_dynamic_tcp_udp_models() {
+    let config: DynetConfig = serde_json::from_str(include_str!(
+        "../../../dynet-core/harness/configs/tcp-udp.json"
+    ))
+    .unwrap();
+    let report = Report::from_config(
+        ReportMode::Check,
+        PathBuf::from("."),
+        &ConfigSource::BuiltIn,
+        &config,
+    );
+
+    let text = text_report(&report);
+
+    assert!(text.contains("inbounds:"));
+    assert!(text.contains("- tcp-in tcp"));
+    assert!(text.contains("- udp-out udp"));
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
 fn text_doctor_report_lists_checks() {
     let config = DynetConfig::default();
     let report = DoctorReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config);
@@ -96,6 +118,7 @@ fn text_doctor_report_lists_checks() {
     assert!(text.contains("dynet doctor"));
     assert!(text.contains("checks:"));
     assert!(text.contains("config-source"));
+    assert!(text.contains("network-model"));
     assert_eq!(report.exit_code(), 0);
     print_doctor_report(&report, OutputFormat::Json).unwrap();
 }

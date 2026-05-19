@@ -47,6 +47,9 @@ When adding or removing a core subtree, update this file in the same change.
   because they already exist.
 - Keep runtime/protocol implementation details out of `dynet-cli`.
 - Keep reusable config and validation contracts in `dynet-core`.
+- Keep dynamic inbound/outbound node modeling in `dynet-core`: stable node
+  identity/capability fields belong above protocol payloads, while concrete
+  protocol adapters and runtime forwarding stay out of this repo slice.
 - Keep harnesses local to the crate whose boundary they exercise.
 - Keep VM tooling diagnostics on the shared `scripts/vm/common.py` logger.
   Reserve stdout for command results that callers may parse or compose.

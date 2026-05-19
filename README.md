@@ -61,6 +61,44 @@ The skeleton config is intentionally small and generic:
 }
 ```
 
+Inbound and outbound nodes are dynamic network objects. The stable node fields
+are `tag`, `type`, optional `id`, optional `capabilities`, optional
+`constraints`, and optional `metadata`; protocol-specific fields stay on the
+same object as payload for the protocol adapter. `tag` is the user-facing route
+reference, while dynet derives an internal fingerprint for state/history
+matching.
+
+Pure TCP and UDP nodes are first-class model fixtures:
+
+```json
+{
+  "inbounds": [
+    {
+      "tag": "tcp-in",
+      "type": "tcp",
+      "listen": "127.0.0.1",
+      "listenPort": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "tcp-out",
+      "type": "tcp",
+      "server": "example.com",
+      "serverPort": 443
+    }
+  ],
+  "routes": [
+    { "inbound": "tcp-in", "outbound": "tcp-out" }
+  ]
+}
+```
+
+Built-in capability inference currently covers `tcp`, `udp`, `dns`,
+`ip-target`, `domain-target`, `transparent`, and `probeable`. Unknown
+capabilities are preserved with warnings so future protocol adapters can evolve
+without turning the core model into a protocol-specific schema dump.
+
 Discovery order:
 
 1. `--config <path>` if provided. The file's directory becomes the project root.
