@@ -161,10 +161,14 @@ fn install_lists_preflight() {
     assert!(text.contains("desired state: dynet-platform/v1alpha1 (render-only)"));
     assert!(text.contains("takeover: dynet-takeover/v1alpha1"));
     assert!(text.contains("effective config: nft inet dynet"));
-    assert!(text.contains("nftables dynet.nft -> nft -f -"));
+    assert!(text.contains("nftables dynet.nft -> /etc/nftables.d/dynet.nft"));
     assert!(text.contains("desired validations:"));
     assert!(text.contains("artifact:nft-structure"));
-    assert_eq!(report.exit_code(), 0);
+    assert!(report
+        .checks
+        .iter()
+        .filter(|check| check.status == LifecycleStatus::Deny)
+        .all(|check| matches!(check.name.as_str(), "nft-dropin-dir" | "nft-dropin-include")));
 }
 
 #[test]
@@ -184,6 +188,14 @@ fn install_renders_templates() {
         "/var/lib/dynet/takeover/manifest.json"
     );
     assert_eq!(desired_state.takeover.config.tun_name, "dynet0");
+    assert_eq!(
+        desired_state.takeover.config.nft_main_config,
+        "/etc/nftables.conf"
+    );
+    assert_eq!(
+        desired_state.takeover.config.nft_dropin_path,
+        "/etc/nftables.d/dynet.nft"
+    );
     assert!(desired_state
         .takeover
         .manifest
@@ -193,6 +205,11 @@ fn install_renders_templates() {
         .validations
         .iter()
         .all(|validation| validation.status != LifecycleStatus::Deny));
+    assert!(desired_state
+        .resources
+        .iter()
+        .any(|resource| resource.kind == "nft-dropin"
+            && resource.name == "/etc/nftables.d/dynet.nft"));
     assert!(desired_state
         .resources
         .iter()

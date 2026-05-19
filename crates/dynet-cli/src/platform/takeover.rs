@@ -9,6 +9,8 @@ use serde::Serialize;
 use super::{LifecycleCheck, LifecycleStatus};
 
 const DEFAULT_NFT_TABLE: &str = "inet dynet";
+const DEFAULT_NFT_MAIN_CONFIG: &str = "/etc/nftables.conf";
+const DEFAULT_NFT_DROPIN_DIR: &str = "/etc/nftables.d";
 const DEFAULT_TUN_NAME: &str = "dynet0";
 const DEFAULT_ROUTE_MARK: &str = "0xd1e7";
 const DEFAULT_ROUTE_TABLE: &str = "61777";
@@ -21,6 +23,9 @@ const DEFAULT_STATE_DIR: &str = "/var/lib/dynet";
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TakeoverConfig {
     pub(crate) nft_table: String,
+    pub(crate) nft_main_config: String,
+    pub(crate) nft_dropin_dir: String,
+    pub(crate) nft_dropin_path: String,
     pub(crate) tun_name: String,
     pub(crate) route_mark: String,
     pub(crate) route_table: String,
@@ -100,6 +105,10 @@ impl TakeoverConfig {
             IpAddr::V6(address) => format!("[{address}]:{}", self.dns_port),
         }
     }
+
+    pub(crate) fn nft_main_config(&self) -> &str {
+        &self.nft_main_config
+    }
 }
 
 pub(super) fn load_config() -> (TakeoverConfig, Vec<LifecycleCheck>) {
@@ -108,6 +117,24 @@ pub(super) fn load_config() -> (TakeoverConfig, Vec<LifecycleCheck>) {
 
     let nft_table = load_field(
         spec("DYNET_NFT_TABLE", DEFAULT_NFT_TABLE, FieldKind::NftTable),
+        &mut overrides,
+        &mut checks,
+    );
+    let nft_main_config = load_field(
+        spec(
+            "DYNET_NFT_MAIN_CONFIG",
+            DEFAULT_NFT_MAIN_CONFIG,
+            FieldKind::Path,
+        ),
+        &mut overrides,
+        &mut checks,
+    );
+    let nft_dropin_dir = load_field(
+        spec(
+            "DYNET_NFT_DROPIN_DIR",
+            DEFAULT_NFT_DROPIN_DIR,
+            FieldKind::Path,
+        ),
         &mut overrides,
         &mut checks,
     );
@@ -155,6 +182,10 @@ pub(super) fn load_config() -> (TakeoverConfig, Vec<LifecycleCheck>) {
         .join("manifest.json")
         .display()
         .to_string();
+    let nft_dropin_path = Path::new(&nft_dropin_dir)
+        .join("dynet.nft")
+        .display()
+        .to_string();
 
     checks.push(LifecycleCheck {
         status: LifecycleStatus::Pass,
@@ -165,10 +196,15 @@ pub(super) fn load_config() -> (TakeoverConfig, Vec<LifecycleCheck>) {
             manifest_path
         ),
     });
+    checks.push(dropin_dir_check(&nft_dropin_dir));
+    checks.push(dropin_include_check(&nft_main_config, &nft_dropin_dir));
 
     (
         TakeoverConfig {
             nft_table,
+            nft_main_config,
+            nft_dropin_dir,
+            nft_dropin_path,
             tun_name,
             route_mark,
             route_table,
@@ -193,10 +229,28 @@ pub(super) fn plan(config: &TakeoverConfig) -> TakeoverPlan {
             authority: "verify, rollback, and uninstall use the installed manifest as truth; env only builds new takeover plans".to_string(),
         },
         steps: vec![
+            step(
+                "preflight",
+                "verify-nft-dropin",
+                format!(
+                    "require {} to include {}/*.nft",
+                    config.nft_main_config(),
+                    config.nft_dropin_dir
+                ),
+            ),
             step("preflight", "bind-dns-listener", format!("bind {}", config.dns_endpoint())),
             step("stage", "create-tun", format!("create tun {}", config.tun_name)),
             step("stage", "write-manifest", format!("write {}", config.manifest_path)),
-            step("apply", "load-nft", format!("load nft table {}", config.nft_table)),
+            step(
+                "apply",
+                "write-nft-dropin",
+                format!("write {}", config.nft_dropin_path),
+            ),
+            step(
+                "apply",
+                "reload-nftables",
+                "reload nftables through host drop-in mechanism",
+            ),
             step(
                 "apply",
                 "install-policy-route",
@@ -208,7 +262,16 @@ pub(super) fn plan(config: &TakeoverConfig) -> TakeoverPlan {
             step("prove", "dns-hijack", "prove normal DNS reaches dynet listener"),
         ],
         rollback_steps: vec![
-            step("rollback", "remove-nft", format!("delete nft table {}", config.nft_table)),
+            step(
+                "rollback",
+                "remove-nft-dropin",
+                format!("delete {}", config.nft_dropin_path),
+            ),
+            step(
+                "rollback",
+                "reload-nftables",
+                "reload nftables after removing dynet drop-in",
+            ),
             step(
                 "rollback",
                 "remove-policy-route",
@@ -271,6 +334,58 @@ fn load_field(
             spec.default.to_string()
         }
     }
+}
+
+fn dropin_dir_check(path: &str) -> LifecycleCheck {
+    let exists = Path::new(path).is_dir();
+    LifecycleCheck {
+        status: if exists {
+            LifecycleStatus::Pass
+        } else {
+            LifecycleStatus::Deny
+        },
+        name: "nft-dropin-dir".to_string(),
+        message: if exists {
+            format!("nftables drop-in directory exists: {path}")
+        } else {
+            format!("nftables drop-in directory is required before dynet can serve: {path}")
+        },
+    }
+}
+
+fn dropin_include_check(main_config: &str, dropin_dir: &str) -> LifecycleCheck {
+    let main = Path::new(main_config);
+    let content = std::fs::read_to_string(main);
+    let included = content
+        .as_deref()
+        .map(|content| includes_dropin_pattern(content, dropin_dir))
+        .unwrap_or(false);
+    LifecycleCheck {
+        status: if included {
+            LifecycleStatus::Pass
+        } else {
+            LifecycleStatus::Deny
+        },
+        name: "nft-dropin-include".to_string(),
+        message: if included {
+            format!("{} includes {dropin_dir}/*.nft", main.display())
+        } else {
+            format!(
+                "{} must explicitly include {dropin_dir}/*.nft before dynet writes its drop-in",
+                main.display()
+            )
+        },
+    }
+}
+
+fn includes_dropin_pattern(content: &str, dropin_dir: &str) -> bool {
+    let quoted = format!("include \"{dropin_dir}/*.nft\"");
+    let bare = format!("include {dropin_dir}/*.nft");
+    content
+        .lines()
+        .filter_map(|line| line.split('#').next())
+        .map(str::trim)
+        .any(|line| line == quoted || line == bare)
 }
 
 fn validate_value(value: &str, kind: FieldKind) -> Result<(), String> {

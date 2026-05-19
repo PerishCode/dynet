@@ -21,7 +21,7 @@ fn desired_artifacts(config: &TakeoverConfig) -> Vec<DesiredArtifact> {
         DesiredArtifact {
             kind: "nftables".to_string(),
             name: "dynet.nft".to_string(),
-            target: "nft -f -".to_string(),
+            target: config.nft_dropin_path.clone(),
             content: nftables_template(config),
         },
         DesiredArtifact {
@@ -42,10 +42,16 @@ fn desired_artifacts(config: &TakeoverConfig) -> Vec<DesiredArtifact> {
 fn desired_resources(config: &TakeoverConfig) -> Vec<DesiredResource> {
     vec![
         DesiredResource {
+            kind: "nft-dropin".to_string(),
+            name: config.nft_dropin_path.clone(),
+            operation: "write-owned".to_string(),
+            detail: "dynet-owned nftables drop-in loaded by host include mechanism".to_string(),
+        },
+        DesiredResource {
             kind: "nft-table".to_string(),
             name: config.nft_table.clone(),
-            operation: "create-or-replace".to_string(),
-            detail: "exclusive dynet nftables table for DNS interception hooks".to_string(),
+            operation: "produced-by-dropin".to_string(),
+            detail: "exclusive dynet nftables table declared by dynet-owned drop-in".to_string(),
         },
         DesiredResource {
             kind: "tun".to_string(),

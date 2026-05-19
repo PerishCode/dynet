@@ -10,6 +10,13 @@ pub(super) fn owned_resources(config: &TakeoverConfig) -> Vec<OwnedResource> {
     let (nft_family, nft_name) = config.nft_family_name();
     vec![
         OwnedResource {
+            kind: "nft-dropin".to_string(),
+            name: config.nft_dropin_path.clone(),
+            owned: true,
+            present: Path::new(&config.nft_dropin_path).exists(),
+            detail: "dynet-owned nftables drop-in".to_string(),
+        },
+        OwnedResource {
             kind: "nft-table".to_string(),
             name: config.nft_table.clone(),
             owned: true,

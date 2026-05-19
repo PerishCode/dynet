@@ -108,6 +108,20 @@ def network_access_command(dns_name: str, https_url: str) -> str:
     )
 
 
+def nft_dropin_command() -> str:
+    return (
+        "set -e; "
+        "sudo mkdir -p /etc/nftables.d; "
+        "sudo touch /etc/nftables.conf; "
+        "if ! grep -q '/etc/nftables.d/\\*.nft' /etc/nftables.conf; then "
+        "printf '\\ninclude \"/etc/nftables.d/*.nft\"\\n' | sudo tee -a /etc/nftables.conf >/dev/null; "
+        "fi; "
+        "test -d /etc/nftables.d; "
+        "grep -q '/etc/nftables.d/\\*.nft' /etc/nftables.conf; "
+        "printf '%s\\n' '[takeover] nftables drop-in mechanism ready'"
+    )
+
+
 def tcp_udp_model_command(label: str) -> str:
     config_path = f"/tmp/dynet-{label}-tcp-udp.json"
     return (
@@ -189,6 +203,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
     commands = [
         "dynet version",
         network_access_command(args.dns_name, args.https_url),
+        nft_dropin_command(),
         tcp_udp_model_command(label),
         f"dynet check --config {q(config_path)} --format json",
         f"dynet doctor --config {q(config_path)} --format json",

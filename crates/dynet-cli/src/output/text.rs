@@ -284,8 +284,10 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
         .expect("write string");
         writeln!(
             &mut text,
-            "effective config: nft {}, tun {}, fwmark {}, table {}, dns {}",
+            "effective config: nft {}, main {}, drop-in {}, tun {}, fwmark {}, table {}, dns {}",
             desired_state.takeover.config.nft_table,
+            desired_state.takeover.config.nft_main_config,
+            desired_state.takeover.config.nft_dropin_path,
             desired_state.takeover.config.tun_name,
             desired_state.takeover.config.route_mark,
             desired_state.takeover.config.route_table,
