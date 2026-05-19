@@ -1,14 +1,15 @@
 use std::{env, process::exit};
 
+mod api;
 mod cli;
 mod config;
 mod model;
 mod output;
 
-use cli::{help_text, parse_args, CliCommand, LogLevel};
+use cli::{help_text, parse_args, ApiCommand, CliCommand, LogLevel};
 use config::ConfigSource;
-use model::{Report, ReportMode};
-use output::print_report;
+use model::{ApiCapabilityReport, DoctorReport, PlanReport, Report, ReportMode};
+use output::{print_api_capabilities, print_doctor_report, print_plan_report, print_report};
 use tracing::debug;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -41,6 +42,26 @@ fn run() -> Result<i32, String> {
             print_report(&report, options.format)?;
             Ok(report.exit_code())
         }
+        CliCommand::Doctor(options) => {
+            let resolved = config::resolve(options.root, options.config)?;
+            debug!(root = %resolved.root.display(), source = ?resolved.source, "resolved config");
+            let report =
+                DoctorReport::from_config(&resolved.root, &resolved.source, &resolved.config);
+            print_doctor_report(&report, options.format)?;
+            Ok(report.exit_code())
+        }
+        CliCommand::Plan(options) => {
+            let resolved = config::resolve(options.root, options.config)?;
+            if matches!(resolved.source, ConfigSource::BuiltIn) {
+                return Err(
+                    "plan requires a config; pass --config or create dynet.json".to_string()
+                );
+            }
+            let report =
+                PlanReport::from_config(&resolved.root, &resolved.source, &resolved.config);
+            print_plan_report(&report, options.format)?;
+            Ok(report.exit_code())
+        }
         CliCommand::Run(options) => {
             let resolved = config::resolve(options.root, options.config)?;
             if matches!(resolved.source, ConfigSource::BuiltIn) {
@@ -59,6 +80,12 @@ fn run() -> Result<i32, String> {
             eprintln!("dynet: runtime execution is not implemented in this skeleton");
             Ok(1)
         }
+        CliCommand::Api(ApiCommand::Capabilities(options)) => {
+            let report = ApiCapabilityReport::current();
+            print_api_capabilities(&report, options.format)?;
+            Ok(0)
+        }
+        CliCommand::Api(ApiCommand::Serve(options)) => api::serve(options),
         CliCommand::Help => {
             println!("{}", help_text());
             Ok(0)

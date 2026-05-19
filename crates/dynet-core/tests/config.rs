@@ -1,4 +1,4 @@
-use dynet_core::{validate_config, DynetConfig};
+use dynet_core::{build_plan, validate_config, DynetConfig};
 
 #[test]
 fn parses_harness_config() {
@@ -30,4 +30,23 @@ fn reports_unknown_route_target() {
     assert!(diagnostics
         .iter()
         .any(|diagnostic| diagnostic.path == "routes[0].outbound"));
+}
+
+#[test]
+fn builds_explicit_plan_from_routes() {
+    let config: DynetConfig = serde_json::from_str(
+        r#"{
+            "inbounds": [{ "tag": "mixed-in", "type": "mixed" }],
+            "outbounds": [{ "tag": "direct", "type": "direct" }],
+            "routes": [{ "inbound": "mixed-in", "outbound": "direct" }]
+        }"#,
+    )
+    .unwrap();
+
+    let plan = build_plan(&config);
+
+    assert_eq!(plan.summary().rules, 1);
+    assert_eq!(plan.rules[0].order, 1);
+    assert_eq!(plan.rules[0].inbound.as_deref(), Some("mixed-in"));
+    assert_eq!(plan.rules[0].outbound, "direct");
 }

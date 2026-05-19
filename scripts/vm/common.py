@@ -98,6 +98,7 @@ RESOURCE_LIMITS: dict[str, ResourceLimit] = {
     "pcap": ResourceLimit(8 * GiB, 40 * GiB, warn_files=200, fail_files=1000),
     "local-collect": ResourceLimit(4 * GiB, 16 * GiB, warn_files=200, fail_files=1000),
     "local-pcap": ResourceLimit(4 * GiB, 16 * GiB, warn_files=200, fail_files=1000),
+    "cargo-target": ResourceLimit(20 * GiB, 80 * GiB, warn_files=100000, fail_files=400000),
 }
 
 
@@ -200,6 +201,10 @@ def safe_local_lab_dir(value: str | None, *default_parts: str) -> Path:
 
 def assert_local_lab_path(path: Path) -> Path:
     return _assert_local_under(path, LOCAL_LAB_ROOT.resolve(strict=False))
+
+
+def assert_repo_path(path: Path) -> Path:
+    return _assert_local_under(path, ROOT.resolve(strict=False))
 
 
 def repo_path(*parts: str) -> Path:
@@ -376,10 +381,15 @@ def remote_resource_stats(
     return stats
 
 
-def local_resource_stats(entries: Sequence[tuple[str, Path]]) -> list[ResourceStat]:
+def local_resource_stats(
+    entries: Sequence[tuple[str, Path]],
+    *,
+    base: Path | None = None,
+) -> list[ResourceStat]:
+    base = (base or LOCAL_LAB_ROOT).resolve(strict=False)
     stats: list[ResourceStat] = []
     for label, path in entries:
-        path = _assert_local_under(path, LOCAL_LAB_ROOT.resolve(strict=False))
+        path = _assert_local_under(path, base)
         total_bytes = 0
         files = 0
         dirs = 0
@@ -503,8 +513,21 @@ def guard_local_resources(
     limit: ResourceLimit,
     *,
     enforce: bool = True,
+    base: Path | None = None,
 ) -> list[ResourceStat]:
-    stats = local_resource_stats(entries)
+    stats = local_resource_stats(entries, base=base)
+    report_resources(title, stats, limit, enforce=enforce)
+    return stats
+
+
+def guard_repo_resources(
+    title: str,
+    entries: Sequence[tuple[str, Path]],
+    limit: ResourceLimit,
+    *,
+    enforce: bool = True,
+) -> list[ResourceStat]:
+    stats = local_resource_stats(entries, base=ROOT.resolve(strict=False))
     report_resources(title, stats, limit, enforce=enforce)
     return stats
 

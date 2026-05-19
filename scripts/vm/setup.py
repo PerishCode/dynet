@@ -40,9 +40,30 @@ def stage_command(lab: Lab, args: argparse.Namespace) -> None:
     stage(lab, Path(args.path).resolve())
 
 
+def require_guest_elf(local_path: Path, *, allow_any_binary: bool) -> None:
+    if allow_any_binary:
+        return
+    result = subprocess.run(
+        ["file", "-b", str(local_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise CommandError(f"failed to inspect local binary with file(1): {result.stderr.strip()}")
+    description = result.stdout.strip()
+    print(f"local binary: {description}", file=sys.stderr)
+    if "ELF" not in description:
+        raise CommandError(
+            "install-bin expects a Linux ELF artifact for the guest; "
+            "build inside Linux or pass --allow-any-binary explicitly"
+        )
+
+
 def install_bin(lab: Lab, args: argparse.Namespace) -> None:
     name = validate_name(args.guest, "guest")
     local = Path(args.path).resolve()
+    require_guest_elf(local, allow_any_binary=args.allow_any_binary)
     remote = stage(lab, local)
     guest_tmp = f"/tmp/{local.name}"
     guest_scp_from_host(lab, name, remote, guest_tmp, user=args.user, source=args.source)
@@ -105,6 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
     bin_parser.add_argument("guest")
     bin_parser.add_argument("path")
     bin_parser.add_argument("--dest", default="/usr/local/bin/dynet")
+    bin_parser.add_argument(
+        "--allow-any-binary",
+        action="store_true",
+        help="skip Linux ELF validation before installing into the guest",
+    )
     bin_parser.add_argument("--user", default=DEFAULT_VM_USER)
     bin_parser.add_argument("--source", default="lease", choices=["lease", "agent"])
 

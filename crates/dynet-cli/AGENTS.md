@@ -5,6 +5,7 @@ config discovery, report output, and exit behavior.
 
 ## Directory Rules
 
+- `src/api.rs` owns the loopback-only cold-start HTTP API skeleton.
 - `src/main.rs` wires command dispatch, config resolution, report printing,
   logging, and exit codes.
 - `src/cli.rs` owns command parsing and help text.
@@ -14,14 +15,18 @@ config discovery, report output, and exit behavior.
 - `tests/unit/` contains CLI unit coverage. Register modules in
   `tests/unit.rs`.
 
-Do not add protocol backends, long-running runtime loops, service management,
-or platform network device code here.
+Do not add protocol backends, product runtime loops, service management, or
+platform network device mutation here. Read-only cold-start checks and the
+loopback API skeleton are allowed CLI contracts.
 
 ## Common Commands
 
 ```bash
 cargo test --locked -p dynet-cli --test unit
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
+cargo run --locked -p dynet-cli -- doctor --config dynet.json
+cargo run --locked -p dynet-cli -- plan --config dynet.json
+cargo run --locked -p dynet-cli -- api capabilities
 ```
 
 ## Standard Workflow

@@ -32,11 +32,15 @@ network experiments must stay inside disposable guests.
 - `cleanup.py` owns resource usage reporting and safe pruning of generated lab
   cache/artifact buckets.
 - `collect.py` owns host/guest evidence bundles for lab runs.
+- `dev.py` owns high-frequency developer loops that compose local Linux artifact
+  builds, guest installation, smoke checks, and readiness checks.
 - `image.py` owns cloud image catalog, downloads, image validation, and overlay
   creation.
 - `net.py` owns explicit libvirt network visibility and start/stop/autostart
   operations.
 - `guest.py` owns guest definitions and lifecycle commands.
+- `smoke.py` owns VM guest cold-start smoke checks that exercise dynet CLI
+  contracts inside a disposable guest.
 - `snapshot.py` owns offline qcow2 snapshot create/revert/delete operations.
 - `setup.py` owns staging and installing local dynet artifacts into guests.
 

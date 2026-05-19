@@ -13,14 +13,21 @@ behind those boundaries later.
 dynet check                       # auto-discovers dynet.json from --root
 dynet check --config dynet.json   # explicit path
 dynet check --format json
+dynet doctor --config dynet.json  # local/VM cold-start readiness checks
+dynet plan --config dynet.json    # explain explicit route plan ordering
+dynet api capabilities            # list local API surface
+dynet api serve --bind 127.0.0.1:9977
 dynet run --config dynet.json     # validates config; runtime is not implemented yet
 dynet version
 dynet help
 ```
 
 `dynet check` exits `1` when the config cannot be read, parsed, or validated.
-`dynet run` currently validates config and exits `1` after reporting that runtime
-execution has not been implemented.
+`dynet doctor` reports config, platform, tun, resolver, and API bind readiness.
+`dynet plan` turns explicit route rules into an explainable plan. `dynet api
+serve` is a loopback-only HTTP skeleton with `/health` and `/v1/capabilities`.
+`dynet run` currently validates config and exits `1` after reporting that
+runtime execution has not been implemented.
 
 ## Config
 
@@ -67,6 +74,11 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
+cargo run --locked -p dynet-cli -- doctor --config dynet.json
+cargo run --locked -p dynet-cli -- plan --config dynet.json
+cargo run --locked -p dynet-cli -- api capabilities
+cargo zigbuild --locked --target x86_64-unknown-linux-gnu -p dynet-cli
+python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu
 ```
 
 ## VM Lab Tooling
@@ -88,6 +100,9 @@ python3 scripts/vmctl.py guest --host fuisp status
 python3 scripts/vmctl.py snapshot --host fuisp create dynet-smoke dynet-installed --force
 python3 scripts/vmctl.py snapshot --host fuisp revert dynet-smoke dynet-installed --yes
 python3 scripts/vmctl.py check --host fuisp guest dynet-smoke
+python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu
+python3 scripts/vmctl.py setup --host fuisp install-bin dynet-smoke target/x86_64-unknown-linux-gnu/debug/dynet --user ubuntu
+python3 scripts/vmctl.py smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
 python3 scripts/vmctl.py collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
 python3 scripts/vmctl.py capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
 python3 scripts/vmctl.py capture --host fuisp guest dynet-smoke --label probe --duration 4 --iface enp1s0 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
@@ -105,6 +120,9 @@ bundles. `scripts/vm/check.py` owns high-level readiness checks.
 `scripts/vm/capture.py` owns short scoped packet captures on guest tap
 interfaces or inside guest interfaces. `scripts/vm/cleanup.py` owns resource
 usage reporting and safe pruning for generated cache/artifact buckets.
+`scripts/vm/smoke.py` owns guest cold-start smoke checks for dynet CLI/API
+contracts. `scripts/vm/dev.py` owns the high-frequency build/install/smoke/check
+developer loop.
 
 Commands that can grow image caches, overlays, cloud-init seeds, staged
 artifacts, snapshots, evidence bundles, or pcaps print current resource usage
@@ -112,3 +130,7 @@ before mutating state. Each guarded bucket has warning and fail thresholds; fail
 thresholds stop growth commands. Remote paths are constrained under the lab root
 and local fetched artifacts are constrained under `dist/lab/`. Cleanup commands
 preview candidates by default and require `--yes` before deletion.
+`setup install-bin` rejects non-ELF host binaries by default so a macOS build is
+not accidentally installed into a Linux guest.
+`dev guest` builds the Linux guest artifact with `cargo zigbuild`, installs it,
+runs smoke checks, and finishes with guest readiness checks.

@@ -1,14 +1,14 @@
 use std::{fs, path::PathBuf};
 
 #[test]
-fn cli_does_not_embed_runtime_backend_names() {
+fn cli_does_not_embed_protocol_backend_names() {
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     for path in rust_sources(&source_root) {
         let source = fs::read_to_string(&path).unwrap();
-        for forbidden in ["tokio", "tun", "shadowsocks", "wireguard", "netstack"] {
+        for forbidden in ["shadowsocks", "wireguard", "netstack"] {
             assert!(
                 !source.contains(forbidden),
-                "{} imports future runtime/backend detail `{forbidden}`",
+                "{} imports future protocol/backend detail `{forbidden}`",
                 path.display()
             );
         }

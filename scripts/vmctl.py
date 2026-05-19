@@ -12,10 +12,12 @@ COMMANDS = {
     "check": ROOT / "scripts" / "vm" / "check.py",
     "cleanup": ROOT / "scripts" / "vm" / "cleanup.py",
     "collect": ROOT / "scripts" / "vm" / "collect.py",
+    "dev": ROOT / "scripts" / "vm" / "dev.py",
     "image": ROOT / "scripts" / "vm" / "image.py",
     "guest": ROOT / "scripts" / "vm" / "guest.py",
     "setup": ROOT / "scripts" / "vm" / "setup.py",
     "net": ROOT / "scripts" / "vm" / "net.py",
+    "smoke": ROOT / "scripts" / "vm" / "smoke.py",
     "snapshot": ROOT / "scripts" / "vm" / "snapshot.py",
 }
 

@@ -1,7 +1,7 @@
 # AGENTS
 
-`crates/dynet-core/` owns shared dynet config/domain primitives and validation
-contracts.
+`crates/dynet-core/` owns shared dynet config/domain primitives, validation
+contracts, and plan derivation contracts.
 
 ## Directory Rules
 

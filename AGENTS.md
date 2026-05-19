@@ -48,8 +48,9 @@ When adding or removing a core subtree, update this file in the same change.
 - Keep runtime/protocol implementation details out of `dynet-cli`.
 - Keep reusable config and validation contracts in `dynet-core`.
 - Keep harnesses local to the crate whose boundary they exercise.
-- Do not add long-running service execution until the runtime boundary is
-  explicitly introduced.
+- The loopback-only `dynet api serve` skeleton is an explicit cold-start API
+  boundary. Do not turn it into product runtime/network execution without a
+  separate runtime crate/boundary.
 
 ## Common Commands
 
@@ -59,10 +60,15 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
+cargo run --locked -p dynet-cli -- doctor --config dynet.json
+cargo run --locked -p dynet-cli -- plan --config dynet.json
+cargo run --locked -p dynet-cli -- api capabilities
 python3 scripts/vmctl.py --help
 python3 scripts/vmctl.py guest --host fuisp status
 python3 scripts/vmctl.py snapshot --host fuisp list dynet-smoke
 python3 scripts/vmctl.py check --host fuisp guest dynet-smoke
+python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu
+python3 scripts/vmctl.py smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
 python3 scripts/vmctl.py collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
 python3 scripts/vmctl.py capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
 python3 scripts/vmctl.py cleanup --host fuisp report
