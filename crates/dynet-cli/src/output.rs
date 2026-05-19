@@ -321,6 +321,35 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
         )
         .expect("write string");
     }
+    if let Some(desired_state) = &report.desired_state {
+        writeln!(
+            &mut text,
+            "\ndesired state: {} ({})",
+            desired_state.schema, desired_state.mutation_mode
+        )
+        .expect("write string");
+        text.push_str("desired resources:\n");
+        for resource in &desired_state.resources {
+            writeln!(
+                &mut text,
+                "{} {} {} - {}",
+                resource.operation, resource.kind, resource.name, resource.detail
+            )
+            .expect("write string");
+        }
+        text.push_str("\ndesired artifacts:\n");
+        for artifact in &desired_state.artifacts {
+            writeln!(
+                &mut text,
+                "{} {} -> {} ({} bytes)",
+                artifact.kind,
+                artifact.name,
+                artifact.target,
+                artifact.content.len()
+            )
+            .expect("write string");
+        }
+    }
     if !report.diagnostics.is_empty() {
         text.push_str("\nconfig diagnostics:\n");
         for diagnostic in &report.diagnostics {

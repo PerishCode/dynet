@@ -134,7 +134,40 @@ fn install_check_output_lists_preflight() {
 
     assert!(text.contains("dynet install"));
     assert!(text.contains("apply-engine"));
+    assert!(text.contains("desired state: dynet-platform/v1alpha1 (render-only)"));
+    assert!(text.contains("nftables dynet.nft -> nft -f -"));
     assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn install_check_renders_auditable_platform_templates() {
+    let config = DynetConfig::default();
+    let report = install_report(
+        PathBuf::from(".").as_path(),
+        &ConfigSource::BuiltIn,
+        &config,
+        true,
+    );
+    let desired_state = report.desired_state.as_ref().unwrap();
+
+    assert_eq!(desired_state.mutation_mode, "render-only");
+    assert!(desired_state
+        .resources
+        .iter()
+        .any(|resource| resource.kind == "dns-listener" && resource.name == "127.0.0.1:1053"));
+    assert!(desired_state
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.name == "dynet.nft"
+            && artifact.content.contains("table inet dynet")
+            && artifact.content.contains("redirect to :1053")));
+    assert!(desired_state
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.name == "dynet-link-route.sh"
+            && artifact
+                .content
+                .contains("ip tuntap add dev dynet0 mode tun")));
 }
 
 #[test]

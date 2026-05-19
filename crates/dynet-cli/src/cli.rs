@@ -323,7 +323,8 @@ Config:
 Reports:
   check reports config summary and validation diagnostics in text or JSON.
   doctor reports config, platform, tun, resolver, and API bind readiness.
-  install --check reports network ownership preflight and owned-resource scope.
+  install --check reports network ownership preflight, owned-resource scope,
+  and render-only desired state artifacts.
   plan derives the current explicit route plan and explains rule ordering.
   status, verify, repair, and uninstall report dynet-owned resource state.
 

@@ -9,6 +9,15 @@ use serde::Serialize;
 
 use crate::config::ConfigSource;
 
+const NFT_TABLE: &str = "inet dynet";
+const TUN_NAME: &str = "dynet0";
+const ROUTE_MARK: &str = "0xd1e7";
+const ROUTE_TABLE: &str = "61777";
+const DNS_PORT: &str = "1053";
+const DNS_LISTEN: &str = "127.0.0.1:1053";
+const RUNTIME_DIR: &str = "/run/dynet";
+const STATE_DIR: &str = "/var/lib/dynet";
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum LifecycleAction {
@@ -45,6 +54,33 @@ pub(crate) struct OwnedResource {
     pub(crate) detail: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesiredState {
+    pub(crate) schema: String,
+    pub(crate) mutation_mode: String,
+    pub(crate) resources: Vec<DesiredResource>,
+    pub(crate) artifacts: Vec<DesiredArtifact>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesiredResource {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) operation: String,
+    pub(crate) detail: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesiredArtifact {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) target: String,
+    pub(crate) content: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LifecycleReport {
@@ -56,6 +92,8 @@ pub(crate) struct LifecycleReport {
     pub(crate) diagnostics: Vec<ConfigDiagnostic>,
     pub(crate) checks: Vec<LifecycleCheck>,
     pub(crate) resources: Vec<OwnedResource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) desired_state: Option<DesiredState>,
 }
 
 impl LifecycleReport {
@@ -99,14 +137,25 @@ pub(crate) fn install_report(
     check_only: bool,
 ) -> LifecycleReport {
     let diagnostics = validate_config(config);
-    let mut checks = Vec::new();
-    checks.push(config_check(&diagnostics));
-    checks.push(platform_check());
-    checks.push(root_check());
-    checks.push(command_check("nft", "nftables atomic ruleset loading"));
-    checks.push(command_check("ip", "policy route and tun visibility"));
-    checks.push(tun_check());
-    checks.push(resolver_check());
+    let mut checks = vec![
+        config_check(&diagnostics),
+        platform_check(),
+        root_check(),
+        command_check("nft", "nftables atomic ruleset loading"),
+        command_check("ip", "policy route and tun visibility"),
+        tun_check(),
+        resolver_check(),
+    ];
+    let desired_state = desired_state();
+    checks.push(LifecycleCheck {
+        status: LifecycleStatus::Pass,
+        name: "desired-state".to_string(),
+        message: format!(
+            "rendered {} owned resource target(s) and {} audit artifact(s); mutation disabled",
+            desired_state.resources.len(),
+            desired_state.artifacts.len()
+        ),
+    });
     checks.push(LifecycleCheck {
         status: if check_only {
             LifecycleStatus::Pass
@@ -131,6 +180,7 @@ pub(crate) fn install_report(
         diagnostics,
         checks,
         resources: owned_resources(),
+        desired_state: Some(desired_state),
     }
 }
 
@@ -157,8 +207,13 @@ pub(crate) fn status_report(action: LifecycleAction) -> LifecycleReport {
     checks.push(LifecycleCheck {
         status: LifecycleStatus::Pass,
         name: "ownership-scope".to_string(),
-        message: "owned scope is inet table dynet, tun dynet0, fwmark 0xd1e7, route table 61777"
-            .to_string(),
+        message: format!(
+            "owned scope is {nft_table}, tun {tun_name}, fwmark {route_mark}, route table {route_table}",
+            nft_table = NFT_TABLE,
+            route_mark = ROUTE_MARK,
+            route_table = ROUTE_TABLE,
+            tun_name = TUN_NAME
+        ),
     });
     if matches!(action, LifecycleAction::Repair | LifecycleAction::Uninstall) && !any_present {
         checks.push(LifecycleCheck {
@@ -177,6 +232,7 @@ pub(crate) fn status_report(action: LifecycleAction) -> LifecycleReport {
         diagnostics: Vec::new(),
         checks,
         resources,
+        desired_state: None,
     }
 }
 
@@ -291,51 +347,180 @@ fn owned_resources() -> Vec<OwnedResource> {
     vec![
         OwnedResource {
             kind: "nft-table".to_string(),
-            name: "inet dynet".to_string(),
+            name: NFT_TABLE.to_string(),
             owned: true,
             present: command_status("nft", &["list", "table", "inet", "dynet"]),
             detail: "exclusive dynet nftables table".to_string(),
         },
         OwnedResource {
             kind: "tun".to_string(),
-            name: "dynet0".to_string(),
+            name: TUN_NAME.to_string(),
             owned: true,
-            present: Path::new("/sys/class/net/dynet0").exists(),
+            present: Path::new("/sys/class/net").join(TUN_NAME).exists(),
             detail: "dynet-owned tun interface".to_string(),
         },
         OwnedResource {
             kind: "ip-rule".to_string(),
-            name: "fwmark 0xd1e7".to_string(),
+            name: format!("fwmark {ROUTE_MARK}"),
             owned: true,
             present: command_stdout("ip", &["rule", "show"])
-                .map(|output| output.contains("0xd1e7"))
+                .map(|output| output.contains(ROUTE_MARK))
                 .unwrap_or(false),
-            detail: "dynet-owned outbound bypass mark".to_string(),
+            detail: "dynet-owned packet mark".to_string(),
         },
         OwnedResource {
             kind: "route-table".to_string(),
-            name: "61777".to_string(),
+            name: ROUTE_TABLE.to_string(),
             owned: true,
-            present: command_stdout("ip", &["route", "show", "table", "61777"])
+            present: command_stdout("ip", &["route", "show", "table", ROUTE_TABLE])
                 .map(|output| !output.trim().is_empty())
                 .unwrap_or(false),
             detail: "dynet policy route table".to_string(),
         },
         OwnedResource {
             kind: "runtime-dir".to_string(),
-            name: "/run/dynet".to_string(),
+            name: RUNTIME_DIR.to_string(),
             owned: true,
-            present: Path::new("/run/dynet").exists(),
+            present: Path::new(RUNTIME_DIR).exists(),
             detail: "runtime state directory".to_string(),
         },
         OwnedResource {
             kind: "state-dir".to_string(),
-            name: "/var/lib/dynet".to_string(),
+            name: STATE_DIR.to_string(),
             owned: true,
-            present: Path::new("/var/lib/dynet").exists(),
+            present: Path::new(STATE_DIR).exists(),
             detail: "persistent dynet state directory".to_string(),
         },
     ]
+}
+
+fn desired_state() -> DesiredState {
+    DesiredState {
+        schema: "dynet-platform/v1alpha1".to_string(),
+        mutation_mode: "render-only".to_string(),
+        resources: vec![
+            DesiredResource {
+                kind: "nft-table".to_string(),
+                name: NFT_TABLE.to_string(),
+                operation: "create-or-replace".to_string(),
+                detail: "exclusive dynet nftables table for DNS interception hooks".to_string(),
+            },
+            DesiredResource {
+                kind: "tun".to_string(),
+                name: TUN_NAME.to_string(),
+                operation: "create-or-reuse-owned".to_string(),
+                detail: "tun-only packet ingress owned by dynet runtime".to_string(),
+            },
+            DesiredResource {
+                kind: "dns-listener".to_string(),
+                name: DNS_LISTEN.to_string(),
+                operation: "bind-loopback".to_string(),
+                detail: "local DNS ingress target for nft redirect templates".to_string(),
+            },
+            DesiredResource {
+                kind: "ip-rule".to_string(),
+                name: format!("fwmark {ROUTE_MARK}"),
+                operation: "reserve".to_string(),
+                detail: format!("policy rule priority {ROUTE_TABLE} for dynet-marked traffic"),
+            },
+            DesiredResource {
+                kind: "route-table".to_string(),
+                name: ROUTE_TABLE.to_string(),
+                operation: "reserve".to_string(),
+                detail: format!("route table for {TUN_NAME} policy routing"),
+            },
+            DesiredResource {
+                kind: "runtime-dir".to_string(),
+                name: RUNTIME_DIR.to_string(),
+                operation: "create-owned".to_string(),
+                detail: "ephemeral runtime state".to_string(),
+            },
+            DesiredResource {
+                kind: "state-dir".to_string(),
+                name: STATE_DIR.to_string(),
+                operation: "create-owned".to_string(),
+                detail: "persistent dynet state".to_string(),
+            },
+        ],
+        artifacts: vec![
+            DesiredArtifact {
+                kind: "nftables".to_string(),
+                name: "dynet.nft".to_string(),
+                target: "nft -f -".to_string(),
+                content: nftables_template(),
+            },
+            DesiredArtifact {
+                kind: "iproute2".to_string(),
+                name: "dynet-link-route.sh".to_string(),
+                target: "root shell".to_string(),
+                content: link_route_template(),
+            },
+            DesiredArtifact {
+                kind: "resolver".to_string(),
+                name: "dynet-resolver-ownership.txt".to_string(),
+                target: "/etc/resolv.conf and local resolver manager".to_string(),
+                content: resolver_template(),
+            },
+        ],
+    }
+}
+
+fn nftables_template() -> String {
+    format!(
+        r#"table inet dynet {{
+  chain prerouting_dns {{
+    type nat hook prerouting priority dstnat; policy accept;
+    meta mark {route_mark} accept comment "dynet-owned bypass"
+    udp dport 53 redirect to :{dns_port} comment "dynet DNS hijack"
+    tcp dport 53 redirect to :{dns_port} comment "dynet DNS hijack"
+  }}
+
+  chain output_dns {{
+    type nat hook output priority dstnat; policy accept;
+    meta mark {route_mark} accept comment "dynet-owned bypass"
+    udp dport 53 redirect to :{dns_port} comment "dynet local DNS hijack"
+    tcp dport 53 redirect to :{dns_port} comment "dynet local DNS hijack"
+  }}
+}}
+"#,
+        dns_port = DNS_PORT,
+        route_mark = ROUTE_MARK
+    )
+}
+
+fn link_route_template() -> String {
+    format!(
+        r#"#!/bin/sh
+set -eu
+
+if ! ip link show dev {tun_name} >/dev/null 2>&1; then
+  ip tuntap add dev {tun_name} mode tun
+fi
+ip link set dev {tun_name} up
+if ! ip rule show | grep -q 'fwmark {route_mark}.*lookup {route_table}'; then
+  ip rule add fwmark {route_mark} lookup {route_table} priority {route_table}
+fi
+ip route replace default dev {tun_name} table {route_table}
+"#,
+        route_mark = ROUTE_MARK,
+        route_table = ROUTE_TABLE,
+        tun_name = TUN_NAME
+    )
+}
+
+fn resolver_template() -> String {
+    format!(
+        r#"dynet DNS ownership contract
+
+- dynet owns normal TCP/UDP port 53 interception through nft table {nft_table}.
+- redirected DNS traffic lands on {dns_listen}.
+- dynet must snapshot the previous resolver state before any future mutation.
+- dynet uninstall must restore only the resolver state that dynet previously owned.
+- mutation is disabled in this render-only slice.
+"#,
+        dns_listen = DNS_LISTEN,
+        nft_table = NFT_TABLE
+    )
 }
 
 fn command_exists(command: &str) -> bool {
