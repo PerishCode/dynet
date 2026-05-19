@@ -32,6 +32,7 @@ choices.
   before editing that subtree.
 - `install.sh` and `install.ps1` are the public installation entrypoints at the
   repository root.
+- `flavor.json` owns the code-shape/style scan for supported source files.
 - Release and installer downloads use R2 metadata and artifacts as the source
   of truth.
 
@@ -67,6 +68,7 @@ When adding or removing a core subtree, update this file in the same change.
 ```bash
 python3 scripts/init.py
 cargo fmt --all --check
+flavor check --root . --config flavor.json
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json

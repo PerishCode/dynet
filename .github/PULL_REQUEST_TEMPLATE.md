@@ -10,6 +10,7 @@
 
 <!--
 cargo fmt --all --check                                            -> clean
+flavor check --root . --config flavor.json                         -> 0 deny
 cargo clippy --locked --workspace --all-targets -- -D warnings     -> clean
 cargo test --locked --workspace                                    -> N passed
 -->

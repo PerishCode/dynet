@@ -1,0 +1,35 @@
+{
+  "scan": {
+    "include": [
+      "crates/*/src/**",
+      "crates/*/tests/**"
+    ],
+    "exclude": [
+      "**/target/**"
+    ]
+  },
+  "overrides": [
+    {
+      "match": [
+        "crates/dynet-cli/src/platform.rs",
+        "crates/dynet-core/src/lib.rs"
+      ],
+      "kind": "file",
+      "rules": {
+        "core/source/too-long": {
+          "severity": "warning",
+          "payload": { "max_lines": 500 }
+        }
+      }
+    },
+    {
+      "match": "crates/*/tests/**",
+      "kind": "file",
+      "rules": {
+        "core/naming/too-many-words": {
+          "payload": { "max_words": 10 }
+        }
+      }
+    }
+  ]
+}

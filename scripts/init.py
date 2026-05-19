@@ -25,6 +25,7 @@ def main() -> None:
     require_tool("cargo")
     require_tool("rustc")
     require_path("Cargo.toml")
+    require_path("flavor.json")
     require_path("crates/dynet-cli/Cargo.toml")
     require_path("crates/dynet-core/Cargo.toml")
     require_path("scripts/vmctl.py")

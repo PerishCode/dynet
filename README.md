@@ -120,6 +120,7 @@ runtime details.
 ```bash
 python3 scripts/init.py
 cargo fmt --all --check
+flavor check --root . --config flavor.json
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo run --locked -p dynet-cli -- check --root . --config dynet.json
