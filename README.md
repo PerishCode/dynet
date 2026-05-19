@@ -42,6 +42,13 @@ apply/cleanup is intentionally gated until the ownership invariants are proven.
 `dynet run` currently validates config and exits `1` after reporting that
 runtime execution has not been implemented.
 
+Platform takeover values are rendered through a single effective config. The
+defaults can be overridden for a new install plan with `DYNET_NFT_TABLE`,
+`DYNET_TUN_NAME`, `DYNET_ROUTE_MARK`, `DYNET_ROUTE_TABLE`, `DYNET_DNS_LISTEN`,
+`DYNET_DNS_PORT`, `DYNET_RUNTIME_DIR`, and `DYNET_STATE_DIR`. Future apply,
+verify, rollback, and uninstall operations use the installed takeover manifest
+as truth; environment overrides do not rewrite installed ownership.
+
 ## Config
 
 The skeleton config is intentionally small and generic:

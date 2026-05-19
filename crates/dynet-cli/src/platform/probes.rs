@@ -4,7 +4,8 @@ use dynet_core::{ConfigDiagnostic, Severity};
 
 use super::{
     command::{command_exists, current_uid},
-    LifecycleAction, LifecycleCheck, LifecycleStatus, NFT_TABLE, ROUTE_MARK, ROUTE_TABLE, TUN_NAME,
+    takeover::TakeoverConfig,
+    LifecycleAction, LifecycleCheck, LifecycleStatus,
 };
 
 pub(super) fn install_checks(diagnostics: &[ConfigDiagnostic]) -> Vec<LifecycleCheck> {
@@ -19,7 +20,11 @@ pub(super) fn install_checks(diagnostics: &[ConfigDiagnostic]) -> Vec<LifecycleC
     ]
 }
 
-pub(super) fn status_checks(action: LifecycleAction, any_present: bool) -> Vec<LifecycleCheck> {
+pub(super) fn status_checks(
+    action: LifecycleAction,
+    any_present: bool,
+    config: &TakeoverConfig,
+) -> Vec<LifecycleCheck> {
     vec![
         LifecycleCheck {
             status: match action {
@@ -41,7 +46,8 @@ pub(super) fn status_checks(action: LifecycleAction, any_present: bool) -> Vec<L
             status: LifecycleStatus::Pass,
             name: "ownership-scope".to_string(),
             message: format!(
-                "owned scope is {NFT_TABLE}, tun {TUN_NAME}, fwmark {ROUTE_MARK}, route table {ROUTE_TABLE}"
+                "owned scope is {}, tun {}, fwmark {}, route table {}",
+                config.nft_table, config.tun_name, config.route_mark, config.route_table
             ),
         },
     ]

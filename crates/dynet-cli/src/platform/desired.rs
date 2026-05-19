@@ -1,91 +1,98 @@
 use super::{
     command::{command_exists, command_with_stdin},
-    DesiredArtifact, DesiredResource, DesiredState, DesiredValidation, LifecycleStatus, DNS_LISTEN,
-    DNS_PORT, NFT_TABLE, ROUTE_MARK, ROUTE_TABLE, RUNTIME_DIR, STATE_DIR, TUN_NAME,
+    takeover::{self, TakeoverConfig},
+    DesiredArtifact, DesiredResource, DesiredState, DesiredValidation, LifecycleStatus,
 };
 
-pub(super) fn desired_state() -> DesiredState {
-    let artifacts = desired_artifacts();
+pub(super) fn desired_state(config: &TakeoverConfig) -> DesiredState {
+    let artifacts = desired_artifacts(config);
     DesiredState {
         schema: "dynet-platform/v1alpha1".to_string(),
         mutation_mode: "render-only".to_string(),
-        resources: desired_resources(),
-        validations: validate_artifacts(&artifacts),
+        takeover: takeover::plan(config),
+        resources: desired_resources(config),
+        validations: validate_artifacts(config, &artifacts),
         artifacts,
     }
 }
 
-fn desired_artifacts() -> Vec<DesiredArtifact> {
+fn desired_artifacts(config: &TakeoverConfig) -> Vec<DesiredArtifact> {
     vec![
         DesiredArtifact {
             kind: "nftables".to_string(),
             name: "dynet.nft".to_string(),
             target: "nft -f -".to_string(),
-            content: nftables_template(),
+            content: nftables_template(config),
         },
         DesiredArtifact {
             kind: "iproute2".to_string(),
             name: "dynet-link-route.sh".to_string(),
             target: "root shell".to_string(),
-            content: link_route_template(),
+            content: link_route_template(config),
         },
         DesiredArtifact {
             kind: "resolver".to_string(),
             name: "dynet-resolver-ownership.txt".to_string(),
             target: "/etc/resolv.conf and local resolver manager".to_string(),
-            content: resolver_template(),
+            content: resolver_template(config),
         },
     ]
 }
 
-fn desired_resources() -> Vec<DesiredResource> {
+fn desired_resources(config: &TakeoverConfig) -> Vec<DesiredResource> {
     vec![
         DesiredResource {
             kind: "nft-table".to_string(),
-            name: NFT_TABLE.to_string(),
+            name: config.nft_table.clone(),
             operation: "create-or-replace".to_string(),
             detail: "exclusive dynet nftables table for DNS interception hooks".to_string(),
         },
         DesiredResource {
             kind: "tun".to_string(),
-            name: TUN_NAME.to_string(),
+            name: config.tun_name.clone(),
             operation: "create-or-reuse-owned".to_string(),
             detail: "tun-only packet ingress owned by dynet runtime".to_string(),
         },
         DesiredResource {
             kind: "dns-listener".to_string(),
-            name: DNS_LISTEN.to_string(),
+            name: config.dns_endpoint(),
             operation: "bind-loopback".to_string(),
             detail: "local DNS ingress target for nft redirect templates".to_string(),
         },
         DesiredResource {
             kind: "ip-rule".to_string(),
-            name: format!("fwmark {ROUTE_MARK}"),
+            name: format!("fwmark {}", config.route_mark),
             operation: "reserve".to_string(),
-            detail: format!("policy rule priority {ROUTE_TABLE} for dynet-marked traffic"),
+            detail: format!(
+                "policy rule priority {} for dynet-marked traffic",
+                config.route_table
+            ),
         },
         DesiredResource {
             kind: "route-table".to_string(),
-            name: ROUTE_TABLE.to_string(),
+            name: config.route_table.clone(),
             operation: "reserve".to_string(),
-            detail: format!("route table for {TUN_NAME} policy routing"),
+            detail: format!("route table for {} policy routing", config.tun_name),
         },
         DesiredResource {
             kind: "runtime-dir".to_string(),
-            name: RUNTIME_DIR.to_string(),
+            name: config.runtime_dir.clone(),
             operation: "create-owned".to_string(),
             detail: "ephemeral runtime state".to_string(),
         },
         DesiredResource {
             kind: "state-dir".to_string(),
-            name: STATE_DIR.to_string(),
+            name: config.state_dir.clone(),
             operation: "create-owned".to_string(),
             detail: "persistent dynet state".to_string(),
         },
     ]
 }
 
-fn validate_artifacts(artifacts: &[DesiredArtifact]) -> Vec<DesiredValidation> {
+fn validate_artifacts(
+    config: &TakeoverConfig,
+    artifacts: &[DesiredArtifact],
+) -> Vec<DesiredValidation> {
     let nft = find_artifact(artifacts, "dynet.nft");
     let link_route = find_artifact(artifacts, "dynet-link-route.sh");
     let resolver = find_artifact(artifacts, "dynet-resolver-ownership.txt");
@@ -96,12 +103,12 @@ fn validate_artifacts(artifacts: &[DesiredArtifact]) -> Vec<DesiredValidation> {
             "dynet.nft",
             nft,
             &[
-                "table inet dynet",
+                &format!("table {}", config.nft_table),
                 "chain prerouting_dns",
                 "chain output_dns",
-                "meta mark 0xd1e7 accept",
-                "udp dport 53 redirect to :1053",
-                "tcp dport 53 redirect to :1053",
+                &format!("meta mark {} accept", config.route_mark),
+                &format!("udp dport 53 redirect to :{}", config.dns_port),
+                &format!("tcp dport 53 redirect to :{}", config.dns_port),
             ],
         ),
         nft_native_validation(nft),
@@ -110,11 +117,17 @@ fn validate_artifacts(artifacts: &[DesiredArtifact]) -> Vec<DesiredValidation> {
             "dynet-link-route.sh",
             link_route,
             &[
-                "ip link show dev dynet0",
-                "ip tuntap add dev dynet0 mode tun",
-                "ip link set dev dynet0 up",
-                "ip rule add fwmark 0xd1e7 lookup 61777 priority 61777",
-                "ip route replace default dev dynet0 table 61777",
+                &format!("ip link show dev {}", config.tun_name),
+                &format!("ip tuntap add dev {} mode tun", config.tun_name),
+                &format!("ip link set dev {} up", config.tun_name),
+                &format!(
+                    "ip rule add fwmark {} lookup {} priority {}",
+                    config.route_mark, config.route_table, config.route_table
+                ),
+                &format!(
+                    "ip route replace default dev {} table {}",
+                    config.tun_name, config.route_table
+                ),
             ],
         ),
         forbidden_fragments_validation(
@@ -265,9 +278,9 @@ fn nft_permission_error(message: &str) -> bool {
         || message.contains("Permission denied")
 }
 
-fn nftables_template() -> String {
+fn nftables_template(config: &TakeoverConfig) -> String {
     format!(
-        r#"table inet dynet {{
+        r#"table {nft_table} {{
   chain prerouting_dns {{
     type nat hook prerouting priority dstnat; policy accept;
     meta mark {route_mark} accept comment "dynet-owned bypass"
@@ -283,12 +296,13 @@ fn nftables_template() -> String {
   }}
 }}
 "#,
-        dns_port = DNS_PORT,
-        route_mark = ROUTE_MARK
+        dns_port = config.dns_port,
+        nft_table = config.nft_table,
+        route_mark = config.route_mark
     )
 }
 
-fn link_route_template() -> String {
+fn link_route_template(config: &TakeoverConfig) -> String {
     format!(
         r#"#!/bin/sh
 set -eu
@@ -302,13 +316,13 @@ if ! ip rule show | grep -q 'fwmark {route_mark}.*lookup {route_table}'; then
 fi
 ip route replace default dev {tun_name} table {route_table}
 "#,
-        route_mark = ROUTE_MARK,
-        route_table = ROUTE_TABLE,
-        tun_name = TUN_NAME
+        route_mark = config.route_mark,
+        route_table = config.route_table,
+        tun_name = config.tun_name
     )
 }
 
-fn resolver_template() -> String {
+fn resolver_template(config: &TakeoverConfig) -> String {
     format!(
         r#"dynet DNS ownership contract
 
@@ -318,7 +332,7 @@ fn resolver_template() -> String {
 - dynet uninstall must restore only the resolver state that dynet previously owned.
 - mutation is disabled in this render-only slice.
 "#,
-        dns_listen = DNS_LISTEN,
-        nft_table = NFT_TABLE
+        dns_listen = config.dns_endpoint(),
+        nft_table = config.nft_table
     )
 }

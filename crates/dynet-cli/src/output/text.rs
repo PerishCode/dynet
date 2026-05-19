@@ -276,6 +276,31 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
             desired_state.schema, desired_state.mutation_mode
         )
         .expect("write string");
+        writeln!(
+            &mut text,
+            "takeover: {} manifest {}",
+            desired_state.takeover.schema, desired_state.takeover.manifest.path
+        )
+        .expect("write string");
+        writeln!(
+            &mut text,
+            "effective config: nft {}, tun {}, fwmark {}, table {}, dns {}",
+            desired_state.takeover.config.nft_table,
+            desired_state.takeover.config.tun_name,
+            desired_state.takeover.config.route_mark,
+            desired_state.takeover.config.route_table,
+            desired_state.takeover.config.dns_endpoint()
+        )
+        .expect("write string");
+        text.push_str("takeover steps:\n");
+        for step in &desired_state.takeover.steps {
+            writeln!(
+                &mut text,
+                "{} {} - {}",
+                step.phase, step.name, step.operation
+            )
+            .expect("write string");
+        }
         text.push_str("desired resources:\n");
         for resource in &desired_state.resources {
             writeln!(

@@ -159,6 +159,8 @@ fn install_lists_preflight() {
     assert!(text.contains("dynet install"));
     assert!(text.contains("apply-engine"));
     assert!(text.contains("desired state: dynet-platform/v1alpha1 (render-only)"));
+    assert!(text.contains("takeover: dynet-takeover/v1alpha1"));
+    assert!(text.contains("effective config: nft inet dynet"));
     assert!(text.contains("nftables dynet.nft -> nft -f -"));
     assert!(text.contains("desired validations:"));
     assert!(text.contains("artifact:nft-structure"));
@@ -177,6 +179,16 @@ fn install_renders_templates() {
     let desired_state = report.desired_state.as_ref().unwrap();
 
     assert_eq!(desired_state.mutation_mode, "render-only");
+    assert_eq!(
+        desired_state.takeover.manifest.path,
+        "/var/lib/dynet/takeover/manifest.json"
+    );
+    assert_eq!(desired_state.takeover.config.tun_name, "dynet0");
+    assert!(desired_state
+        .takeover
+        .manifest
+        .authority
+        .contains("env only builds new takeover plans"));
     assert!(desired_state
         .validations
         .iter()

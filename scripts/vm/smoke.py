@@ -159,6 +159,23 @@ def log_acceptance_command(config_path: str) -> str:
     )
 
 
+def takeover_env_command(config_path: str) -> str:
+    return (
+        "set -e; "
+        "DYNET_TUN_NAME=dynet9 "
+        "DYNET_DNS_PORT=1054 "
+        "DYNET_STATE_DIR=/tmp/dynet-state "
+        f"dynet install --check --config {q(config_path)} --format json | "
+        "jq -e '.desiredState.takeover.schema == \"dynet-takeover/v1alpha1\" "
+        "and .desiredState.takeover.config.tunName == \"dynet9\" "
+        "and .desiredState.takeover.config.dnsPort == \"1054\" "
+        "and .desiredState.takeover.config.manifestPath == \"/tmp/dynet-state/takeover/manifest.json\" "
+        "and (.desiredState.takeover.config.envOverrides | length) == 3' "
+        ">/dev/null; "
+        "printf '%s\\n' '[takeover] env override rendering passed'"
+    )
+
+
 def guest(lab: Lab, args: argparse.Namespace) -> None:
     name = validate_name(args.guest, "guest")
     label = validate_name(args.label, "label")
@@ -177,6 +194,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
         log_acceptance_command(config_path),
+        takeover_env_command(config_path),
         f"dynet install --check --config {q(config_path)} --format json",
         (
             f"sudo dynet install --check --config {q(config_path)} --format json "

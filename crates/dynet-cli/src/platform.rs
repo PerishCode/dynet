@@ -6,6 +6,8 @@ mod desired;
 mod probes;
 #[path = "platform/resources.rs"]
 mod resources;
+#[path = "platform/takeover.rs"]
+mod takeover;
 
 use std::path::Path;
 
@@ -13,15 +15,6 @@ use dynet_core::{validate_config, ConfigDiagnostic, ConfigSummary, DynetConfig, 
 use serde::Serialize;
 
 use crate::config::ConfigSource;
-
-pub(super) const NFT_TABLE: &str = "inet dynet";
-pub(super) const TUN_NAME: &str = "dynet0";
-pub(super) const ROUTE_MARK: &str = "0xd1e7";
-pub(super) const ROUTE_TABLE: &str = "61777";
-pub(super) const DNS_PORT: &str = "1053";
-pub(super) const DNS_LISTEN: &str = "127.0.0.1:1053";
-pub(super) const RUNTIME_DIR: &str = "/run/dynet";
-pub(super) const STATE_DIR: &str = "/var/lib/dynet";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -64,6 +57,7 @@ pub(crate) struct OwnedResource {
 pub(crate) struct DesiredState {
     pub(crate) schema: String,
     pub(crate) mutation_mode: String,
+    pub(crate) takeover: takeover::TakeoverPlan,
     pub(crate) resources: Vec<DesiredResource>,
     pub(crate) artifacts: Vec<DesiredArtifact>,
     pub(crate) validations: Vec<DesiredValidation>,
@@ -152,8 +146,10 @@ pub(crate) fn install_report(
     check_only: bool,
 ) -> LifecycleReport {
     let diagnostics = validate_config(config);
-    let desired_state = desired::desired_state();
+    let (takeover_config, takeover_checks) = takeover::load_config();
+    let desired_state = desired::desired_state(&takeover_config);
     let mut checks = probes::install_checks(&diagnostics);
+    checks.extend(takeover_checks);
     checks.push(LifecycleCheck {
         status: LifecycleStatus::Pass,
         name: "desired-state".to_string(),
@@ -183,15 +179,17 @@ pub(crate) fn install_report(
         summary: Some(config.summary()),
         diagnostics,
         checks,
-        resources: resources::owned_resources(),
+        resources: resources::owned_resources(&takeover_config),
         desired_state: Some(desired_state),
     }
 }
 
 pub(crate) fn status_report(action: LifecycleAction) -> LifecycleReport {
-    let resources = resources::owned_resources();
+    let (takeover_config, takeover_checks) = takeover::load_config();
+    let resources = resources::owned_resources(&takeover_config);
     let any_present = resources.iter().any(|resource| resource.present);
-    let mut checks = probes::status_checks(action, any_present);
+    let mut checks = takeover_checks;
+    checks.extend(probes::status_checks(action, any_present, &takeover_config));
 
     if matches!(action, LifecycleAction::Repair | LifecycleAction::Uninstall) && !any_present {
         checks.push(LifecycleCheck {

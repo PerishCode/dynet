@@ -16,10 +16,11 @@ config discovery, report output, and exit behavior.
 - `src/platform.rs` exports the CLI-only platform lifecycle reports for
   `install --check`, `status`, `verify`, `repair`, and `uninstall`.
 - `src/platform/` owns platform command probes, desired-state templates,
-  resource inventory, and lifecycle validation helpers. It may inventory
-  dynet-owned nft/tun/DNS/routing resources and render desired-state artifacts
-  with non-mutating validation status, but real network mutation stays gated
-  until the VM evidence loop proves the lifecycle.
+  takeover config/manifest modeling, resource inventory, and lifecycle
+  validation helpers. It may inventory dynet-owned nft/tun/DNS/routing
+  resources and render desired-state artifacts with non-mutating validation
+  status, but real network mutation stays gated until the VM evidence loop
+  proves the lifecycle.
 - `tests/unit/` contains CLI unit coverage. Register modules in
   `tests/unit.rs`.
 
