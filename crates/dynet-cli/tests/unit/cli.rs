@@ -62,12 +62,28 @@ fn parses_doctor_options() {
 
 #[test]
 fn parses_plan_options() {
-    let CliCommand::Plan(options) = parse_args(vec!["plan".into(), "-c=plan.json".into()]).unwrap()
-    else {
+    let CliCommand::Plan(options) = parse_args(vec![
+        "plan".into(),
+        "-c=plan.json".into(),
+        "--context".into(),
+        r#"{"destinationIp":"93.184.216.34"}"#.into(),
+        "--dns-answer=example.com=93.184.216.34".into(),
+        "--dns-now=100".into(),
+        "--dns-ttl".into(),
+        "60".into(),
+    ])
+    .unwrap() else {
         panic!("expected plan command");
     };
 
-    assert_eq!(options.config, Some(PathBuf::from("plan.json")));
+    assert_eq!(options.command.config, Some(PathBuf::from("plan.json")));
+    assert_eq!(
+        options.context.as_deref(),
+        Some(r#"{"destinationIp":"93.184.216.34"}"#)
+    );
+    assert_eq!(options.dns_answers, ["example.com=93.184.216.34"]);
+    assert_eq!(options.dns_now_secs, Some(100));
+    assert_eq!(options.dns_ttl_secs, 60);
 }
 
 #[test]

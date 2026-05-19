@@ -1,5 +1,6 @@
 mod capability;
 mod context;
+mod dns;
 mod model;
 mod plan;
 mod state;
@@ -7,6 +8,7 @@ mod validate;
 mod verdict;
 
 pub use context::{InboundContext, Transport};
+pub use dns::{normalize_domain, DnsReverseIndex, DnsReverseRecord};
 pub use model::{
     ConfigDiagnostic, ConfigSummary, DynetConfig, Endpoint, Inbound, LogConfig, ModeledNode,
     NetworkModel, NetworkNode, NodeRole, Outbound, RouteRule, Severity,

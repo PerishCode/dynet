@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::{
     capability::{transport_capabilities, KNOWN_CAPABILITIES},
-    ConfigDiagnostic, DynetConfig, NetworkNode, NodeRole, Severity,
+    normalize_domain, ConfigDiagnostic, DynetConfig, NetworkNode, NodeRole, Severity,
 };
 
 pub fn validate_config(config: &DynetConfig) -> Vec<ConfigDiagnostic> {
@@ -127,6 +127,7 @@ fn validate_routes(config: &DynetConfig, diagnostics: &mut Vec<ConfigDiagnostic>
     let outbounds = node_index(&config.outbounds);
 
     for (index, route) in config.routes.iter().enumerate() {
+        validate_route_domain(index, route.domain.as_deref(), diagnostics);
         let outbound = required_route_node(
             &outbounds,
             route.outbound.as_str(),
@@ -146,6 +147,20 @@ fn validate_routes(config: &DynetConfig, diagnostics: &mut Vec<ConfigDiagnostic>
         if let (Some(inbound), Some(outbound)) = (inbound, outbound) {
             validate_route_transport(index, inbound, outbound, diagnostics);
         }
+    }
+}
+
+fn validate_route_domain(
+    index: usize,
+    domain: Option<&str>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    match domain {
+        Some(value) if normalize_domain(value).is_none() => diagnostics.push(deny(
+            format!("routes[{index}].domain"),
+            "route domain must not be empty",
+        )),
+        _ => {}
     }
 }
 

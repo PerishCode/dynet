@@ -29,7 +29,7 @@ pub(crate) enum CliCommand {
     Check(CommandOptions),
     Doctor(CommandOptions),
     Install(InstallOptions),
-    Plan(CommandOptions),
+    Plan(PlanOptions),
     Repair(LifecycleOptions),
     Run(CommandOptions),
     Status(LifecycleOptions),
@@ -38,6 +38,15 @@ pub(crate) enum CliCommand {
     Api(ApiCommand),
     Help,
     Version,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct PlanOptions {
+    pub(crate) command: CommandOptions,
+    pub(crate) context: Option<String>,
+    pub(crate) dns_answers: Vec<String>,
+    pub(crate) dns_now_secs: Option<u64>,
+    pub(crate) dns_ttl_secs: u32,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -77,10 +86,10 @@ pub(crate) struct ApiServeOptions {
 impl CliCommand {
     pub(crate) fn log_level(&self) -> LogLevel {
         match self {
-            CliCommand::Check(options)
-            | CliCommand::Doctor(options)
-            | CliCommand::Plan(options)
-            | CliCommand::Run(options) => options.log_level,
+            CliCommand::Check(options) | CliCommand::Doctor(options) | CliCommand::Run(options) => {
+                options.log_level
+            }
+            CliCommand::Plan(options) => options.command.log_level,
             CliCommand::Install(options) => options.lifecycle.log_level,
             CliCommand::Repair(options)
             | CliCommand::Status(options)
@@ -130,6 +139,10 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     let mut api_once = false;
     let mut api_allow_non_loopback = false;
     let mut install_check = false;
+    let mut plan_context = None;
+    let mut plan_dns_answers = Vec::new();
+    let mut plan_dns_now_secs = None;
+    let mut plan_dns_ttl_secs = 300;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -222,6 +235,30 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             "--check" if mode == CommandMode::Install => {
                 install_check = true;
             }
+            "--context" if mode == CommandMode::Plan => {
+                plan_context = Some(
+                    args.next()
+                        .ok_or_else(|| "--context requires a JSON object".to_string())?,
+                );
+            }
+            "--dns-answer" if mode == CommandMode::Plan => {
+                plan_dns_answers.push(
+                    args.next()
+                        .ok_or_else(|| "--dns-answer requires domain=ip[,ip...]".to_string())?,
+                );
+            }
+            "--dns-now" if mode == CommandMode::Plan => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--dns-now requires an integer timestamp".to_string())?;
+                plan_dns_now_secs = Some(parse_u64("--dns-now", &value)?);
+            }
+            "--dns-ttl" if mode == CommandMode::Plan => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--dns-ttl requires an integer seconds value".to_string())?;
+                plan_dns_ttl_secs = parse_u32("--dns-ttl", &value)?;
+            }
             other if other.starts_with("--root=") => {
                 root = PathBuf::from(&other["--root=".len()..]);
             }
@@ -236,6 +273,18 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             }
             other if other.starts_with("--log-level=") => {
                 log_level = parse_log_level(&other["--log-level=".len()..])?;
+            }
+            other if mode == CommandMode::Plan && other.starts_with("--context=") => {
+                plan_context = Some(other["--context=".len()..].to_string());
+            }
+            other if mode == CommandMode::Plan && other.starts_with("--dns-answer=") => {
+                plan_dns_answers.push(other["--dns-answer=".len()..].to_string());
+            }
+            other if mode == CommandMode::Plan && other.starts_with("--dns-now=") => {
+                plan_dns_now_secs = Some(parse_u64("--dns-now", &other["--dns-now=".len()..])?);
+            }
+            other if mode == CommandMode::Plan && other.starts_with("--dns-ttl=") => {
+                plan_dns_ttl_secs = parse_u32("--dns-ttl", &other["--dns-ttl=".len()..])?;
             }
             other if mode == CommandMode::Api && other.starts_with("--bind=") => {
                 api_bind = other["--bind=".len()..].to_string();
@@ -268,7 +317,13 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             lifecycle,
             check: install_check,
         }),
-        CommandMode::Plan => CliCommand::Plan(options),
+        CommandMode::Plan => CliCommand::Plan(PlanOptions {
+            command: options,
+            context: plan_context,
+            dns_answers: plan_dns_answers,
+            dns_now_secs: plan_dns_now_secs,
+            dns_ttl_secs: plan_dns_ttl_secs,
+        }),
         CommandMode::Repair => CliCommand::Repair(lifecycle),
         CommandMode::Run => CliCommand::Run(options),
         CommandMode::Status => CliCommand::Status(lifecycle),
@@ -303,6 +358,8 @@ Commands:
   install --check [--root <path>] [--config <path>] [--format text|json]
         [--log-level off|error|warn|info|debug|trace]
   plan  [--root <path>] [--config <path>] [--format text|json]
+        [--context <json>] [--dns-answer domain=ip[,ip...]]
+        [--dns-now <seconds>] [--dns-ttl <seconds>]
         [--log-level off|error|warn|info|debug|trace]
   repair [--format text|json]
   run   [--root <path>] [--config <path>] [--format text|json]
@@ -364,4 +421,16 @@ fn parse_log_level(value: &str) -> Result<LogLevel, String> {
         "trace" => Ok(LogLevel::Trace),
         other => Err(format!("unsupported log level: {other}")),
     }
+}
+
+fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
+    value
+        .parse()
+        .map_err(|_| format!("{flag} must be a non-negative integer"))
+}
+
+fn parse_u32(flag: &str, value: &str) -> Result<u32, String> {
+    value
+        .parse()
+        .map_err(|_| format!("{flag} must be a non-negative integer"))
 }

@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -7,6 +9,10 @@ pub struct InboundContext {
     pub inbound: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<Transport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_ip: Option<IpAddr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
@@ -26,6 +32,13 @@ impl InboundContext {
         Self {
             inbound: Some(tag.into()),
             transport: None,
+            destination_ip: None,
+            destination_port: None,
         }
+    }
+
+    pub fn with_destination_ip(mut self, address: IpAddr) -> Self {
+        self.destination_ip = Some(address);
+        self
     }
 }

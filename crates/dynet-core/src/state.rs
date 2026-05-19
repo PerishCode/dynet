@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::{ConfigSummary, DynetConfig, ModeledNode, NetworkModel};
+use crate::{ConfigSummary, DnsReverseIndex, DynetConfig, ModeledNode, NetworkModel};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -8,6 +8,7 @@ pub struct AppState {
     pub schema: String,
     pub config: DynetConfig,
     pub network: NetworkModel,
+    pub dns_reverse: DnsReverseIndex,
 }
 
 impl AppState {
@@ -17,7 +18,13 @@ impl AppState {
             schema: "dynet-state/v1alpha1".to_string(),
             config,
             network,
+            dns_reverse: DnsReverseIndex::default(),
         }
+    }
+
+    pub fn with_dns_reverse(mut self, dns_reverse: DnsReverseIndex) -> Self {
+        self.dns_reverse = dns_reverse;
+        self
     }
 
     pub fn summary(&self) -> ConfigSummary {

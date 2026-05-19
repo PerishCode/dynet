@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::path::Path;
 
 use dynet_core::{
-    build_plan, validate_config, AppState, ConfigDiagnostic, ConfigSummary, DynetConfig,
-    NetworkModel, Plan, PlanSummary, Severity,
+    build_plan, validate_config, AppState, ConfigDiagnostic, ConfigSummary, DnsReverseIndex,
+    DynetConfig, InboundContext, NetworkModel, Plan, PlanSummary, Severity, Verdict,
 };
 use serde::Serialize;
 
@@ -64,6 +64,13 @@ pub(crate) struct PlanReport {
     pub(crate) plan_summary: PlanSummary,
     pub(crate) diagnostics: Vec<ConfigDiagnostic>,
     pub(crate) plan: Plan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) verdict: Option<Verdict>,
+}
+
+pub(crate) struct PlanEvaluationInput {
+    pub(crate) context: InboundContext,
+    pub(crate) dns_reverse: DnsReverseIndex,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,9 +228,15 @@ impl PlanReport {
         root: impl AsRef<Path>,
         source: &ConfigSource,
         config: &DynetConfig,
+        evaluation: Option<PlanEvaluationInput>,
     ) -> Self {
-        let state = AppState::from_config(config.clone());
+        let state = match &evaluation {
+            Some(evaluation) => AppState::from_config(config.clone())
+                .with_dns_reverse(evaluation.dns_reverse.clone()),
+            None => AppState::from_config(config.clone()),
+        };
         let plan = build_plan(&state);
+        let verdict = evaluation.map(|evaluation| plan.evaluate(&evaluation.context, &state));
         Self {
             root: root.as_ref().display().to_string(),
             config_source: source_label(source),
@@ -231,6 +244,7 @@ impl PlanReport {
             plan_summary: plan.summary(),
             diagnostics: validate_config(config),
             plan,
+            verdict,
         }
     }
 

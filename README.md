@@ -31,8 +31,10 @@ dynet help
 `dynet doctor` reports config, platform, tun, resolver, and API bind readiness.
 `dynet plan` compiles explicit route rules into a `dynet-plan/v1alpha1`
 verdict model over `dynet-state/v1alpha1`: inbound context is matched against
-rules, then a verdict action selects an outbound or no route. `dynet
-install --check` validates network ownership preflight and lists dynet-owned
+rules plus CLI state, then a verdict action selects an outbound or no route.
+The plan harness can evaluate DNS reverse mapping experiments with
+`--context '{"destinationIp":"93.184.216.34"}' --dns-answer example.com=93.184.216.34`.
+`dynet install --check` validates network ownership preflight and lists dynet-owned
 resources plus render-only nft/tun/DNS desired-state artifacts and validation
 status without mutating system network paths. `status`, `verify`, `repair`, and
 `uninstall` report the current dynet-owned resource state; mutating network
@@ -80,6 +82,11 @@ are `tag`, `type`, optional `id`, optional `capabilities`, optional
 same object as payload for the protocol adapter. `tag` is the user-facing route
 reference, while dynet derives an internal fingerprint for state/history
 matching.
+
+Route rules currently support `inbound`, `domain`, and `outbound`. `domain`
+matches do not use fake IPs: the inbound context supplies a destination IP, and
+the plan evaluates that IP against the DNS reverse index stored in `AppState`.
+Without prior DNS answer state, the same IP falls through to the next route.
 
 Pure TCP and UDP nodes are first-class model fixtures:
 

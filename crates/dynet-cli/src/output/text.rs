@@ -173,6 +173,24 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
             .expect("write string");
         }
     }
+    if let Some(verdict) = &report.verdict {
+        writeln!(
+            &mut text,
+            "\nverdict: {} via {} ({})",
+            verdict_status_label(verdict.status),
+            action_label(&verdict.action),
+            verdict.reason
+        )
+        .expect("write string");
+        if let Some(outbound) = &verdict.outbound {
+            writeln!(
+                &mut text,
+                "outbound: {} {} {}",
+                outbound.tag, outbound.kind, outbound.fingerprint
+            )
+            .expect("write string");
+        }
+    }
     if !report.diagnostics.is_empty() {
         text.push_str("\nconfig diagnostics:\n");
         for diagnostic in &report.diagnostics {
@@ -385,13 +403,14 @@ fn write_network_model(text: &mut String, network: &dynet_core::NetworkModel) {
 
 fn match_label(matcher: &dynet_core::PlanMatch) -> String {
     let inbound = matcher.inbound.as_deref().unwrap_or("*");
-    match matcher.transport {
-        Some(transport) => format!(
-            "inbound {inbound}, transport {}",
-            transport_label(transport)
-        ),
-        None => format!("inbound {inbound}"),
+    let mut parts = vec![format!("inbound {inbound}")];
+    if let Some(transport) = matcher.transport {
+        parts.push(format!("transport {}", transport_label(transport)));
     }
+    if let Some(domain) = &matcher.domain {
+        parts.push(format!("domain {domain}"));
+    }
+    parts.join(", ")
 }
 
 fn action_label(action: &dynet_core::PlanAction) -> String {
@@ -416,6 +435,14 @@ fn lifecycle_action_label(action: LifecycleAction) -> &'static str {
         LifecycleAction::Verify => "verify",
         LifecycleAction::Repair => "repair",
         LifecycleAction::Uninstall => "uninstall",
+    }
+}
+
+fn verdict_status_label(status: dynet_core::VerdictStatus) -> &'static str {
+    match status {
+        dynet_core::VerdictStatus::Accept => "accept",
+        dynet_core::VerdictStatus::Deny => "deny",
+        dynet_core::VerdictStatus::NoMatch => "no-match",
     }
 }
 

@@ -77,7 +77,7 @@ fn text_plan_lists_rules() {
         }"#,
     )
     .unwrap();
-    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config);
+    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config, None);
 
     let text = text_plan_report(&report);
 

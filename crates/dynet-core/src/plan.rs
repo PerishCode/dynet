@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::{AppState, InboundContext, PlanAction, Transport, Verdict};
+use crate::{normalize_domain, AppState, InboundContext, PlanAction, Transport, Verdict};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +36,8 @@ pub struct PlanMatch {
     pub inbound: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<Transport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -69,7 +71,7 @@ impl Plan {
 
     pub fn evaluate(&self, context: &InboundContext, state: &AppState) -> Verdict {
         for rule in &self.rules {
-            if rule.matcher.matches(context) {
+            if rule.matcher.matches(context, state) {
                 return Verdict::from_action(
                     Some(rule.order),
                     rule.action.clone(),
@@ -89,7 +91,7 @@ impl Plan {
 }
 
 impl PlanMatch {
-    fn matches(&self, context: &InboundContext) -> bool {
+    fn matches(&self, context: &InboundContext, state: &AppState) -> bool {
         if self
             .inbound
             .as_ref()
@@ -102,6 +104,14 @@ impl PlanMatch {
             .is_some_and(|transport| context.transport != Some(transport))
         {
             return false;
+        }
+        if let Some(domain) = &self.domain {
+            let Some(destination_ip) = context.destination_ip else {
+                return false;
+            };
+            if !state.dns_reverse.contains_domain(destination_ip, domain) {
+                return false;
+            }
         }
         true
     }
@@ -119,23 +129,17 @@ pub fn build_plan(state: &AppState) -> Plan {
             matcher: PlanMatch {
                 inbound: route.inbound.clone(),
                 transport: None,
+                domain: route.domain.as_deref().and_then(normalize_domain),
             },
             action: PlanAction::UseOutbound {
                 tag: route.outbound.clone(),
             },
             source: PlanRuleSource::ExplicitRoute,
-            reason: match route.inbound.as_deref() {
-                Some(inbound) => format!(
-                    "explicit user rule matches inbound `{inbound}` and uses outbound `{}`",
-                    route.outbound
-                ),
-                None => {
-                    format!(
-                        "explicit user default rule uses outbound `{}`",
-                        route.outbound
-                    )
-                }
-            },
+            reason: rule_reason(
+                route.inbound.as_deref(),
+                route.domain.as_deref(),
+                &route.outbound,
+            ),
         })
         .collect();
 
@@ -144,5 +148,20 @@ pub fn build_plan(state: &AppState) -> Plan {
         mode: PlanMode::ExplicitOnly,
         state_schema: state.schema.clone(),
         rules,
+    }
+}
+
+fn rule_reason(inbound: Option<&str>, domain: Option<&str>, outbound: &str) -> String {
+    match (inbound, domain.and_then(normalize_domain)) {
+        (Some(inbound), Some(domain)) => format!(
+            "explicit user rule matches inbound `{inbound}` plus DNS reverse domain `{domain}` and uses outbound `{outbound}`"
+        ),
+        (Some(inbound), None) => format!(
+            "explicit user rule matches inbound `{inbound}` and uses outbound `{outbound}`"
+        ),
+        (None, Some(domain)) => format!(
+            "explicit user rule matches DNS reverse domain `{domain}` and uses outbound `{outbound}`"
+        ),
+        (None, None) => format!("explicit user default rule uses outbound `{outbound}`"),
     }
 }

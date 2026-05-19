@@ -49,6 +49,8 @@ pub struct NetworkNode {
 pub struct RouteRule {
     #[serde(default)]
     pub inbound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     pub outbound: String,
 }
 

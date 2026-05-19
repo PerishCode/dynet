@@ -70,6 +70,21 @@ TCP_UDP_MODEL_CONFIG = """{
 }
 """
 
+DNS_REVERSE_MODEL_CONFIG = """{
+  "inbounds": [
+    { "tag": "tun-in", "type": "tun" }
+  ],
+  "outbounds": [
+    { "tag": "domain-out", "type": "direct" },
+    { "tag": "fallback", "type": "direct" }
+  ],
+  "routes": [
+    { "inbound": "tun-in", "domain": "example.com", "outbound": "domain-out" },
+    { "inbound": "tun-in", "outbound": "fallback" }
+  ]
+}
+"""
+
 
 def api_health_command(port: int) -> str:
     return (
@@ -159,6 +174,33 @@ def tcp_udp_model_command(label: str) -> str:
     )
 
 
+def dns_reverse_model_command(label: str, dns_name: str) -> str:
+    config_path = f"/tmp/dynet-{label}-dns-reverse.json"
+    return (
+        "set -e; "
+        f"domain={q(dns_name)}; "
+        "ip=$(getent ahostsv4 \"$domain\" | awk 'NR==1 { print $1; exit }'); "
+        "test -n \"$ip\"; "
+        f"config={q(config_path)}; "
+        "cat > \"$config\" <<'EOF_DYNET_DNS_REVERSE_CONFIG'\n"
+        f"{DNS_REVERSE_MODEL_CONFIG}EOF_DYNET_DNS_REVERSE_CONFIG\n"
+        "context=$(printf '{\"inbound\":\"tun-in\",\"destinationIp\":\"%s\"}' \"$ip\"); "
+        "dynet plan --config \"$config\" --format json "
+        "--context \"$context\" --dns-answer \"${domain}=${ip}\" | "
+        "jq -e '.plan.rules[0].match.domain == \"example.com\" "
+        "and .verdict.status == \"accept\" "
+        "and .verdict.matchedRule == 1 "
+        "and .verdict.outbound.tag == \"domain-out\"' "
+        ">/dev/null; "
+        "dynet plan --config \"$config\" --format json --context \"$context\" | "
+        "jq -e '.verdict.status == \"accept\" "
+        "and .verdict.matchedRule == 2 "
+        "and .verdict.outbound.tag == \"fallback\"' "
+        ">/dev/null; "
+        "printf '%s\\n' \"[dns] reverse mapping route passed for ${domain}=${ip}\""
+    )
+
+
 def log_acceptance_command(config_path: str) -> str:
     return (
         "set -e; "
@@ -205,6 +247,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         network_access_command(args.dns_name, args.https_url),
         nft_dropin_command(),
         tcp_udp_model_command(label),
+        dns_reverse_model_command(label, args.dns_name),
         f"dynet check --config {q(config_path)} --format json",
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
