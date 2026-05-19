@@ -1,5 +1,6 @@
 use std::{
     env,
+    io::Write as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -61,6 +62,7 @@ pub(crate) struct DesiredState {
     pub(crate) mutation_mode: String,
     pub(crate) resources: Vec<DesiredResource>,
     pub(crate) artifacts: Vec<DesiredArtifact>,
+    pub(crate) validations: Vec<DesiredValidation>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -79,6 +81,15 @@ pub(crate) struct DesiredArtifact {
     pub(crate) name: String,
     pub(crate) target: String,
     pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DesiredValidation {
+    pub(crate) status: LifecycleStatus,
+    pub(crate) name: String,
+    pub(crate) artifact: String,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,6 +167,16 @@ pub(crate) fn install_report(
             desired_state.artifacts.len()
         ),
     });
+    checks.extend(
+        desired_state
+            .validations
+            .iter()
+            .map(|validation| LifecycleCheck {
+                status: validation.status,
+                name: format!("artifact:{}", validation.name),
+                message: format!("{} - {}", validation.artifact, validation.message),
+            }),
+    );
     checks.push(LifecycleCheck {
         status: if check_only {
             LifecycleStatus::Pass
@@ -276,7 +297,7 @@ fn platform_check() -> LifecycleCheck {
 }
 
 fn root_check() -> LifecycleCheck {
-    let uid = command_stdout("id", &["-u"]).unwrap_or_default();
+    let uid = current_uid().unwrap_or_default();
     LifecycleCheck {
         status: if uid.trim() == "0" {
             LifecycleStatus::Pass
@@ -395,6 +416,27 @@ fn owned_resources() -> Vec<OwnedResource> {
 }
 
 fn desired_state() -> DesiredState {
+    let artifacts = vec![
+        DesiredArtifact {
+            kind: "nftables".to_string(),
+            name: "dynet.nft".to_string(),
+            target: "nft -f -".to_string(),
+            content: nftables_template(),
+        },
+        DesiredArtifact {
+            kind: "iproute2".to_string(),
+            name: "dynet-link-route.sh".to_string(),
+            target: "root shell".to_string(),
+            content: link_route_template(),
+        },
+        DesiredArtifact {
+            kind: "resolver".to_string(),
+            name: "dynet-resolver-ownership.txt".to_string(),
+            target: "/etc/resolv.conf and local resolver manager".to_string(),
+            content: resolver_template(),
+        },
+    ];
+    let validations = validate_artifacts(&artifacts);
     DesiredState {
         schema: "dynet-platform/v1alpha1".to_string(),
         mutation_mode: "render-only".to_string(),
@@ -442,27 +484,195 @@ fn desired_state() -> DesiredState {
                 detail: "persistent dynet state".to_string(),
             },
         ],
-        artifacts: vec![
-            DesiredArtifact {
-                kind: "nftables".to_string(),
-                name: "dynet.nft".to_string(),
-                target: "nft -f -".to_string(),
-                content: nftables_template(),
-            },
-            DesiredArtifact {
-                kind: "iproute2".to_string(),
-                name: "dynet-link-route.sh".to_string(),
-                target: "root shell".to_string(),
-                content: link_route_template(),
-            },
-            DesiredArtifact {
-                kind: "resolver".to_string(),
-                name: "dynet-resolver-ownership.txt".to_string(),
-                target: "/etc/resolv.conf and local resolver manager".to_string(),
-                content: resolver_template(),
-            },
-        ],
+        artifacts,
+        validations,
     }
+}
+
+fn validate_artifacts(artifacts: &[DesiredArtifact]) -> Vec<DesiredValidation> {
+    let nft = find_artifact(artifacts, "dynet.nft");
+    let link_route = find_artifact(artifacts, "dynet-link-route.sh");
+    let resolver = find_artifact(artifacts, "dynet-resolver-ownership.txt");
+
+    vec![
+        required_fragments_validation(
+            "nft-structure",
+            "dynet.nft",
+            nft,
+            &[
+                "table inet dynet",
+                "chain prerouting_dns",
+                "chain output_dns",
+                "meta mark 0xd1e7 accept",
+                "udp dport 53 redirect to :1053",
+                "tcp dport 53 redirect to :1053",
+            ],
+        ),
+        nft_native_validation(nft),
+        required_fragments_validation(
+            "link-route-structure",
+            "dynet-link-route.sh",
+            link_route,
+            &[
+                "ip link show dev dynet0",
+                "ip tuntap add dev dynet0 mode tun",
+                "ip link set dev dynet0 up",
+                "ip rule add fwmark 0xd1e7 lookup 61777 priority 61777",
+                "ip route replace default dev dynet0 table 61777",
+            ],
+        ),
+        forbidden_fragments_validation(
+            "link-route-safety",
+            "dynet-link-route.sh",
+            link_route,
+            &["ip route del default", "ip route replace default\n"],
+        ),
+        required_fragments_validation(
+            "resolver-ownership",
+            "dynet-resolver-ownership.txt",
+            resolver,
+            &[
+                "snapshot the previous resolver state",
+                "restore only the resolver state that dynet previously owned",
+                "mutation is disabled in this render-only slice",
+            ],
+        ),
+    ]
+}
+
+fn find_artifact<'a>(artifacts: &'a [DesiredArtifact], name: &str) -> Option<&'a str> {
+    artifacts
+        .iter()
+        .find(|artifact| artifact.name == name)
+        .map(|artifact| artifact.content.as_str())
+}
+
+fn required_fragments_validation(
+    name: &str,
+    artifact: &str,
+    content: Option<&str>,
+    fragments: &[&str],
+) -> DesiredValidation {
+    let Some(content) = content else {
+        return DesiredValidation {
+            status: LifecycleStatus::Deny,
+            name: name.to_string(),
+            artifact: artifact.to_string(),
+            message: "artifact is missing".to_string(),
+        };
+    };
+    let missing = fragments
+        .iter()
+        .filter(|fragment| !content.contains(**fragment))
+        .copied()
+        .collect::<Vec<_>>();
+    DesiredValidation {
+        status: if missing.is_empty() {
+            LifecycleStatus::Pass
+        } else {
+            LifecycleStatus::Deny
+        },
+        name: name.to_string(),
+        artifact: artifact.to_string(),
+        message: if missing.is_empty() {
+            format!("all {} required fragment(s) are present", fragments.len())
+        } else {
+            format!("missing required fragment(s): {}", missing.join(", "))
+        },
+    }
+}
+
+fn forbidden_fragments_validation(
+    name: &str,
+    artifact: &str,
+    content: Option<&str>,
+    fragments: &[&str],
+) -> DesiredValidation {
+    let Some(content) = content else {
+        return DesiredValidation {
+            status: LifecycleStatus::Deny,
+            name: name.to_string(),
+            artifact: artifact.to_string(),
+            message: "artifact is missing".to_string(),
+        };
+    };
+    let present = fragments
+        .iter()
+        .filter(|fragment| content.contains(**fragment))
+        .copied()
+        .collect::<Vec<_>>();
+    DesiredValidation {
+        status: if present.is_empty() {
+            LifecycleStatus::Pass
+        } else {
+            LifecycleStatus::Deny
+        },
+        name: name.to_string(),
+        artifact: artifact.to_string(),
+        message: if present.is_empty() {
+            format!("no forbidden fragment(s) among {}", fragments.len())
+        } else {
+            format!("forbidden fragment(s) present: {}", present.join(", "))
+        },
+    }
+}
+
+fn nft_native_validation(content: Option<&str>) -> DesiredValidation {
+    let artifact = "dynet.nft".to_string();
+    let name = "nft-native-check".to_string();
+    let Some(content) = content else {
+        return DesiredValidation {
+            status: LifecycleStatus::Deny,
+            name,
+            artifact,
+            message: "artifact is missing".to_string(),
+        };
+    };
+    if std::env::consts::OS != "linux" {
+        return DesiredValidation {
+            status: LifecycleStatus::Warn,
+            name,
+            artifact,
+            message: format!(
+                "nft native parser skipped outside linux: {}",
+                std::env::consts::OS
+            ),
+        };
+    }
+    if !command_exists("nft") {
+        return DesiredValidation {
+            status: LifecycleStatus::Warn,
+            name,
+            artifact,
+            message: "nft native parser skipped because nft is missing".to_string(),
+        };
+    }
+    match command_with_stdin("nft", &["-c", "-f", "-"], content) {
+        Ok(()) => DesiredValidation {
+            status: LifecycleStatus::Pass,
+            name,
+            artifact,
+            message: "nft accepted the rendered ruleset in check mode".to_string(),
+        },
+        Err(message) if nft_permission_error(&message) => DesiredValidation {
+            status: LifecycleStatus::Warn,
+            name,
+            artifact,
+            message: format!("nft check requires CAP_NET_ADMIN; skipped: {message}"),
+        },
+        Err(message) => DesiredValidation {
+            status: LifecycleStatus::Deny,
+            name,
+            artifact,
+            message: format!("nft rejected the rendered ruleset in check mode: {message}"),
+        },
+    }
+}
+
+fn nft_permission_error(message: &str) -> bool {
+    message.contains("Operation not permitted")
+        || message.contains("cache initialization failed")
+        || message.contains("Permission denied")
 }
 
 fn nftables_template() -> String {
@@ -547,6 +757,40 @@ fn command_status(command: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+fn command_with_stdin(command: &str, args: &[&str], input: &str) -> Result<(), String> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start {command}: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| format!("failed to open stdin for {command}"))?;
+    stdin
+        .write_all(input.as_bytes())
+        .map_err(|error| format!("failed to write stdin for {command}: {error}"))?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for {command}: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let message = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        output.status.to_string()
+    };
+    Err(message)
+}
+
 fn command_stdout(command: &str, args: &[&str]) -> Option<String> {
     Command::new(command)
         .args(args)
@@ -556,6 +800,10 @@ fn command_stdout(command: &str, args: &[&str]) -> Option<String> {
         .ok()
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn current_uid() -> Option<String> {
+    command_stdout("id", &["-u"])
 }
 
 fn source_label(source: &ConfigSource) -> String {

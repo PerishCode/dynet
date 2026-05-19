@@ -71,6 +71,11 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
         f"dynet install --check --config {q(config_path)} --format json",
+        (
+            f"sudo dynet install --check --config {q(config_path)} --format json "
+            "| jq -e '.checks[] | select(.name==\"artifact:nft-native-check\" "
+            "and .status==\"pass\")' >/dev/null"
+        ),
         "dynet status --format json",
         "dynet verify --format json",
         "dynet repair --format json",

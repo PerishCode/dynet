@@ -349,6 +349,18 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
             )
             .expect("write string");
         }
+        text.push_str("\ndesired validations:\n");
+        for validation in &desired_state.validations {
+            writeln!(
+                &mut text,
+                "{} {} {} - {}",
+                lifecycle_status_label(validation.status),
+                validation.artifact,
+                validation.name,
+                validation.message
+            )
+            .expect("write string");
+        }
     }
     if !report.diagnostics.is_empty() {
         text.push_str("\nconfig diagnostics:\n");

@@ -54,8 +54,8 @@ When adding or removing a core subtree, update this file in the same change.
 - `dynet install --check`, `status`, `verify`, `repair`, and `uninstall` are
   the first platform ownership lifecycle boundary. Keep them CLI-only for now:
   they may report and prove dynet-owned nft/tun/DNS/routing scope and render
-  desired-state artifacts, but real network mutation must stay gated until VM
-  evidence proves the invariants.
+  desired-state artifacts with non-mutating validation status, but real network
+  mutation must stay gated until VM evidence proves the invariants.
 
 ## Common Commands
 

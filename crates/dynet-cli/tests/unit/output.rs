@@ -11,7 +11,7 @@ use crate::{
         print_report, text_api_capabilities, text_doctor_report, text_lifecycle_report,
         text_plan_report, text_report,
     },
-    platform::{install_report, status_report, LifecycleAction},
+    platform::{install_report, status_report, LifecycleAction, LifecycleStatus},
 };
 
 #[test]
@@ -136,6 +136,8 @@ fn install_check_output_lists_preflight() {
     assert!(text.contains("apply-engine"));
     assert!(text.contains("desired state: dynet-platform/v1alpha1 (render-only)"));
     assert!(text.contains("nftables dynet.nft -> nft -f -"));
+    assert!(text.contains("desired validations:"));
+    assert!(text.contains("artifact:nft-structure"));
     assert_eq!(report.exit_code(), 0);
 }
 
@@ -151,6 +153,10 @@ fn install_check_renders_auditable_platform_templates() {
     let desired_state = report.desired_state.as_ref().unwrap();
 
     assert_eq!(desired_state.mutation_mode, "render-only");
+    assert!(desired_state
+        .validations
+        .iter()
+        .all(|validation| validation.status != LifecycleStatus::Deny));
     assert!(desired_state
         .resources
         .iter()
@@ -168,6 +174,15 @@ fn install_check_renders_auditable_platform_templates() {
             && artifact
                 .content
                 .contains("ip tuntap add dev dynet0 mode tun")));
+    assert!(desired_state
+        .validations
+        .iter()
+        .any(|validation| validation.name == "nft-native-check"));
+    assert!(desired_state
+        .validations
+        .iter()
+        .any(|validation| validation.name == "link-route-safety"
+            && validation.status == LifecycleStatus::Pass));
 }
 
 #[test]
