@@ -28,7 +28,9 @@ network experiments must stay inside disposable guests.
 - `common.py` owns shared SSH, path, libvirt, and guest helper functions.
 - `capture.py` owns packet captures scoped to guest tap interfaces or guest
   internal interfaces.
-- `check.py` owns high-level readiness checks that compose lower-level tools.
+- `check.py` owns high-level readiness checks that compose lower-level tools,
+  including guest default route, resolver, DNS lookup, and HTTPS egress
+  baselines.
 - `cleanup.py` owns resource usage reporting and safe pruning of generated lab
   cache/artifact buckets.
 - `collect.py` owns host/guest evidence bundles for lab runs.
@@ -39,8 +41,9 @@ network experiments must stay inside disposable guests.
 - `net.py` owns explicit libvirt network visibility and start/stop/autostart
   operations.
 - `guest.py` owns guest definitions and lifecycle commands.
-- `smoke.py` owns VM guest cold-start smoke checks that exercise dynet CLI
-  contracts and loopback API health inside a disposable guest.
+- `smoke.py` owns VM guest cold-start smoke checks that exercise guest network
+  access, dynet CLI contracts, and loopback API health inside a disposable
+  guest.
 - `snapshot.py` owns offline qcow2 snapshot create/revert/delete operations.
 - `setup.py` owns staging and installing local dynet artifacts into guests.
 

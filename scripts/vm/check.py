@@ -66,6 +66,55 @@ def guest_check(
     return CheckResult(label=label, ok=True, detail=detail[-1] if detail else "")
 
 
+def guest_network_checks(
+    lab: Lab,
+    guest: str,
+    *,
+    user: str,
+    source: str,
+    dns_name: str,
+    https_url: str,
+) -> list[CheckResult]:
+    return [
+        guest_check(
+            lab,
+            guest,
+            "guest default route",
+            "ip -4 route show default | head -n1 | grep -q . && "
+            "ip -4 route show default | head -n1",
+            user=user,
+            source=source,
+        ),
+        guest_check(
+            lab,
+            guest,
+            "guest resolver config",
+            "test -s /etc/resolv.conf && "
+            "awk 'NF && $1 !~ /^#/ { print; exit }' /etc/resolv.conf",
+            user=user,
+            source=source,
+        ),
+        guest_check(
+            lab,
+            guest,
+            f"guest DNS resolve {dns_name}",
+            f"getent ahostsv4 {q(dns_name)} | awk 'NR==1 {{ print $1; exit }}' | grep -q . && "
+            f"getent ahostsv4 {q(dns_name)} | awk 'NR==1 {{ print $1; exit }}'",
+            user=user,
+            source=source,
+        ),
+        guest_check(
+            lab,
+            guest,
+            f"guest HTTPS {https_url}",
+            "curl -fsS --connect-timeout 5 --max-time 15 --retry 1 "
+            f"-o /dev/null -w 'http=%{{http_code}} remote=%{{remote_ip}}\\n' {q(https_url)}",
+            user=user,
+            source=source,
+        ),
+    ]
+
+
 def check_guest(lab: Lab, args: argparse.Namespace) -> None:
     guest = validate_name(args.guest, "guest")
     network = validate_name(args.network, "network")
@@ -129,6 +178,14 @@ def check_guest(lab: Lab, args: argparse.Namespace) -> None:
                     user=args.user,
                     source=args.source,
                 ),
+                *guest_network_checks(
+                    lab,
+                    guest,
+                    user=args.user,
+                    source=args.source,
+                    dns_name=args.dns_name,
+                    https_url=args.https_url,
+                ),
                 guest_check(
                     lab,
                     guest,
@@ -165,6 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
     guest_parser.add_argument("--snapshot", default="dynet-installed")
     guest_parser.add_argument("--user", default=DEFAULT_VM_USER)
     guest_parser.add_argument("--source", default="lease", choices=["lease", "agent"])
+    guest_parser.add_argument("--dns-name", default="example.com")
+    guest_parser.add_argument("--https-url", default="https://example.com/")
 
     return parser
 

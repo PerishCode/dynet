@@ -55,6 +55,21 @@ def api_health_command(port: int) -> str:
     )
 
 
+def network_access_command(dns_name: str, https_url: str) -> str:
+    return (
+        "set -e; "
+        f"printf %s {q('[network] default route: ')}; "
+        "ip -4 route show default | head -n1; "
+        f"printf %s {q('[network] resolver: ')}; "
+        "awk 'NF && $1 !~ /^#/ { print; exit }' /etc/resolv.conf; "
+        f"printf %s {q(f'[network] dns {dns_name}: ')}; "
+        f"getent ahostsv4 {q(dns_name)} | awk 'NR==1 {{ print $1; exit }}'; "
+        f"printf %s {q(f'[network] https {https_url}: ')}; "
+        "curl -fsS --connect-timeout 5 --max-time 15 --retry 1 "
+        f"-o /dev/null -w 'http=%{{http_code}} remote=%{{remote_ip}}\\n' {q(https_url)}"
+    )
+
+
 def guest(lab: Lab, args: argparse.Namespace) -> None:
     name = validate_name(args.guest, "guest")
     label = validate_name(args.label, "label")
@@ -67,6 +82,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
 
     commands = [
         "dynet version",
+        network_access_command(args.dns_name, args.https_url),
         f"dynet check --config {q(config_path)} --format json",
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
@@ -164,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
     guest_parser.add_argument("--source", default="lease", choices=["lease", "agent"])
     guest_parser.add_argument("--no-api-serve", action="store_true")
     guest_parser.add_argument("--api-port", type=int, default=19977)
+    guest_parser.add_argument("--dns-name", default="example.com")
+    guest_parser.add_argument("--https-url", default="https://example.com/")
     guest_parser.add_argument("--collect", action="store_true")
     guest_parser.add_argument("--capture", action="store_true")
     guest_parser.add_argument("--capture-duration", type=int, default=4)

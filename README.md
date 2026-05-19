@@ -150,5 +150,7 @@ not accidentally installed into a Linux guest.
 runs smoke checks, and finishes with guest readiness checks. If install, smoke,
 or readiness fails after the guest has been touched, `dev guest` collects a
 host/guest evidence bundle by default. Add `--capture-on-failure` when packet
-evidence is useful. `smoke guest` also probes the real loopback API `/health`
-endpoint through `dynet api serve --once`.
+evidence is useful. `check guest` and `smoke guest` verify the guest default
+route, resolver, DNS lookup, and HTTPS egress before dynet network ownership is
+enabled. `smoke guest` also probes the real loopback API `/health` endpoint
+through `dynet api serve --once`.
