@@ -144,6 +144,10 @@ before mutating state. Each guarded bucket has warning and fail thresholds; fail
 thresholds stop growth commands. Remote paths are constrained under the lab root
 and local fetched artifacts are constrained under `dist/lab/`. Cleanup commands
 preview candidates by default and require `--yes` before deletion.
+VM tooling diagnostics are logged to stderr through the shared VM logger. Use
+`--log-level error|warning|info|debug|trace` or `DYNET_VM_LOG_LEVEL` to adjust
+verbosity; `--verbose` implies debug. Stdout is reserved for command results
+such as paths, catalog rows, guest IPs, and check status lines.
 `setup install-bin` rejects non-ELF host binaries by default so a macOS build is
 not accidentally installed into a Linux guest.
 `dev guest` builds the Linux guest artifact with `cargo zigbuild`, installs it,

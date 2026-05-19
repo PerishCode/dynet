@@ -13,6 +13,8 @@ from common import (
     add_lab_options,
     guest_ssh,
     join,
+    lab_cli_args,
+    logger,
     q,
     validate_name,
 )
@@ -101,7 +103,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
     if not args.no_api_serve:
         commands.append(api_health_command(args.api_port))
     for command in commands:
-        print(f"[smoke] {command}", flush=True)
+        logger.info("[smoke] %s", command)
         guest_ssh(lab, name, command, user=args.user, source=args.source)
 
     if args.collect:
@@ -109,11 +111,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
             lab,
             [
                 "collect",
-                "--host",
-                lab.host,
-                "--lab-root",
-                lab.root,
-                *lab_flags(lab),
+                *lab_cli_args(lab),
                 "guest",
                 name,
                 "--label",
@@ -129,11 +127,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
             lab,
             [
                 "capture",
-                "--host",
-                lab.host,
-                "--lab-root",
-                lab.root,
-                *lab_flags(lab),
+                *lab_cli_args(lab),
                 "host",
                 name,
                 "--label",
@@ -152,19 +146,10 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         )
 
 
-def lab_flags(lab: Lab) -> list[str]:
-    flags: list[str] = []
-    if lab.dry_run:
-        flags.append("--dry-run")
-    if lab.verbose:
-        flags.append("--verbose")
-    return flags
-
-
 def run_local(lab: Lab, args: list[str]) -> None:
     script = ROOT / "scripts" / "vmctl.py"
     command = [sys.executable, str(script), *args]
-    print("+ " + join(command), file=sys.stderr)
+    logger.info("run vmctl: %s", join(command))
     subprocess.run(command, check=True)
 
 
@@ -201,7 +186,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

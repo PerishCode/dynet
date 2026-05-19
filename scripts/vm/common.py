@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import posixpath
 import re
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_HOST = os.environ.get("DYNET_LAB_HOST", "fuisp")
 DEFAULT_LAB_ROOT = os.environ.get("DYNET_LAB_ROOT", "/home/dynet-lab")
 DEFAULT_VM_USER = os.environ.get("DYNET_VM_USER", "ubuntu")
+DEFAULT_LOG_LEVEL = os.environ.get("DYNET_VM_LOG_LEVEL", "info")
 LOCAL_LAB_ROOT = ROOT / "dist" / "lab"
 SSH_BASE_OPTS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=8")
 GUEST_SSH_OPTS = (
@@ -28,6 +30,46 @@ GUEST_SSH_OPTS = (
     "StrictHostKeyChecking=accept-new",
 )
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+logger = logging.getLogger("dynet.vm")
+_LOG_LEVELS = {
+    "error": logging.ERROR,
+    "warn": logging.WARNING,
+    "warning": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+    "trace": logging.DEBUG,
+}
+
+
+def selected_log_level(level: str | None = None, *, verbose: bool = False) -> str:
+    level_name = (level or DEFAULT_LOG_LEVEL).lower()
+    if verbose and level is None:
+        level_name = "debug"
+    if level_name == "warn":
+        level_name = "warning"
+    if level_name not in _LOG_LEVELS:
+        choices = ", ".join(["error", "warning", "info", "debug", "trace"])
+        raise CommandError(f"unsupported log level: {level_name}; expected {choices}")
+    return level_name
+
+
+def _install_logger(level: int) -> None:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False
+
+
+def configure_logging(level: str | None = None, *, verbose: bool = False) -> None:
+    try:
+        level_name = selected_log_level(level, verbose=verbose)
+    except CommandError:
+        _install_logger(logging.ERROR)
+        raise
+    log_level = _LOG_LEVELS[level_name]
+    _install_logger(log_level)
 
 
 @dataclass(frozen=True)
@@ -240,7 +282,13 @@ def add_lab_options(parser: argparse.ArgumentParser) -> None:
         "-v",
         "--verbose",
         action="store_true",
-        help="print commands before executing them",
+        help="enable debug diagnostics, including commands before execution",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["error", "warning", "info", "debug", "trace"],
+        default=None,
+        help=f"diagnostic log level (default: {DEFAULT_LOG_LEVEL}; --verbose implies debug)",
     )
 
 
@@ -250,14 +298,18 @@ class Lab:
     root: str = DEFAULT_LAB_ROOT
     dry_run: bool = False
     verbose: bool = False
+    log_level: str = DEFAULT_LOG_LEVEL
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "Lab":
+        configure_logging(args.log_level, verbose=args.verbose)
+        log_level = selected_log_level(args.log_level, verbose=args.verbose)
         return cls(
             host=args.host,
             root=normalize_remote_root(args.lab_root),
             dry_run=args.dry_run,
             verbose=args.verbose,
+            log_level=log_level,
         )
 
     def path(self, *parts: str) -> str:
@@ -275,8 +327,10 @@ class Lab:
         input_text: str | None = None,
         dry_run_ok: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        if self.verbose or self.dry_run:
-            print("+ " + join(argv), file=sys.stderr)
+        if self.dry_run:
+            logger.info("dry-run: %s", join(argv))
+        else:
+            logger.debug("run: %s", join(argv))
         if self.dry_run and dry_run_ok:
             return subprocess.CompletedProcess(argv, 0, "", "")
         return subprocess.run(
@@ -322,6 +376,17 @@ class Lab:
             ["scp", *SSH_BASE_OPTS, f"{self.host}:{remote}", str(local)],
             dry_run_ok=True,
         )
+
+
+def lab_cli_args(lab: Lab) -> list[str]:
+    args = ["--host", lab.host, "--lab-root", lab.root]
+    if lab.dry_run:
+        args.append("--dry-run")
+    if lab.verbose:
+        args.append("--verbose")
+    if lab.log_level != "info":
+        args.extend(["--log-level", lab.log_level])
+    return args
 
 
 def remote_resource_stats(
@@ -467,29 +532,31 @@ def report_resources(
     *,
     enforce: bool = True,
 ) -> None:
-    print(f"[resource] {title}", file=sys.stderr)
+    logger.info("[resource] %s", title)
     for item in stats:
-        print(
-            f"  {item.label}: {item.path} -> {item.files} files, {item.dirs} dirs, {format_bytes(item.bytes)}",
-            file=sys.stderr,
+        logger.info(
+            "  %s: %s -> %s files, %s dirs, %s",
+            item.label,
+            item.path,
+            item.files,
+            item.dirs,
+            format_bytes(item.bytes),
         )
     total_bytes = sum(item.bytes for item in stats)
     total_files = sum(item.files for item in stats)
-    print(
-        f"  total: {total_files} files, {format_bytes(total_bytes)}",
-        file=sys.stderr,
-    )
+    logger.info("  total: %s files, %s", total_files, format_bytes(total_bytes))
     if limit is None:
         return
-    print(
-        f"  thresholds: warn {format_bytes(limit.warn_bytes)}, fail {format_bytes(limit.fail_bytes)}",
-        file=sys.stderr,
+    logger.info(
+        "  thresholds: warn %s, fail %s",
+        format_bytes(limit.warn_bytes),
+        format_bytes(limit.fail_bytes),
     )
     warnings, failures = _resource_messages(title, stats, limit)
     for message in warnings:
-        print(f"warning: {message}", file=sys.stderr)
+        logger.warning("%s", message)
     for message in failures:
-        print(f"fail: {message}", file=sys.stderr)
+        logger.error("%s", message)
     if failures and enforce:
         raise CommandError(f"resource guard failed for {title}")
 

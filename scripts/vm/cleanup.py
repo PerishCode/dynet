@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +17,7 @@ from common import (
     assert_local_lab_path,
     guard_local_resources,
     guard_remote_resources,
+    logger,
     q,
     require_catalog_image,
     safe_local_lab_dir,
@@ -213,7 +213,7 @@ def prune_remote(lab: Lab, args: argparse.Namespace) -> None:
     for candidate in candidates:
         print(candidate)
     if not args.yes:
-        print("preview only; pass --yes to delete", file=sys.stderr)
+        logger.info("preview only; pass --yes to delete")
         return
     delete_remote_candidates(lab, bucket, args)
     guard_remote_resources(
@@ -260,7 +260,7 @@ def prune_local(_: Lab, args: argparse.Namespace) -> None:
     for candidate in candidates:
         print(candidate)
     if not args.yes:
-        print("preview only; pass --yes to delete", file=sys.stderr)
+        logger.info("preview only; pass --yes to delete")
         return
     for candidate in candidates:
         candidate = assert_local_lab_path(candidate)
@@ -414,7 +414,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from pathlib import Path
 
 from common import (
@@ -15,6 +14,7 @@ from common import (
     guest_scp_from_host,
     guest_ssh,
     guard_remote_resources,
+    logger,
     q,
     split_remote_command,
     validate_name,
@@ -52,7 +52,7 @@ def require_guest_elf(local_path: Path, *, allow_any_binary: bool) -> None:
     if result.returncode != 0:
         raise CommandError(f"failed to inspect local binary with file(1): {result.stderr.strip()}")
     description = result.stdout.strip()
-    print(f"local binary: {description}", file=sys.stderr)
+    logger.info("local binary: %s", description)
     if "ELF" not in description:
         raise CommandError(
             "install-bin expects a Linux ELF artifact for the guest; "
@@ -166,7 +166,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

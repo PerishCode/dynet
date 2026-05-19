@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
-from pathlib import Path
 
 from common import (
     CommandError,
@@ -13,6 +11,7 @@ from common import (
     RESOURCE_LIMITS,
     add_lab_options,
     guard_remote_resources,
+    logger,
     q,
     require_catalog_image,
     validate_name,
@@ -141,7 +140,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

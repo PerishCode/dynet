@@ -16,6 +16,8 @@ from common import (
     add_lab_options,
     guard_repo_resources,
     join,
+    lab_cli_args,
+    logger,
     validate_name,
 )
 from setup import require_guest_elf
@@ -58,8 +60,7 @@ def build_artifact(lab: Lab, args: argparse.Namespace) -> Path:
     ]
     if release:
         command.append("--release")
-    if lab.verbose or lab.dry_run:
-        print("+ " + join(command), file=sys.stderr)
+    logger.debug("run: %s", join(command))
     if not lab.dry_run:
         subprocess.run(command, cwd=ROOT, check=True)
         require_guest_elf(artifact, allow_any_binary=False)
@@ -130,12 +131,7 @@ def guest_command(lab: Lab, args: argparse.Namespace) -> None:
 
 
 def lab_args(lab: Lab) -> list[str]:
-    args = ["--host", lab.host, "--lab-root", lab.root]
-    if lab.dry_run:
-        args.append("--dry-run")
-    if lab.verbose:
-        args.append("--verbose")
-    return args
+    return lab_cli_args(lab)
 
 
 def failure_label(label: str) -> str:
@@ -155,9 +151,9 @@ def collect_failure_evidence(
     if args.no_collect_on_failure and not args.capture_on_failure:
         return
     evidence_label = validate_name(args.failure_label or failure_label(label), "label")
-    print(
-        f"[dev] guest loop failed; collecting failure evidence with label {evidence_label}",
-        file=sys.stderr,
+    logger.warning(
+        "guest loop failed; collecting failure evidence with label %s",
+        evidence_label,
     )
     if not args.no_collect_on_failure:
         run_vmctl(
@@ -204,14 +200,15 @@ def collect_failure_evidence(
 
 def run_vmctl(lab: Lab, args: list[str], *, check: bool = True) -> None:
     command = [sys.executable, str(ROOT / "scripts" / "vmctl.py"), *args]
-    print("+ " + join(command), file=sys.stderr)
+    logger.info("run vmctl: %s", join(command))
     if lab.dry_run:
         return
     result = subprocess.run(command, check=check)
     if not check and result.returncode != 0:
-        print(
-            f"[dev] evidence command failed with exit code {result.returncode}: {join(command)}",
-            file=sys.stderr,
+        logger.error(
+            "evidence command failed with exit code %s: %s",
+            result.returncode,
+            join(command),
         )
 
 
@@ -274,7 +271,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

@@ -16,6 +16,9 @@ network experiments must stay inside disposable guests.
   artifact resources must report existing usage at the start, apply warning and
   fail thresholds, and keep all paths inside the configured lab root or local
   `dist/lab/`.
+- Use `logger.xxx` from `common.py` for diagnostics, progress, resource reports,
+  warnings, and errors. Keep stdout for command results that can be piped or
+  parsed, such as paths, catalog rows, guest IPs, and check status lines.
 - Cleanup commands must preview candidates by default, require `--yes` for
   deletion, and operate only on named managed buckets or validated guest/image
   names.
@@ -25,7 +28,8 @@ network experiments must stay inside disposable guests.
 
 ## File Roles
 
-- `common.py` owns shared SSH, path, libvirt, and guest helper functions.
+- `common.py` owns shared SSH, path, logging, libvirt, and guest helper
+  functions.
 - `capture.py` owns packet captures scoped to guest tap interfaces or guest
   internal interfaces.
 - `check.py` owns high-level readiness checks that compose lower-level tools,

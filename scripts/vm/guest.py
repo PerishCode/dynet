@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 
 from common import (
     DEFAULT_VM_USER,
@@ -16,6 +15,7 @@ from common import (
     guest_ssh_command,
     guard_remote_resources,
     join,
+    logger,
     q,
     read_guest_public_key,
     require_catalog_image,
@@ -242,7 +242,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

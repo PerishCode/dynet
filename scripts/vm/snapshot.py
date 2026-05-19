@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 
 from common import (
     CommandError,
@@ -11,6 +10,7 @@ from common import (
     RESOURCE_LIMITS,
     add_lab_options,
     guard_remote_resources,
+    logger,
     q,
     validate_name,
 )
@@ -25,13 +25,13 @@ def report_snapshot_inventory(lab: Lab, disk: str) -> None:
         f"if test -s {q(disk)}; then qemu-img snapshot -l -U {q(disk)} || true; fi",
         capture=True,
     )
-    print("[resource] snapshot inventory", file=sys.stderr)
+    logger.info("[resource] snapshot inventory")
     output = result.stdout.strip()
     if not output:
-        print(f"  {disk}: no disk or no snapshots reported", file=sys.stderr)
+        logger.info("  %s: no disk or no snapshots reported", disk)
         return
     for line in output.splitlines():
-        print(f"  {line}", file=sys.stderr)
+        logger.info("  %s", line)
 
 
 def wait_shutdown_script(name: str, timeout: int, force: bool) -> str:
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

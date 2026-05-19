@@ -48,6 +48,8 @@ When adding or removing a core subtree, update this file in the same change.
 - Keep runtime/protocol implementation details out of `dynet-cli`.
 - Keep reusable config and validation contracts in `dynet-core`.
 - Keep harnesses local to the crate whose boundary they exercise.
+- Keep VM tooling diagnostics on the shared `scripts/vm/common.py` logger.
+  Reserve stdout for command results that callers may parse or compose.
 - The loopback-only `dynet api serve` skeleton is an explicit cold-start API
   boundary. Do not turn it into product runtime/network execution without a
   separate runtime crate/boundary.

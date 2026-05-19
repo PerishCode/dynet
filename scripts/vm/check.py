@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from dataclasses import dataclass
 
 from common import (
@@ -13,6 +12,7 @@ from common import (
     add_lab_options,
     guest_ip,
     guest_ssh,
+    logger,
     q,
     validate_name,
 )
@@ -240,7 +240,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)

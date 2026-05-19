@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 from datetime import datetime, timezone
 
 from common import (
@@ -16,6 +15,7 @@ from common import (
     guard_remote_resources,
     guest_ssh,
     q,
+    logger,
     safe_local_lab_dir,
     validate_name,
 )
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     try:
         main()
     except CommandError as error:
-        print(error, file=sys.stderr)
+        logger.error("%s", error)
         raise SystemExit(2)
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.returncode)
