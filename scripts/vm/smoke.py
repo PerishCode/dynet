@@ -34,6 +34,42 @@ COLD_START_CONFIG = """{
 }
 """
 
+TCP_UDP_MODEL_CONFIG = """{
+  "inbounds": [
+    {
+      "tag": "tcp-in",
+      "type": "tcp",
+      "listen": "127.0.0.1",
+      "listenPort": 1080
+    },
+    {
+      "tag": "udp-in",
+      "type": "udp",
+      "listen": "127.0.0.1",
+      "listenPort": 1053
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "tcp-out",
+      "type": "tcp",
+      "server": "example.com",
+      "serverPort": 443
+    },
+    {
+      "tag": "udp-out",
+      "type": "udp",
+      "server": "1.1.1.1",
+      "serverPort": 53
+    }
+  ],
+  "routes": [
+    { "inbound": "tcp-in", "outbound": "tcp-out" },
+    { "inbound": "udp-in", "outbound": "udp-out" }
+  ]
+}
+"""
+
 
 def api_health_command(port: int) -> str:
     return (
@@ -72,6 +108,37 @@ def network_access_command(dns_name: str, https_url: str) -> str:
     )
 
 
+def tcp_udp_model_command(label: str) -> str:
+    config_path = f"/tmp/dynet-{label}-tcp-udp.json"
+    return (
+        "set -e; "
+        f"config={q(config_path)}; "
+        "cat > \"$config\" <<'EOF_DYNET_TCP_UDP_CONFIG'\n"
+        f"{TCP_UDP_MODEL_CONFIG}EOF_DYNET_TCP_UDP_CONFIG\n"
+        "dynet check --config \"$config\" --format json | "
+        "jq -e '.network.schema == \"dynet-network/v1alpha1\" "
+        "and (.network.inbounds | length) == 2 "
+        "and (.network.outbounds | length) == 2 "
+        "and (.diagnostics | length) == 0 "
+        "and any(.network.inbounds[]; .tag == \"tcp-in\" and (.capabilities | index(\"tcp\"))) "
+        "and any(.network.inbounds[]; .tag == \"udp-in\" and (.capabilities | index(\"udp\"))) "
+        "and any(.network.outbounds[]; .tag == \"tcp-out\" and (.protocolFields | index(\"serverPort\"))) "
+        "and any(.network.outbounds[]; .tag == \"udp-out\" and (.protocolFields | index(\"serverPort\")))' "
+        ">/dev/null; "
+        "dynet doctor --config \"$config\" --format json | "
+        "jq -e '.checks[] | select(.name == \"network-model\" "
+        "and .status == \"pass\" "
+        "and .message == \"2 inbound model(s), 2 outbound model(s)\")' "
+        ">/dev/null; "
+        "dynet plan --config \"$config\" --format json | "
+        "jq -e '.planSummary.rules == 2 "
+        "and .plan.rules[0].inbound == \"tcp-in\" "
+        "and .plan.rules[1].inbound == \"udp-in\"' "
+        ">/dev/null; "
+        "printf '%s\\n' '[model] tcp/udp network model passed'"
+    )
+
+
 def guest(lab: Lab, args: argparse.Namespace) -> None:
     name = validate_name(args.guest, "guest")
     label = validate_name(args.label, "label")
@@ -85,6 +152,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
     commands = [
         "dynet version",
         network_access_command(args.dns_name, args.https_url),
+        tcp_udp_model_command(label),
         f"dynet check --config {q(config_path)} --format json",
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
