@@ -73,6 +73,7 @@ fn run() -> Result<i32, String> {
         }
         CliCommand::Plan(options) => {
             let resolved = config::resolve(options.root, options.config)?;
+            debug!(root = %resolved.root.display(), source = ?resolved.source, "resolved config");
             if matches!(resolved.source, ConfigSource::BuiltIn) {
                 return Err(
                     "plan requires a config; pass --config or create dynet.json".to_string()
@@ -80,6 +81,14 @@ fn run() -> Result<i32, String> {
             }
             let report =
                 PlanReport::from_config(&resolved.root, &resolved.source, &resolved.config);
+            debug!(
+                schema = %report.plan.schema,
+                state_schema = %report.plan.state_schema,
+                rules = report.plan_summary.rules,
+                explicit_rules = report.plan_summary.explicit_rules,
+                dynamic_rules = report.plan_summary.dynamic_rules,
+                "built plan"
+            );
             print_plan_report(&report, options.format)?;
             Ok(report.exit_code())
         }

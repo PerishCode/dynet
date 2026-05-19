@@ -29,14 +29,14 @@ dynet help
 
 `dynet check` exits `1` when the config cannot be read, parsed, or validated.
 `dynet doctor` reports config, platform, tun, resolver, and API bind readiness.
-`dynet plan` compiles explicit route rules and the derived network model into a
-`dynet-plan/v1alpha1` artifact with resolved node references, transport
-intersections, and plan edges. `dynet install --check` validates network
-ownership preflight and lists dynet-owned resources plus render-only nft/tun/DNS
-desired-state artifacts and validation status without mutating system network
-paths. `status`, `verify`, `repair`, and `uninstall` report the current
-dynet-owned resource state; mutating network apply/cleanup is intentionally
-gated until the ownership invariants are proven.
+`dynet plan` compiles explicit route rules into a `dynet-plan/v1alpha1`
+verdict model over `dynet-state/v1alpha1`: inbound context is matched against
+rules, then a verdict action selects an outbound or no route. `dynet
+install --check` validates network ownership preflight and lists dynet-owned
+resources plus render-only nft/tun/DNS desired-state artifacts and validation
+status without mutating system network paths. `status`, `verify`, `repair`, and
+`uninstall` report the current dynet-owned resource state; mutating network
+apply/cleanup is intentionally gated until the ownership invariants are proven.
 `dynet api serve` is a loopback-only HTTP skeleton with `/health` and
 `/v1/capabilities`.
 `dynet run` currently validates config and exits `1` after reporting that

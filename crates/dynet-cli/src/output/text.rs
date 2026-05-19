@@ -118,8 +118,8 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
     if report.deny_count() == 0 {
         writeln!(
             &mut text,
-            "dynet plan passed: {} explicit rule(s), {} edge(s)",
-            report.plan_summary.explicit_rules, report.plan_summary.edges
+            "dynet plan passed: {} explicit rule(s), {} dynamic rule(s)",
+            report.plan_summary.explicit_rules, report.plan_summary.dynamic_rules
         )
         .expect("write string");
     } else {
@@ -145,50 +145,30 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
     .expect("write string");
     writeln!(
         &mut text,
-        "plan model: {} from {}",
-        report.plan.schema, report.plan.network_schema
+        "plan model: {} over {}",
+        report.plan.schema, report.plan.state_schema
     )
     .expect("write string");
-    if let Some(final_outbound) = &report.plan.final_outbound {
-        writeln!(&mut text, "final: {}", plan_node_label(final_outbound)).expect("write string");
-    } else {
-        writeln!(&mut text, "final: unset").expect("write string");
-    }
+    writeln!(
+        &mut text,
+        "default rule: {}",
+        if report.plan_summary.has_default {
+            "set"
+        } else {
+            "unset"
+        }
+    )
+    .expect("write string");
     if !report.plan.rules.is_empty() {
         text.push_str("\nrules:\n");
         for rule in &report.plan.rules {
-            let inbound = rule
-                .inbound
-                .as_ref()
-                .map(plan_node_label)
-                .unwrap_or_else(|| "*".to_string());
             writeln!(
                 &mut text,
-                "{}. inbound {} -> outbound {} [{}] ({})",
+                "{}. match {} -> {} ({})",
                 rule.order,
-                inbound,
-                plan_node_label(&rule.outbound),
-                transports_label(&rule.transports),
+                match_label(&rule.matcher),
+                action_label(&rule.action),
                 rule.reason
-            )
-            .expect("write string");
-        }
-    }
-    if !report.plan.edges.is_empty() {
-        text.push_str("\nedges:\n");
-        for edge in &report.plan.edges {
-            let from = edge
-                .from
-                .as_ref()
-                .map(plan_node_label)
-                .unwrap_or_else(|| "*".to_string());
-            writeln!(
-                &mut text,
-                "{}. {} -> {} [{}]",
-                edge.order,
-                from,
-                plan_node_label(&edge.to),
-                transports_label(&edge.transports)
             )
             .expect("write string");
         }
@@ -376,19 +356,29 @@ fn write_network_model(text: &mut String, network: &dynet_core::NetworkModel) {
     }
 }
 
-fn plan_node_label(node: &dynet_core::PlanNodeRef) -> String {
-    if node.resolved {
-        node.tag.clone()
-    } else {
-        format!("{} unresolved", node.tag)
+fn match_label(matcher: &dynet_core::PlanMatch) -> String {
+    let inbound = matcher.inbound.as_deref().unwrap_or("*");
+    match matcher.transport {
+        Some(transport) => format!(
+            "inbound {inbound}, transport {}",
+            transport_label(transport)
+        ),
+        None => format!("inbound {inbound}"),
     }
 }
 
-fn transports_label(transports: &[String]) -> String {
-    if transports.is_empty() {
-        "none".to_string()
-    } else {
-        transports.join(", ")
+fn action_label(action: &dynet_core::PlanAction) -> String {
+    match action {
+        dynet_core::PlanAction::UseOutbound { tag } => format!("use outbound {tag}"),
+        dynet_core::PlanAction::NoRoute => "no route".to_string(),
+    }
+}
+
+fn transport_label(transport: dynet_core::Transport) -> &'static str {
+    match transport {
+        dynet_core::Transport::Tcp => "tcp",
+        dynet_core::Transport::Udp => "udp",
+        dynet_core::Transport::Dns => "dns",
     }
 }
 

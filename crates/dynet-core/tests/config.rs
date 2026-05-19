@@ -1,4 +1,7 @@
-use dynet_core::{build_plan, validate_config, DynetConfig, Severity};
+use dynet_core::{
+    build_plan, validate_config, AppState, DynetConfig, InboundContext, PlanAction, Severity,
+    VerdictStatus,
+};
 
 #[test]
 fn parses_harness_config() {
@@ -113,23 +116,31 @@ fn builds_explicit_plan() {
     )
     .unwrap();
 
-    let plan = build_plan(&config);
+    let state = AppState::from_config(config);
+    let plan = build_plan(&state);
 
     assert_eq!(plan.schema, "dynet-plan/v1alpha1");
-    assert_eq!(plan.network_schema, "dynet-network/v1alpha1");
+    assert_eq!(plan.state_schema, "dynet-state/v1alpha1");
     assert_eq!(plan.summary().rules, 1);
-    assert_eq!(plan.summary().edges, 1);
+    assert_eq!(plan.summary().explicit_rules, 1);
     assert_eq!(plan.rules[0].order, 1);
+    assert_eq!(plan.rules[0].matcher.inbound.as_deref(), Some("mixed-in"));
     assert_eq!(
-        plan.rules[0].inbound.as_ref().map(|node| node.tag.as_str()),
-        Some("mixed-in")
+        plan.rules[0].action,
+        PlanAction::UseOutbound {
+            tag: "direct".to_string()
+        }
     );
-    assert_eq!(plan.rules[0].outbound.tag, "direct");
+    let verdict = plan.evaluate(&InboundContext::from_inbound("mixed-in"), &state);
+    assert_eq!(verdict.status, VerdictStatus::Accept);
+    assert_eq!(verdict.matched_rule, Some(1));
     assert_eq!(
-        plan.rules[0].transports,
-        vec!["tcp".to_string(), "udp".to_string()]
+        verdict
+            .outbound
+            .as_ref()
+            .map(|outbound| outbound.tag.as_str()),
+        Some("direct")
     );
-    assert_eq!(plan.edges[0].to.tag, "direct");
 }
 
 #[test]
@@ -142,18 +153,24 @@ fn builds_default_plan() {
     )
     .unwrap();
 
-    let plan = build_plan(&config);
+    let state = AppState::from_config(config);
+    let plan = build_plan(&state);
 
+    assert!(plan.summary().has_default);
+    assert!(plan.rules[0].matcher.inbound.is_none());
+    let verdict = plan.evaluate(&InboundContext::any(), &state);
+    assert_eq!(verdict.status, VerdictStatus::Accept);
     assert_eq!(
-        plan.final_outbound.as_ref().map(|node| node.tag.as_str()),
+        verdict
+            .outbound
+            .as_ref()
+            .map(|outbound| outbound.tag.as_str()),
         Some("direct")
     );
-    assert!(plan.rules[0].inbound.is_none());
-    assert!(plan.edges[0].from.is_none());
 }
 
 #[test]
-fn keeps_unresolved_refs() {
+fn denies_missing_outbound() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
             "routes": [{ "inbound": "missing-in", "outbound": "missing-out" }]
@@ -161,9 +178,11 @@ fn keeps_unresolved_refs() {
     )
     .unwrap();
 
-    let plan = build_plan(&config);
+    let state = AppState::from_config(config);
+    let plan = build_plan(&state);
+    let verdict = plan.evaluate(&InboundContext::from_inbound("missing-in"), &state);
 
-    assert!(!plan.rules[0].inbound.as_ref().unwrap().resolved);
-    assert!(!plan.rules[0].outbound.resolved);
-    assert!(plan.edges.is_empty());
+    assert_eq!(verdict.status, VerdictStatus::Deny);
+    assert_eq!(verdict.matched_rule, Some(1));
+    assert!(verdict.outbound.is_none());
 }

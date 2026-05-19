@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::path::Path;
 
 use dynet_core::{
-    build_plan, validate_config, ConfigDiagnostic, ConfigSummary, DynetConfig, NetworkModel, Plan,
-    PlanSummary, Severity,
+    build_plan, validate_config, AppState, ConfigDiagnostic, ConfigSummary, DynetConfig,
+    NetworkModel, Plan, PlanSummary, Severity,
 };
 use serde::Serialize;
 
@@ -222,11 +222,12 @@ impl PlanReport {
         source: &ConfigSource,
         config: &DynetConfig,
     ) -> Self {
-        let plan = build_plan(config);
+        let state = AppState::from_config(config.clone());
+        let plan = build_plan(&state);
         Self {
             root: root.as_ref().display().to_string(),
             config_source: source_label(source),
-            summary: config.summary(),
+            summary: state.summary(),
             plan_summary: plan.summary(),
             diagnostics: validate_config(config),
             plan,

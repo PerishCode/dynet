@@ -132,10 +132,30 @@ def tcp_udp_model_command(label: str) -> str:
         ">/dev/null; "
         "dynet plan --config \"$config\" --format json | "
         "jq -e '.planSummary.rules == 2 "
-        "and .plan.rules[0].inbound == \"tcp-in\" "
-        "and .plan.rules[1].inbound == \"udp-in\"' "
+        "and .plan.schema == \"dynet-plan/v1alpha1\" "
+        "and .plan.stateSchema == \"dynet-state/v1alpha1\" "
+        "and .plan.rules[0].match.inbound == \"tcp-in\" "
+        "and .plan.rules[0].action.type == \"use-outbound\" "
+        "and .plan.rules[0].action.tag == \"tcp-out\" "
+        "and .plan.rules[1].match.inbound == \"udp-in\" "
+        "and .plan.rules[1].action.type == \"use-outbound\" "
+        "and .plan.rules[1].action.tag == \"udp-out\"' "
         ">/dev/null; "
         "printf '%s\\n' '[model] tcp/udp network model passed'"
+    )
+
+
+def log_acceptance_command(config_path: str) -> str:
+    return (
+        "set -e; "
+        "out=/tmp/dynet-log-acceptance.out; "
+        "err=/tmp/dynet-log-acceptance.err; "
+        "rm -f \"$out\" \"$err\"; "
+        f"dynet plan --config {q(config_path)} --log-level debug >\"$out\" 2>\"$err\"; "
+        "grep -q 'resolved config' \"$err\"; "
+        "grep -q 'built plan' \"$err\"; "
+        "grep -q 'dynet plan passed' \"$out\"; "
+        "printf '%s\\n' '[logs] dynet debug tracing passed'"
     )
 
 
@@ -156,6 +176,7 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
         f"dynet check --config {q(config_path)} --format json",
         f"dynet doctor --config {q(config_path)} --format json",
         f"dynet plan --config {q(config_path)} --format json",
+        log_acceptance_command(config_path),
         f"dynet install --check --config {q(config_path)} --format json",
         (
             f"sudo dynet install --check --config {q(config_path)} --format json "
