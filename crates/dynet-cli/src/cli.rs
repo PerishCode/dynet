@@ -325,7 +325,7 @@ Reports:
   doctor reports config, platform, tun, resolver, and API bind readiness.
   install --check reports network ownership preflight, owned-resource scope,
   render-only desired state artifacts, and artifact validation status.
-  plan derives the current explicit route plan and explains rule ordering.
+  plan compiles explicit routes into an explainable plan model.
   status, verify, repair, and uninstall report dynet-owned resource state.
 
 API:

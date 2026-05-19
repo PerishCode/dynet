@@ -82,7 +82,9 @@ fn text_plan_lists_rules() {
     let text = text_plan_report(&report);
 
     assert!(text.contains("dynet plan passed"));
+    assert!(text.contains("plan model: dynet-plan/v1alpha1"));
     assert!(text.contains("inbound mixed-in -> outbound direct"));
+    assert!(text.contains("edges:"));
     assert_eq!(report.exit_code(), 0);
     print_plan_report(&report, OutputFormat::Json).unwrap();
 }

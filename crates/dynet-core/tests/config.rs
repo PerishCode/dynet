@@ -115,8 +115,55 @@ fn builds_explicit_plan() {
 
     let plan = build_plan(&config);
 
+    assert_eq!(plan.schema, "dynet-plan/v1alpha1");
+    assert_eq!(plan.network_schema, "dynet-network/v1alpha1");
     assert_eq!(plan.summary().rules, 1);
+    assert_eq!(plan.summary().edges, 1);
     assert_eq!(plan.rules[0].order, 1);
-    assert_eq!(plan.rules[0].inbound.as_deref(), Some("mixed-in"));
-    assert_eq!(plan.rules[0].outbound, "direct");
+    assert_eq!(
+        plan.rules[0].inbound.as_ref().map(|node| node.tag.as_str()),
+        Some("mixed-in")
+    );
+    assert_eq!(plan.rules[0].outbound.tag, "direct");
+    assert_eq!(
+        plan.rules[0].transports,
+        vec!["tcp".to_string(), "udp".to_string()]
+    );
+    assert_eq!(plan.edges[0].to.tag, "direct");
+}
+
+#[test]
+fn builds_default_plan() {
+    let config: DynetConfig = serde_json::from_str(
+        r#"{
+            "outbounds": [{ "tag": "direct", "type": "direct" }],
+            "routes": [{ "outbound": "direct" }]
+        }"#,
+    )
+    .unwrap();
+
+    let plan = build_plan(&config);
+
+    assert_eq!(
+        plan.final_outbound.as_ref().map(|node| node.tag.as_str()),
+        Some("direct")
+    );
+    assert!(plan.rules[0].inbound.is_none());
+    assert!(plan.edges[0].from.is_none());
+}
+
+#[test]
+fn keeps_unresolved_refs() {
+    let config: DynetConfig = serde_json::from_str(
+        r#"{
+            "routes": [{ "inbound": "missing-in", "outbound": "missing-out" }]
+        }"#,
+    )
+    .unwrap();
+
+    let plan = build_plan(&config);
+
+    assert!(!plan.rules[0].inbound.as_ref().unwrap().resolved);
+    assert!(!plan.rules[0].outbound.resolved);
+    assert!(plan.edges.is_empty());
 }

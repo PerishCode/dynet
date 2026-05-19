@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
 };
 
-use crate::{cli::ApiServeOptions, model::ApiCapabilityReport, output::json_string};
+use crate::{cli::ApiServeOptions, model::ApiCapabilityReport, output::json::json_string};
 
 pub(crate) fn serve(options: ApiServeOptions) -> Result<i32, String> {
     let address: SocketAddr = options

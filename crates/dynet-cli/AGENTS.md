@@ -10,8 +10,9 @@ config discovery, report output, and exit behavior.
   logging, and exit codes.
 - `src/cli.rs` owns command parsing and help text.
 - `src/config.rs` owns config file discovery and filesystem loading.
-- `src/model.rs` and `src/output.rs` own CLI-facing report modeling and
-  text/JSON output.
+- `src/model.rs` owns CLI-facing report modeling.
+- `src/output.rs` exports report printers; `src/output/` owns text and JSON
+  rendering helpers.
 - `src/platform.rs` exports the CLI-only platform lifecycle reports for
   `install --check`, `status`, `verify`, `repair`, and `uninstall`.
 - `src/platform/` owns platform command probes, desired-state templates,
