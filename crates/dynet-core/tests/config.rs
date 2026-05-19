@@ -12,7 +12,7 @@ fn parses_harness_config() {
 }
 
 #[test]
-fn parses_tcp_udp_harness_config() {
+fn parses_tcp_udp_harness() {
     let config: DynetConfig =
         serde_json::from_str(include_str!("../harness/configs/tcp-udp.json")).unwrap();
 
@@ -58,7 +58,7 @@ fn reports_unknown_route_target() {
 }
 
 #[test]
-fn validates_builtin_tcp_udp_payloads() {
+fn validates_tcp_udp_payloads() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
             "inbounds": [{ "tag": "tcp-in", "type": "tcp", "listen": "", "listenPort": 70000 }],
@@ -85,7 +85,7 @@ fn validates_builtin_tcp_udp_payloads() {
 }
 
 #[test]
-fn denies_routes_without_shared_transport_capability() {
+fn denies_mismatched_transport() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
             "inbounds": [{ "tag": "tcp-in", "type": "tcp", "listen": "127.0.0.1", "listenPort": 1080 }],
@@ -103,7 +103,7 @@ fn denies_routes_without_shared_transport_capability() {
 }
 
 #[test]
-fn builds_explicit_plan_from_routes() {
+fn builds_explicit_plan() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
             "inbounds": [{ "tag": "mixed-in", "type": "mixed" }],

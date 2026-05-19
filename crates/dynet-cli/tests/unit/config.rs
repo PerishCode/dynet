@@ -39,7 +39,7 @@ fn discovers_dynet_json_root() {
 }
 
 #[test]
-fn walk_up_finds_nearest_ancestor() {
+fn walk_up_finds_nearest() {
     let root = test_root("walk-up");
     let nested = root.join("a/b/c");
     fs::create_dir_all(&nested).unwrap();
@@ -60,7 +60,7 @@ fn walk_up_finds_nearest_ancestor() {
 }
 
 #[test]
-fn built_in_fallback_for_check_contract() {
+fn builtin_check_fallback() {
     let root = test_root("builtin");
     fs::create_dir_all(&root).unwrap();
 

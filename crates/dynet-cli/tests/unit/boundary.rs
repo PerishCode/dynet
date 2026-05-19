@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 #[test]
-fn cli_does_not_embed_protocol_backend_names() {
+fn cli_avoids_protocol_names() {
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     for path in rust_sources(&source_root) {
         let source = fs::read_to_string(&path).unwrap();
@@ -16,7 +16,7 @@ fn cli_does_not_embed_protocol_backend_names() {
 }
 
 #[test]
-fn core_harness_fixtures_stay_outside_cli_crate() {
+fn harness_stays_outside_cli() {
     let cli_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     assert!(!cli_root.join("harness").exists());
     assert!(cli_root

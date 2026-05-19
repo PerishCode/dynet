@@ -5,7 +5,11 @@ contracts, and plan derivation contracts.
 
 ## Directory Rules
 
-- `src/lib.rs` owns the public core API for the current skeleton.
+- `src/lib.rs` exports the public core API; keep implementation details in
+  focused modules.
+- `src/model.rs`, `src/capability.rs`, `src/validate.rs`, and `src/plan.rs`
+  own the current domain model, capability inference, validation, and plan
+  derivation boundaries.
 - `harness/configs/` contains representative config fixtures owned by this
   crate.
 - `tests/` validates config and validation contracts.

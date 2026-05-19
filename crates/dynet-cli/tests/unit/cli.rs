@@ -150,7 +150,7 @@ fn command_reports_log_level() {
 }
 
 #[test]
-fn flags_without_command_default_to_check() {
+fn flags_default_to_check() {
     let CliCommand::Check(options) =
         parse_args(vec!["--config".into(), "dynet.json".into()]).unwrap()
     else {

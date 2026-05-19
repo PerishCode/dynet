@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[test]
-fn text_report_summarizes_valid_config() {
+fn text_report_summarizes_config() {
     let config = DynetConfig::default();
     let report = Report::from_config(
         ReportMode::Check,
@@ -55,7 +55,7 @@ fn text_report_lists_diagnostics() {
 }
 
 #[test]
-fn print_report_accepts_json_format() {
+fn print_report_accepts_json() {
     let config = DynetConfig::default();
     let report = Report::from_config(
         ReportMode::Run,
@@ -68,7 +68,7 @@ fn print_report_accepts_json_format() {
 }
 
 #[test]
-fn text_plan_report_lists_explicit_rules() {
+fn text_plan_lists_rules() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
             "inbounds": [{ "tag": "mixed-in", "type": "mixed" }],
@@ -88,7 +88,7 @@ fn text_plan_report_lists_explicit_rules() {
 }
 
 #[test]
-fn text_report_lists_dynamic_tcp_udp_models() {
+fn text_report_lists_models() {
     let config: DynetConfig = serde_json::from_str(include_str!(
         "../../../dynet-core/harness/configs/tcp-udp.json"
     ))
@@ -109,7 +109,7 @@ fn text_report_lists_dynamic_tcp_udp_models() {
 }
 
 #[test]
-fn text_doctor_report_lists_checks() {
+fn doctor_report_lists_checks() {
     let config = DynetConfig::default();
     let report = DoctorReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config);
 
@@ -124,7 +124,7 @@ fn text_doctor_report_lists_checks() {
 }
 
 #[test]
-fn api_capability_output_lists_endpoints() {
+fn api_output_lists_endpoints() {
     let report = ApiCapabilityReport::current();
     let text = text_api_capabilities(&report);
 
@@ -134,7 +134,7 @@ fn api_capability_output_lists_endpoints() {
 }
 
 #[test]
-fn lifecycle_output_lists_owned_resources() {
+fn lifecycle_lists_resources() {
     let report = status_report(LifecycleAction::Status);
     let text = text_lifecycle_report(&report);
 
@@ -145,7 +145,7 @@ fn lifecycle_output_lists_owned_resources() {
 }
 
 #[test]
-fn install_check_output_lists_preflight() {
+fn install_lists_preflight() {
     let config = DynetConfig::default();
     let report = install_report(
         PathBuf::from(".").as_path(),
@@ -165,7 +165,7 @@ fn install_check_output_lists_preflight() {
 }
 
 #[test]
-fn install_check_renders_auditable_platform_templates() {
+fn install_renders_templates() {
     let config = DynetConfig::default();
     let report = install_report(
         PathBuf::from(".").as_path(),
@@ -209,7 +209,7 @@ fn install_check_renders_auditable_platform_templates() {
 }
 
 #[test]
-fn install_apply_is_gated_until_platform_ownership_is_proven() {
+fn install_apply_is_gated() {
     let config = DynetConfig::default();
     let report = install_report(
         PathBuf::from(".").as_path(),
@@ -224,7 +224,7 @@ fn install_apply_is_gated_until_platform_ownership_is_proven() {
 }
 
 #[test]
-fn lifecycle_output_covers_cleanup_actions() {
+fn lifecycle_covers_cleanup() {
     for action in [
         LifecycleAction::Verify,
         LifecycleAction::Repair,
