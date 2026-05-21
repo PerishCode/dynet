@@ -45,9 +45,17 @@ network experiments must stay inside disposable guests.
 - `net.py` owns explicit libvirt network visibility and start/stop/autostart
   operations.
 - `guest.py` owns guest definitions and lifecycle commands.
+- `private_probe.py` owns VM guest execution of sanitized Private cascade
+  acceptance probes. It may use local provider material to generate temporary
+  dynet-native configs, but retained artifacts must remain sanitized and secret
+  configs must be written only to guest temp files and cleaned after probing.
+- `private_runtime.py` owns VM guest execution of sanitized Private cascade
+  runtime acceptance. It verifies `dynet run` takeover, DNS hijack, scoped
+  quality-driven dialer selection, TUN packet observation, cleanup, and retained
+  sanitized runtime reports without retaining secret configs.
 - `smoke.py` owns VM guest cold-start smoke checks that exercise guest network
-  access, dynet CLI contracts, and loopback API health inside a disposable
-  guest.
+  access, dynet CLI contracts, loopback API health, and the minimal
+  install/run/uninstall TUN + DNS runtime boundary inside a disposable guest.
 - `snapshot.py` owns offline qcow2 snapshot create/revert/delete operations.
 - `setup.py` owns staging and installing local dynet artifacts into guests.
 

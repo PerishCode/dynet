@@ -1,0 +1,71 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "type": "tun"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    },
+    {
+      "tag": "proxy",
+      "type": "manual",
+      "capabilities": [
+        "tcp",
+        "udp",
+        "dns",
+        "ip-target",
+        "domain-target"
+      ],
+      "metadata": {
+        "purpose": "personal static proxy bucket"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "inbound": "tun-in",
+      "ipCidr": "192.168.0.0/16",
+      "outbound": "direct"
+    },
+    {
+      "domainSuffix": "github.com",
+      "outbound": "proxy",
+      "dnsSensitive": true
+    },
+    {
+      "domainSuffix": "githubusercontent.com",
+      "outbound": "proxy",
+      "dnsSensitive": true
+    },
+    {
+      "domainKeyword": "openai",
+      "outbound": "proxy",
+      "dnsSensitive": true
+    },
+    {
+      "domainSuffix": "claude.ai",
+      "outbound": "proxy",
+      "dnsSensitive": true
+    },
+    {
+      "transport": "dns",
+      "ipCidr": "8.8.8.8/32",
+      "outbound": "proxy",
+      "dnsSensitive": true
+    },
+    {
+      "domainSuffix": "ad.com",
+      "action": "reject"
+    },
+    {
+      "outbound": "direct"
+    }
+  ]
+}

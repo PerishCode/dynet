@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::{DynetConfig, ModeledNode, NetworkModel, NetworkNode, NodeRole};
+use crate::{
+    DnsChain, DnsModel, DynetConfig, ModeledDnsChain, ModeledNode, NetworkModel, NetworkNode,
+    NodeRole, Transport,
+};
 
 pub(crate) const CAP_TCP: &str = "tcp";
 pub(crate) const CAP_UDP: &str = "udp";
@@ -36,6 +39,13 @@ pub(crate) fn network_model(config: &DynetConfig) -> NetworkModel {
     }
 }
 
+pub(crate) fn dns_model(config: &DynetConfig) -> DnsModel {
+    DnsModel {
+        schema: "dynet-dns/v1alpha1".to_string(),
+        chains: config.dns.chains.iter().map(model_dns_chain).collect(),
+    }
+}
+
 pub(crate) fn capabilities_for(node: &NetworkNode) -> Vec<String> {
     let mut capabilities = BTreeSet::<String>::new();
     for capability in implied_capabilities(node.kind.as_str()) {
@@ -48,6 +58,21 @@ pub(crate) fn capabilities_for(node: &NetworkNode) -> Vec<String> {
         }
     }
     capabilities.into_iter().collect()
+}
+
+pub fn node_capabilities(node: &NetworkNode) -> Vec<String> {
+    capabilities_for(node)
+}
+
+pub fn node_supports_transport(node: &NetworkNode, transport: Transport) -> bool {
+    let capability = match transport {
+        Transport::Tcp => CAP_TCP,
+        Transport::Udp => CAP_UDP,
+        Transport::Dns => CAP_DNS,
+    };
+    capabilities_for(node)
+        .iter()
+        .any(|item| item.as_str() == capability)
 }
 
 pub(crate) fn transport_capabilities(node: &NetworkNode) -> BTreeSet<String> {
@@ -68,9 +93,24 @@ fn model_node(role: NodeRole, node: &NetworkNode) -> ModeledNode {
         id,
         fingerprint: fingerprint(role, node),
         kind: node.kind.clone(),
+        labels: normalized_unique(node.labels.iter().map(String::as_str)),
         capabilities: capabilities_for(node),
         constraints: normalized_unique(node.constraints.iter().map(String::as_str)),
-        protocol_fields: node.protocol.keys().cloned().collect(),
+        payload_fields: node.payload.keys().cloned().collect(),
+    }
+}
+
+fn model_dns_chain(chain: &DnsChain) -> ModeledDnsChain {
+    ModeledDnsChain {
+        tag: chain.tag.clone(),
+        kind: chain.kind.clone(),
+        endpoint: chain.endpoint.clone(),
+        bootstrap_ips: chain
+            .bootstrap_ips
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        protocol_fields: chain.protocol.keys().cloned().collect(),
     }
 }
 
@@ -94,6 +134,35 @@ fn implied_capabilities(kind: &str) -> &'static [&'static str] {
             CAP_DOMAIN_TARGET,
             CAP_PROBEABLE,
         ],
+        "vmess" => &[
+            CAP_TCP,
+            CAP_DNS,
+            CAP_IP_TARGET,
+            CAP_DOMAIN_TARGET,
+            CAP_PROBEABLE,
+        ],
+        "ss" => &[
+            CAP_TCP,
+            CAP_DNS,
+            CAP_IP_TARGET,
+            CAP_DOMAIN_TARGET,
+            CAP_PROBEABLE,
+        ],
+        "trojan" => &[
+            CAP_TCP,
+            CAP_DNS,
+            CAP_IP_TARGET,
+            CAP_DOMAIN_TARGET,
+            CAP_PROBEABLE,
+        ],
+        "dialer" => &[
+            CAP_TCP,
+            CAP_DNS,
+            CAP_IP_TARGET,
+            CAP_DOMAIN_TARGET,
+            CAP_PROBEABLE,
+        ],
+        "plan" => &[],
         _ => &[],
     }
 }
@@ -118,7 +187,12 @@ fn fingerprint(role: NodeRole, node: &NetworkNode) -> String {
     canonical.push('\n');
     canonical.push_str(node.kind.as_str());
     canonical.push('\n');
-    for (key, value) in &node.protocol {
+    for label in normalized_unique(node.labels.iter().map(String::as_str)) {
+        canonical.push_str("label=");
+        canonical.push_str(&label);
+        canonical.push('\n');
+    }
+    for (key, value) in &node.payload {
         canonical.push_str(key);
         canonical.push('=');
         canonical.push_str(&value.to_string());

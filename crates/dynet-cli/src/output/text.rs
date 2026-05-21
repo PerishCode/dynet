@@ -2,7 +2,12 @@ use std::fmt::Write as _;
 
 use crate::{
     model::{ApiCapabilityReport, DoctorReport, DoctorStatus, PlanReport, Report, ReportMode},
-    platform::{LifecycleAction, LifecycleReport, LifecycleStatus},
+    platform::LifecycleReport,
+};
+
+use super::labels::{
+    action_label, doctor_status_label, lifecycle_action_label, lifecycle_status_label, match_label,
+    severity_label, verdict_status_label,
 };
 
 pub(crate) fn text_report(report: &Report) -> String {
@@ -30,13 +35,9 @@ pub(crate) fn text_report(report: &Report) -> String {
         report.config_source, report.root
     )
     .expect("write string");
-    writeln!(
-        &mut text,
-        "summary: inbounds {}, outbounds {}, routes {}",
-        report.summary.inbounds, report.summary.outbounds, report.summary.routes
-    )
-    .expect("write string");
+    write_summary(&mut text, report.summary);
     write_network_model(&mut text, &report.network);
+    write_dns_model(&mut text, &report.dns);
 
     if !report.diagnostics.is_empty() {
         text.push_str("\ndiagnostics:\n");
@@ -79,13 +80,9 @@ pub(crate) fn text_doctor_report(report: &DoctorReport) -> String {
         report.config_source, report.root
     )
     .expect("write string");
-    writeln!(
-        &mut text,
-        "summary: inbounds {}, outbounds {}, routes {}",
-        report.summary.inbounds, report.summary.outbounds, report.summary.routes
-    )
-    .expect("write string");
+    write_summary(&mut text, report.summary);
     write_network_model(&mut text, &report.network);
+    write_dns_model(&mut text, &report.dns);
     text.push_str("\nchecks:\n");
     for check in &report.checks {
         writeln!(
@@ -118,8 +115,11 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
     if report.deny_count() == 0 {
         writeln!(
             &mut text,
-            "dynet plan passed: {} explicit rule(s), {} dynamic rule(s)",
-            report.plan_summary.explicit_rules, report.plan_summary.dynamic_rules
+            "dynet plan passed: {} explicit rule(s), {} dynamic rule(s), {} reject rule(s), {} DNS-sensitive rule(s)",
+            report.plan_summary.explicit_rules,
+            report.plan_summary.dynamic_rules,
+            report.plan_summary.reject_rules,
+            report.plan_summary.dns_sensitive_rules
         )
         .expect("write string");
     } else {
@@ -137,12 +137,7 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
         report.config_source, report.root
     )
     .expect("write string");
-    writeln!(
-        &mut text,
-        "summary: inbounds {}, outbounds {}, routes {}",
-        report.summary.inbounds, report.summary.outbounds, report.summary.routes
-    )
-    .expect("write string");
+    write_summary(&mut text, report.summary);
     writeln!(
         &mut text,
         "plan model: {} over {}",
@@ -162,12 +157,18 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
     if !report.plan.rules.is_empty() {
         text.push_str("\nrules:\n");
         for rule in &report.plan.rules {
+            let dns_sensitive = if rule.dns_sensitive {
+                " [dns-sensitive]"
+            } else {
+                ""
+            };
             writeln!(
                 &mut text,
-                "{}. match {} -> {} ({})",
+                "{}. match {} -> {}{} ({})",
                 rule.order,
                 match_label(&rule.matcher),
                 action_label(&rule.action),
+                dns_sensitive,
                 rule.reason
             )
             .expect("write string");
@@ -255,12 +256,7 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
         .expect("write string");
     }
     if let Some(summary) = report.summary {
-        writeln!(
-            &mut text,
-            "summary: inbounds {}, outbounds {}, routes {}",
-            summary.inbounds, summary.outbounds, summary.routes
-        )
-        .expect("write string");
+        write_summary(&mut text, summary);
     }
     text.push_str("\nchecks:\n");
     for check in &report.checks {
@@ -371,6 +367,15 @@ pub(crate) fn text_lifecycle_report(report: &LifecycleReport) -> String {
     text
 }
 
+fn write_summary(text: &mut String, summary: dynet_core::ConfigSummary) {
+    writeln!(
+        text,
+        "summary: inbounds {}, outbounds {}, rules {}, routes {}, dns chains {}",
+        summary.inbounds, summary.outbounds, summary.rules, summary.routes, summary.dns_chains
+    )
+    .expect("write string");
+}
+
 fn write_network_model(text: &mut String, network: &dynet_core::NetworkModel) {
     writeln!(text, "network model: {}", network.schema).expect("write string");
     if !network.inbounds.is_empty() {
@@ -401,70 +406,13 @@ fn write_network_model(text: &mut String, network: &dynet_core::NetworkModel) {
     }
 }
 
-fn match_label(matcher: &dynet_core::PlanMatch) -> String {
-    let inbound = matcher.inbound.as_deref().unwrap_or("*");
-    let mut parts = vec![format!("inbound {inbound}")];
-    if let Some(transport) = matcher.transport {
-        parts.push(format!("transport {}", transport_label(transport)));
-    }
-    if let Some(domain) = &matcher.domain {
-        parts.push(format!("domain {domain}"));
-    }
-    parts.join(", ")
-}
-
-fn action_label(action: &dynet_core::PlanAction) -> String {
-    match action {
-        dynet_core::PlanAction::UseOutbound { tag } => format!("use outbound {tag}"),
-        dynet_core::PlanAction::NoRoute => "no route".to_string(),
-    }
-}
-
-fn transport_label(transport: dynet_core::Transport) -> &'static str {
-    match transport {
-        dynet_core::Transport::Tcp => "tcp",
-        dynet_core::Transport::Udp => "udp",
-        dynet_core::Transport::Dns => "dns",
-    }
-}
-
-fn lifecycle_action_label(action: LifecycleAction) -> &'static str {
-    match action {
-        LifecycleAction::Install => "install",
-        LifecycleAction::Status => "status",
-        LifecycleAction::Verify => "verify",
-        LifecycleAction::Repair => "repair",
-        LifecycleAction::Uninstall => "uninstall",
-    }
-}
-
-fn verdict_status_label(status: dynet_core::VerdictStatus) -> &'static str {
-    match status {
-        dynet_core::VerdictStatus::Accept => "accept",
-        dynet_core::VerdictStatus::Deny => "deny",
-        dynet_core::VerdictStatus::NoMatch => "no-match",
-    }
-}
-
-fn lifecycle_status_label(status: LifecycleStatus) -> &'static str {
-    match status {
-        LifecycleStatus::Pass => "pass",
-        LifecycleStatus::Warn => "warning",
-        LifecycleStatus::Deny => "deny",
-    }
-}
-
-fn severity_label(severity: dynet_core::Severity) -> &'static str {
-    match severity {
-        dynet_core::Severity::Deny => "deny",
-        dynet_core::Severity::Warning => "warning",
-    }
-}
-
-fn doctor_status_label(status: DoctorStatus) -> &'static str {
-    match status {
-        DoctorStatus::Pass => "pass",
-        DoctorStatus::Warn => "warning",
-        DoctorStatus::Deny => "deny",
+fn write_dns_model(text: &mut String, dns: &dynet_core::DnsModel) {
+    writeln!(text, "dns model: {}", dns.schema).expect("write string");
+    if !dns.chains.is_empty() {
+        text.push_str("dns chains:\n");
+        for chain in &dns.chains {
+            let endpoint = chain.endpoint.as_deref().unwrap_or("-");
+            writeln!(text, "- {} {} {}", chain.tag, chain.kind, endpoint).expect("write string");
+        }
     }
 }

@@ -1,0 +1,85 @@
+{
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "type": "tun"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    },
+    {
+      "tag": "hk",
+      "type": "manual",
+      "capabilities": [
+        "tcp",
+        "udp",
+        "dns",
+        "ip-target",
+        "domain-target"
+      ],
+      "labels": [
+        "proxy",
+        "hk"
+      ]
+    },
+    {
+      "tag": "jp",
+      "type": "manual",
+      "capabilities": [
+        "tcp",
+        "udp",
+        "dns",
+        "ip-target",
+        "domain-target"
+      ],
+      "labels": [
+        "proxy",
+        "jp"
+      ]
+    },
+    {
+      "tag": "auto-proxy",
+      "type": "plan",
+      "capabilities": [
+        "dns"
+      ],
+      "labels": [
+        "proxy",
+        "dynamic"
+      ],
+      "payload": {
+        "strategy": {
+          "source": "internal",
+          "key": "sticky",
+          "version": "",
+          "options": {}
+        },
+        "selection": {
+          "edges": [
+            {
+              "type": "candidate",
+              "to": "hk"
+            },
+            {
+              "type": "candidate",
+              "to": "jp"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "routes": [
+    {
+      "domainSuffix": "github.com",
+      "outbound": "auto-proxy",
+      "dnsSensitive": true
+    },
+    {
+      "outbound": "direct"
+    }
+  ]
+}

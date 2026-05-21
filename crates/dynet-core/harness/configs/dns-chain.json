@@ -1,0 +1,33 @@
+{
+  "dns": {
+    "chains": [
+      {
+        "tag": "cloudflare-doh",
+        "type": "doh",
+        "endpoint": "https://cloudflare-dns.com/dns-query",
+        "bootstrapIps": [
+          "1.1.1.1",
+          "1.0.0.1"
+        ]
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "tag": "tun-in",
+      "type": "tun"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "routes": [
+    {
+      "inbound": "tun-in",
+      "outbound": "direct"
+    }
+  ]
+}

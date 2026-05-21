@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::path::Path;
 
 use dynet_core::{
-    build_plan, validate_config, AppState, ConfigDiagnostic, ConfigSummary, DnsReverseIndex,
-    DynetConfig, InboundContext, NetworkModel, Plan, PlanSummary, Severity, Verdict,
+    build_plan, validate_config, AppState, ConfigDiagnostic, ConfigSummary, DnsModel,
+    DnsReverseIndex, DynetConfig, InboundContext, NetworkModel, Plan, PlanSummary, Severity,
+    Verdict,
 };
 use serde::Serialize;
 
@@ -41,6 +42,7 @@ pub(crate) struct Report {
     pub(crate) config_source: String,
     pub(crate) summary: ConfigSummary,
     pub(crate) network: NetworkModel,
+    pub(crate) dns: DnsModel,
     pub(crate) diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -51,6 +53,7 @@ pub(crate) struct DoctorReport {
     pub(crate) config_source: String,
     pub(crate) summary: ConfigSummary,
     pub(crate) network: NetworkModel,
+    pub(crate) dns: DnsModel,
     pub(crate) diagnostics: Vec<ConfigDiagnostic>,
     pub(crate) checks: Vec<DoctorCheck>,
 }
@@ -102,6 +105,7 @@ impl Report {
             config_source: source_label(source),
             summary: config.summary(),
             network: config.network_model(),
+            dns: config.dns_model(),
             diagnostics: validate_config(config),
         }
     }
@@ -182,6 +186,7 @@ impl DoctorReport {
             },
         });
         let network = config.network_model();
+        let dns = config.dns_model();
         checks.push(DoctorCheck {
             status: DoctorStatus::Pass,
             name: "network-model".to_string(),
@@ -191,6 +196,11 @@ impl DoctorReport {
                 network.outbounds.len()
             ),
         });
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            name: "dns-model".to_string(),
+            message: format!("{} DNS chain(s)", dns.chains.len()),
+        });
         checks.extend(environment_checks());
 
         Self {
@@ -198,6 +208,7 @@ impl DoctorReport {
             config_source: source_label(source),
             summary: config.summary(),
             network,
+            dns,
             diagnostics,
             checks,
         }

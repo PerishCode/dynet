@@ -1,6 +1,6 @@
 use std::{
     env,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     path::{Component, Path, PathBuf},
 };
 
@@ -108,6 +108,33 @@ impl TakeoverConfig {
 
     pub(crate) fn nft_main_config(&self) -> &str {
         &self.nft_main_config
+    }
+
+    pub(crate) fn runtime_settings(
+        &self,
+        upstream_dns: SocketAddr,
+    ) -> Result<dynet_runtime::TakeoverSettings, String> {
+        Ok(dynet_runtime::TakeoverSettings {
+            nft_table: self.nft_table.clone(),
+            nft_main_config: PathBuf::from(&self.nft_main_config),
+            nft_dropin_dir: PathBuf::from(&self.nft_dropin_dir),
+            nft_dropin_path: PathBuf::from(&self.nft_dropin_path),
+            tun_name: self.tun_name.clone(),
+            bypass_mark: parse_route_mark(&self.route_mark)
+                .map_err(|_| "route mark must be u32 decimal or 0x-prefixed hex".to_string())?,
+            route_table: self
+                .route_table
+                .parse()
+                .map_err(|_| "route table must be a positive u32 integer".to_string())?,
+            dns_bind: self
+                .dns_endpoint()
+                .parse()
+                .map_err(|error| format!("failed to build DNS bind endpoint: {error}"))?,
+            upstream_dns,
+            runtime_dir: PathBuf::from(&self.runtime_dir),
+            state_dir: PathBuf::from(&self.state_dir),
+            manifest_path: PathBuf::from(&self.manifest_path),
+        })
     }
 }
 
@@ -251,14 +278,6 @@ pub(super) fn plan(config: &TakeoverConfig) -> TakeoverPlan {
                 "reload-nftables",
                 "reload nftables through host drop-in mechanism",
             ),
-            step(
-                "apply",
-                "install-policy-route",
-                format!(
-                    "install fwmark {} lookup {} for {}",
-                    config.route_mark, config.route_table, config.tun_name
-                ),
-            ),
             step("prove", "dns-hijack", "prove normal DNS reaches dynet listener"),
         ],
         rollback_steps: vec![
@@ -271,11 +290,6 @@ pub(super) fn plan(config: &TakeoverConfig) -> TakeoverPlan {
                 "rollback",
                 "reload-nftables",
                 "reload nftables after removing dynet drop-in",
-            ),
-            step(
-                "rollback",
-                "remove-policy-route",
-                format!("remove fwmark {} lookup {}", config.route_mark, config.route_table),
             ),
             step("rollback", "remove-tun", format!("delete tun {}", config.tun_name)),
             step("rollback", "restore-resolver", "restore manifest-owned resolver snapshot"),
@@ -450,14 +464,17 @@ fn validate_absolute_path(value: &str) -> Result<(), String> {
 }
 
 fn validate_route_mark(value: &str) -> Result<(), String> {
-    let parsed = value
+    parse_route_mark(value)
+        .map(|_| ())
+        .map_err(|_| "DYNET_ROUTE_MARK must be u32 decimal or 0x-prefixed hex".to_string())
+}
+
+fn parse_route_mark(value: &str) -> Result<u32, std::num::ParseIntError> {
+    value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
         .map(|hex| u32::from_str_radix(hex, 16))
-        .unwrap_or_else(|| value.parse::<u32>());
-    parsed
-        .map(|_| ())
-        .map_err(|_| "DYNET_ROUTE_MARK must be u32 decimal or 0x-prefixed hex".to_string())
+        .unwrap_or_else(|| value.parse::<u32>())
 }
 
 fn validate_u16(value: &str, label: &str) -> Result<(), String> {

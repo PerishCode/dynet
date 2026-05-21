@@ -14,7 +14,7 @@ pub(super) fn install_checks(diagnostics: &[ConfigDiagnostic]) -> Vec<LifecycleC
         platform_check(),
         root_check(),
         command_check("nft", "nftables atomic ruleset loading"),
-        command_check("ip", "policy route and tun visibility"),
+        command_check("ip", "tun visibility"),
         tun_check(),
         resolver_check(),
     ]

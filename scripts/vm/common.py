@@ -687,11 +687,15 @@ def guest_ssh(
     *,
     user: str = DEFAULT_VM_USER,
     source: str = "lease",
+    check: bool = True,
     capture: bool = False,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return lab.ssh(
         join(guest_ssh_command(lab, name, user=user, command=command, source=source)),
+        check=check,
         capture=capture,
+        input_text=input_text,
         dry_run_ok=True,
     )
 

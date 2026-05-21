@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::cli::{
-    help_text, parse_args, ApiCommand, ApiOptions, ApiServeOptions, CliCommand, CommandOptions,
-    InstallOptions, LifecycleOptions, LogLevel, OutputFormat,
+    help_text, parse_args, ApiCommand, ApiOptions, ApiServeOptions, CliCommand, InstallOptions,
+    LifecycleOptions, LogLevel, OutputFormat,
 };
 
 #[test]
@@ -32,15 +32,45 @@ fn parses_check_options() {
 
 #[test]
 fn parses_run_options() {
+    let CliCommand::Run(options) = parse_args(vec![
+        "run".into(),
+        "-c".into(),
+        "proxy.json".into(),
+        "--max-dns-queries=1".into(),
+        "--max-tun-packets".into(),
+        "1".into(),
+        "--max-tcp-sessions=2".into(),
+        "--max-udp-sessions".into(),
+        "3".into(),
+        "--timeout".into(),
+        "10".into(),
+        "--upstream-dns".into(),
+        "8.8.8.8:53".into(),
+        "--quality-state".into(),
+        ".task/resources/quality.json".into(),
+        "--experimental-tcp-forward".into(),
+        "--experimental-udp-forward".into(),
+    ])
+    .unwrap() else {
+        panic!("expected run command");
+    };
+
+    assert_eq!(options.command.root, PathBuf::from("."));
+    assert_eq!(options.command.config, Some(PathBuf::from("proxy.json")));
+    assert_eq!(options.command.format, OutputFormat::Text);
+    assert_eq!(options.command.log_level, LogLevel::Off);
+    assert_eq!(options.max_dns_queries, Some(1));
+    assert_eq!(options.max_tun_packets, Some(1));
+    assert_eq!(options.max_tcp_sessions, Some(2));
+    assert_eq!(options.max_udp_sessions, Some(3));
+    assert_eq!(options.timeout_secs, Some(10));
+    assert_eq!(options.upstream_dns.as_deref(), Some("8.8.8.8:53"));
     assert_eq!(
-        parse_args(vec!["run".into(), "-c".into(), "proxy.json".into()]).unwrap(),
-        CliCommand::Run(CommandOptions {
-            root: PathBuf::from("."),
-            config: Some(PathBuf::from("proxy.json")),
-            format: OutputFormat::Text,
-            log_level: LogLevel::Off,
-        })
+        options.quality_state,
+        Some(PathBuf::from(".task/resources/quality.json"))
     );
+    assert!(options.experimental_tcp_forward);
+    assert!(options.experimental_udp_forward);
 }
 
 #[test]
@@ -84,6 +114,32 @@ fn parses_plan_options() {
     assert_eq!(options.dns_answers, ["example.com=93.184.216.34"]);
     assert_eq!(options.dns_now_secs, Some(100));
     assert_eq!(options.dns_ttl_secs, 60);
+}
+
+#[test]
+fn parses_probe_options() {
+    let CliCommand::Probe(options) = parse_args(vec![
+        "probe".into(),
+        "-c=proxy.json".into(),
+        "--url".into(),
+        "https://chatgpt.com/".into(),
+        "--inbound=tun-in".into(),
+        "--quality-state".into(),
+        ".task/resources/quality.json".into(),
+        "--format=json".into(),
+    ])
+    .unwrap() else {
+        panic!("expected probe command");
+    };
+
+    assert_eq!(options.command.config, Some(PathBuf::from("proxy.json")));
+    assert_eq!(options.command.format, OutputFormat::Json);
+    assert_eq!(options.url.as_deref(), Some("https://chatgpt.com/"));
+    assert_eq!(options.inbound.as_deref(), Some("tun-in"));
+    assert_eq!(
+        options.quality_state,
+        Some(PathBuf::from(".task/resources/quality.json"))
+    );
 }
 
 #[test]
@@ -193,9 +249,10 @@ fn help_text_describes_boundaries() {
     assert!(help.contains("doctor [--root <path>]"));
     assert!(help.contains("install --check"));
     assert!(help.contains("plan  [--root <path>]"));
+    assert!(help.contains("probe [--root <path>]"));
     assert!(help.contains("api capabilities"));
     assert!(help.contains("status [--format text|json]"));
     assert!(help.contains("run   [--root <path>]"));
     assert!(help.contains("runtime"));
-    assert!(help.contains("does not start a proxy yet"));
+    assert!(help.contains("TUN packet observation"));
 }

@@ -9,7 +9,7 @@ mod resources;
 #[path = "platform/takeover.rs"]
 mod takeover;
 
-use std::path::Path;
+use std::{net::SocketAddr, path::Path};
 
 use dynet_core::{validate_config, ConfigDiagnostic, ConfigSummary, DynetConfig, Severity};
 use serde::Serialize;
@@ -147,7 +147,10 @@ pub(crate) fn install_report(
 ) -> LifecycleReport {
     let diagnostics = validate_config(config);
     let (takeover_config, takeover_checks) = takeover::load_config();
-    let desired_state = desired::desired_state(&takeover_config);
+    let mut desired_state = desired::desired_state(&takeover_config);
+    if !check_only {
+        desired_state.mutation_mode = "apply".to_string();
+    }
     let mut checks = probes::install_checks(&diagnostics);
     checks.extend(takeover_checks);
     checks.push(LifecycleCheck {
@@ -169,7 +172,17 @@ pub(crate) fn install_report(
                 message: format!("{} - {}", validation.artifact, validation.message),
             }),
     );
-    checks.push(apply_engine_check(check_only));
+    if check_only {
+        checks.push(check_engine_check());
+    } else if has_deny(&diagnostics, &checks) {
+        checks.push(LifecycleCheck {
+            status: LifecycleStatus::Deny,
+            name: "apply-engine".to_string(),
+            message: "takeover apply skipped because preflight has deny issue(s)".to_string(),
+        });
+    } else {
+        checks.extend(apply_takeover_checks(&takeover_config));
+    }
 
     LifecycleReport {
         action: LifecycleAction::Install,
@@ -181,6 +194,36 @@ pub(crate) fn install_report(
         checks,
         resources: resources::owned_resources(&takeover_config),
         desired_state: Some(desired_state),
+    }
+}
+
+pub(crate) fn uninstall_report() -> LifecycleReport {
+    let (takeover_config, takeover_checks) = takeover::load_config();
+    let mut checks = takeover_checks;
+    if checks
+        .iter()
+        .any(|check| check.status == LifecycleStatus::Deny)
+    {
+        checks.push(LifecycleCheck {
+            status: LifecycleStatus::Deny,
+            name: "uninstall-engine".to_string(),
+            message: "takeover uninstall skipped because config preflight has deny issue(s)"
+                .to_string(),
+        });
+    } else {
+        checks.extend(uninstall_takeover_checks(&takeover_config));
+    }
+
+    LifecycleReport {
+        action: LifecycleAction::Uninstall,
+        check_only: false,
+        root: None,
+        config_source: None,
+        summary: None,
+        diagnostics: Vec::new(),
+        checks,
+        resources: resources::owned_resources(&takeover_config),
+        desired_state: None,
     }
 }
 
@@ -212,21 +255,94 @@ pub(crate) fn status_report(action: LifecycleAction) -> LifecycleReport {
     }
 }
 
-fn apply_engine_check(check_only: bool) -> LifecycleCheck {
+pub(crate) fn runtime_takeover_settings() -> Result<dynet_runtime::TakeoverSettings, String> {
+    let (takeover_config, takeover_checks) = takeover::load_config();
+    let deny_messages = takeover_checks
+        .iter()
+        .filter(|check| check.status == LifecycleStatus::Deny)
+        .map(|check| format!("{}: {}", check.name, check.message))
+        .collect::<Vec<_>>();
+    if !deny_messages.is_empty() {
+        return Err(format!(
+            "runtime takeover preflight failed: {}",
+            deny_messages.join("; ")
+        ));
+    }
+    takeover_config.runtime_settings(default_upstream_dns())
+}
+
+fn check_engine_check() -> LifecycleCheck {
     LifecycleCheck {
-        status: if check_only {
+        status: LifecycleStatus::Pass,
+        name: "apply-engine".to_string(),
+        message: "install --check validates desired state without mutating network paths"
+            .to_string(),
+    }
+}
+
+fn apply_takeover_checks(config: &takeover::TakeoverConfig) -> Vec<LifecycleCheck> {
+    let settings = match config.runtime_settings(default_upstream_dns()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return vec![LifecycleCheck {
+                status: LifecycleStatus::Deny,
+                name: "apply-engine".to_string(),
+                message: error,
+            }];
+        }
+    };
+    takeover_apply_checks("apply", dynet_runtime::apply_takeover(&settings))
+}
+
+fn uninstall_takeover_checks(config: &takeover::TakeoverConfig) -> Vec<LifecycleCheck> {
+    let settings = match config.runtime_settings(default_upstream_dns()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return vec![LifecycleCheck {
+                status: LifecycleStatus::Deny,
+                name: "uninstall-engine".to_string(),
+                message: error,
+            }];
+        }
+    };
+    takeover_apply_checks("uninstall", dynet_runtime::uninstall_takeover(&settings))
+}
+
+fn takeover_apply_checks(
+    prefix: &str,
+    report: dynet_runtime::TakeoverApplyReport,
+) -> Vec<LifecycleCheck> {
+    let mut checks = vec![LifecycleCheck {
+        status: if report.is_pass() {
             LifecycleStatus::Pass
         } else {
             LifecycleStatus::Deny
         },
-        name: "apply-engine".to_string(),
-        message: if check_only {
-            "install --check validates desired state without mutating network paths".to_string()
-        } else {
-            "network apply is intentionally gated in this first platform slice; run install --check"
-                .to_string()
+        name: format!("{prefix}-engine"),
+        message: format!("{} step(s) executed", report.steps.len()),
+    }];
+    checks.extend(report.steps.into_iter().map(|step| LifecycleCheck {
+        status: match step.status {
+            dynet_runtime::TakeoverStatus::Pass => LifecycleStatus::Pass,
+            dynet_runtime::TakeoverStatus::Deny => LifecycleStatus::Deny,
         },
-    }
+        name: format!("{prefix}:{}", step.name),
+        message: step.message,
+    }));
+    checks
+}
+
+fn has_deny(diagnostics: &[ConfigDiagnostic], checks: &[LifecycleCheck]) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Deny)
+        || checks
+            .iter()
+            .any(|check| check.status == LifecycleStatus::Deny)
+}
+
+fn default_upstream_dns() -> SocketAddr {
+    "1.1.1.1:53".parse().expect("valid default DNS upstream")
 }
 
 fn source_label(source: &ConfigSource) -> String {

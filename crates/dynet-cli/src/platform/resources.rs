@@ -31,13 +31,11 @@ pub(super) fn owned_resources(config: &TakeoverConfig) -> Vec<OwnedResource> {
             detail: "dynet-owned tun interface".to_string(),
         },
         OwnedResource {
-            kind: "ip-rule".to_string(),
+            kind: "socket-mark".to_string(),
             name: format!("fwmark {}", config.route_mark),
             owned: true,
-            present: command_stdout("ip", &["rule", "show"])
-                .map(|output| output.contains(&config.route_mark))
-                .unwrap_or(false),
-            detail: "dynet-owned packet mark".to_string(),
+            present: false,
+            detail: "runtime-only dynet socket bypass mark".to_string(),
         },
         OwnedResource {
             kind: "route-table".to_string(),

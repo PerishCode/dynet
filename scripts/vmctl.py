@@ -17,6 +17,8 @@ COMMANDS = {
     "guest": ROOT / "scripts" / "vm" / "guest.py",
     "setup": ROOT / "scripts" / "vm" / "setup.py",
     "net": ROOT / "scripts" / "vm" / "net.py",
+    "private-probe": ROOT / "scripts" / "vm" / "private_probe.py",
+    "private-runtime": ROOT / "scripts" / "vm" / "private_runtime.py",
     "smoke": ROOT / "scripts" / "vm" / "smoke.py",
     "snapshot": ROOT / "scripts" / "vm" / "snapshot.py",
 }

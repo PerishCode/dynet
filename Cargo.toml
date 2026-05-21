@@ -2,6 +2,7 @@
 members = [
     "crates/dynet-cli",
     "crates/dynet-core",
+    "crates/dynet-runtime",
 ]
 resolver = "2"
 

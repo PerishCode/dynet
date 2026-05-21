@@ -22,6 +22,16 @@ from common import (
 
 COLD_START_CONFIG = """{
   "log": { "level": "info" },
+  "dns": {
+    "chains": [
+      {
+        "tag": "alidns-doh",
+        "type": "doh",
+        "endpoint": "https://dns.alidns.com/dns-query",
+        "bootstrapIps": ["223.5.5.5", "223.6.6.6"]
+      }
+    ]
+  },
   "inbounds": [
     { "tag": "mixed-in", "type": "mixed" }
   ],
@@ -39,28 +49,36 @@ TCP_UDP_MODEL_CONFIG = """{
     {
       "tag": "tcp-in",
       "type": "tcp",
-      "listen": "127.0.0.1",
-      "listenPort": 1080
+      "payload": {
+        "listen": "127.0.0.1",
+        "listenPort": 1080
+      }
     },
     {
       "tag": "udp-in",
       "type": "udp",
-      "listen": "127.0.0.1",
-      "listenPort": 1053
+      "payload": {
+        "listen": "127.0.0.1",
+        "listenPort": 1053
+      }
     }
   ],
   "outbounds": [
     {
       "tag": "tcp-out",
       "type": "tcp",
-      "server": "example.com",
-      "serverPort": 443
+      "payload": {
+        "server": "example.com",
+        "serverPort": 443
+      }
     },
     {
       "tag": "udp-out",
       "type": "udp",
-      "server": "1.1.1.1",
-      "serverPort": 53
+      "payload": {
+        "server": "1.1.1.1",
+        "serverPort": 53
+      }
     }
   ],
   "routes": [
@@ -151,8 +169,8 @@ def tcp_udp_model_command(label: str) -> str:
         "and (.diagnostics | length) == 0 "
         "and any(.network.inbounds[]; .tag == \"tcp-in\" and (.capabilities | index(\"tcp\"))) "
         "and any(.network.inbounds[]; .tag == \"udp-in\" and (.capabilities | index(\"udp\"))) "
-        "and any(.network.outbounds[]; .tag == \"tcp-out\" and (.protocolFields | index(\"serverPort\"))) "
-        "and any(.network.outbounds[]; .tag == \"udp-out\" and (.protocolFields | index(\"serverPort\")))' "
+        "and any(.network.outbounds[]; .tag == \"tcp-out\" and (.payloadFields | index(\"serverPort\"))) "
+        "and any(.network.outbounds[]; .tag == \"udp-out\" and (.payloadFields | index(\"serverPort\")))' "
         ">/dev/null; "
         "dynet doctor --config \"$config\" --format json | "
         "jq -e '.checks[] | select(.name == \"network-model\" "
@@ -232,6 +250,69 @@ def takeover_env_command(config_path: str) -> str:
     )
 
 
+def runtime_boundary_command(config_path: str, dns_name: str) -> str:
+    route_target = "203.0.113.10"
+    return (
+        "set -e; "
+        f"config={q(config_path)}; "
+        f"dns_name={q(dns_name)}; "
+        "out=/tmp/dynet-runtime-boundary.json; "
+        "err=/tmp/dynet-runtime-boundary.err; "
+        "rm -f \"$out\" \"$err\"; "
+        "cleanup() { "
+        f"sudo ip route del {q(route_target)}/32 dev dynet0 >/dev/null 2>&1 || true; "
+        "sudo dynet uninstall --format json >/dev/null 2>&1 || true; "
+        "}; "
+        "trap cleanup EXIT; "
+        "sudo dynet install --config \"$config\" --format json | "
+        "jq -e '.checks[] | select(.name==\"apply-engine\" and .status==\"pass\")' "
+        ">/dev/null; "
+        "sudo dynet run --config \"$config\" --format json "
+        "--max-dns-queries 1 --timeout 20 "
+        "--log-level debug >\"$out\" 2>\"$err\" & pid=$!; "
+        "sleep 1; "
+        f"sudo ip route replace {q(route_target)}/32 dev dynet0; "
+        f"ping -c 1 -W 1 {q(route_target)} >/dev/null 2>&1 || true; "
+        "DYNET_SMOKE_DNS_NAME=\"$dns_name\" python3 - <<'PY_DYNET_DNS'\n"
+        "import os\n"
+        "import random\n"
+        "import socket\n"
+        "name = os.environ['DYNET_SMOKE_DNS_NAME']\n"
+        "query_id = random.randrange(0, 65536)\n"
+        "packet = bytearray(query_id.to_bytes(2, 'big'))\n"
+        "packet.extend(b'\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00')\n"
+        "for label in name.split('.'):\n"
+        "    encoded = label.encode('ascii')\n"
+        "    packet.append(len(encoded))\n"
+        "    packet.extend(encoded)\n"
+        "packet.extend(b'\\x00\\x00\\x01\\x00\\x01')\n"
+        "sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+        "sock.settimeout(5)\n"
+        "sock.sendto(bytes(packet), ('8.8.8.8', 53))\n"
+        "data, _ = sock.recvfrom(4096)\n"
+        "if len(data) < 12 or data[:2] != query_id.to_bytes(2, 'big'):\n"
+        "    raise SystemExit('invalid DNS response')\n"
+        "print('[runtime] dns probe bytes=%d' % len(data))\n"
+        "PY_DYNET_DNS\n"
+        "wait \"$pid\" || { cat \"$err\" >&2; exit 1; }; "
+        "jq -e --arg dns_name \"$dns_name\" '.status == \"pass\" "
+        "and .dnsQueries >= 1 "
+        "and .dnsRecords >= 1 "
+        "and .tunPackets >= 1 "
+        "and any(.dnsReverse.records[]; .query == $dns_name)' "
+        "<\"$out\" >/dev/null; "
+        "grep -q 'dns.reverse_record' \"$err\"; "
+        "grep -q 'dns.doh.query' \"$err\"; "
+        "grep -q 'tun.packet' \"$err\"; "
+        f"grep -q 'destination.*{route_target}' \"$err\"; "
+        "cleanup; "
+        "trap - EXIT; "
+        "dynet verify --format json | "
+        "jq -e 'all(.resources[]; .present == false)' >/dev/null; "
+        "printf '%s\\n' '[runtime] tun/dns owned boundary passed'"
+    )
+
+
 def guest(lab: Lab, args: argparse.Namespace) -> None:
     name = validate_name(args.guest, "guest")
     label = validate_name(args.label, "label")
@@ -259,10 +340,11 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
             "| jq -e '.checks[] | select(.name==\"artifact:nft-native-check\" "
             "and .status==\"pass\")' >/dev/null"
         ),
+        runtime_boundary_command(config_path, args.runtime_dns_name),
         "dynet status --format json",
         "dynet verify --format json",
         "dynet repair --format json",
-        "dynet uninstall --format json",
+        "sudo dynet uninstall --format json",
         "dynet api capabilities --format json",
     ]
     if not args.no_api_serve:
@@ -331,6 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     guest_parser.add_argument("--no-api-serve", action="store_true")
     guest_parser.add_argument("--api-port", type=int, default=19977)
     guest_parser.add_argument("--dns-name", default="example.com")
+    guest_parser.add_argument("--runtime-dns-name", default="www.google.com")
     guest_parser.add_argument("--https-url", default="https://example.com/")
     guest_parser.add_argument("--collect", action="store_true")
     guest_parser.add_argument("--capture", action="store_true")

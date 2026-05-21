@@ -1,4 +1,10 @@
-use std::{env, net::IpAddr, process::exit};
+use std::{
+    env, fs,
+    net::{IpAddr, SocketAddr},
+    path::Path,
+    process::exit,
+    time::Duration,
+};
 
 mod api;
 mod cli;
@@ -9,13 +15,13 @@ mod platform;
 
 use cli::{help_text, parse_args, ApiCommand, CliCommand, LogLevel};
 use config::ConfigSource;
-use dynet_core::{DnsReverseIndex, InboundContext};
+use dynet_core::{DnsChain, DnsReverseIndex, DynetConfig, InboundContext, OutboundQualityState};
 use model::{
     ApiCapabilityReport, DoctorReport, PlanEvaluationInput, PlanReport, Report, ReportMode,
 };
 use output::{
     print_api_capabilities, print_doctor_report, print_lifecycle_report, print_plan_report,
-    print_report,
+    print_probe_report, print_report, print_runtime_report,
 };
 use platform::LifecycleAction;
 use tracing::debug;
@@ -75,24 +81,8 @@ fn run() -> Result<i32, String> {
             Ok(report.exit_code())
         }
         CliCommand::Plan(options) => run_plan_command(options),
-        CliCommand::Run(options) => {
-            let resolved = config::resolve(options.root, options.config)?;
-            if matches!(resolved.source, ConfigSource::BuiltIn) {
-                return Err("run requires a config; pass --config or create dynet.json".to_string());
-            }
-            let report = Report::from_config(
-                ReportMode::Run,
-                resolved.root,
-                &resolved.source,
-                &resolved.config,
-            );
-            print_report(&report, options.format)?;
-            if report.exit_code() != 0 {
-                return Ok(report.exit_code());
-            }
-            eprintln!("dynet: runtime execution is not implemented in this skeleton");
-            Ok(1)
-        }
+        CliCommand::Probe(options) => run_probe_command(options),
+        CliCommand::Run(options) => run_runtime_command(options),
         CliCommand::Status(options) => {
             let report = platform::status_report(LifecycleAction::Status);
             print_lifecycle_report(&report, options.format)?;
@@ -109,7 +99,7 @@ fn run() -> Result<i32, String> {
             Ok(report.exit_code())
         }
         CliCommand::Uninstall(options) => {
-            let report = platform::status_report(LifecycleAction::Uninstall);
+            let report = platform::uninstall_report();
             print_lifecycle_report(&report, options.format)?;
             Ok(report.exit_code())
         }
@@ -128,6 +118,102 @@ fn run() -> Result<i32, String> {
             Ok(0)
         }
     }
+}
+
+fn run_runtime_command(options: cli::RunOptions) -> Result<i32, String> {
+    let resolved = config::resolve(options.command.root.clone(), options.command.config.clone())?;
+    if matches!(resolved.source, ConfigSource::BuiltIn) {
+        return Err("run requires a config; pass --config or create dynet.json".to_string());
+    }
+    let config_report = Report::from_config(
+        ReportMode::Run,
+        resolved.root,
+        &resolved.source,
+        &resolved.config,
+    );
+    if config_report.exit_code() != 0 {
+        print_report(&config_report, options.command.format)?;
+        return Ok(config_report.exit_code());
+    }
+    let dns_chain = runtime_dns_chain(&resolved.config, options.upstream_dns.as_deref())?;
+    let takeover = platform::runtime_takeover_settings()?;
+    let limits = dynet_runtime::RunLimits {
+        max_dns_queries: options.max_dns_queries,
+        max_tun_packets: options.max_tun_packets,
+        max_tcp_sessions: options.max_tcp_sessions,
+        max_udp_sessions: options.max_udp_sessions,
+        timeout: options.timeout_secs.map(Duration::from_secs),
+    };
+    let policy = if let Some(path) = &options.quality_state {
+        dynet_runtime::RuntimePolicy::from_config_with_quality(
+            resolved.config.clone(),
+            load_quality_state(path)?,
+        )
+    } else {
+        dynet_runtime::RuntimePolicy::from_config(resolved.config.clone())
+    };
+    let runtime_settings = takeover
+        .runtime_settings(dns_chain)
+        .with_policy(policy)
+        .with_tcp_forwarding(dynet_runtime::TcpForwardingSettings {
+            enabled: options.experimental_tcp_forward,
+        })
+        .with_udp_forwarding(dynet_runtime::UdpForwardingSettings {
+            enabled: options.experimental_udp_forward,
+        });
+    let report = dynet_runtime::run(runtime_settings, limits)?;
+    print_runtime_report(&report, options.command.format)?;
+    Ok(if report.status == dynet_runtime::RuntimeStatus::Pass {
+        0
+    } else {
+        1
+    })
+}
+
+fn run_probe_command(options: cli::ProbeOptions) -> Result<i32, String> {
+    let resolved = config::resolve(options.command.root.clone(), options.command.config.clone())?;
+    if matches!(resolved.source, ConfigSource::BuiltIn) {
+        return Err("probe requires a config; pass --config or create dynet.json".to_string());
+    }
+    let config_report = Report::from_config(
+        ReportMode::Run,
+        resolved.root,
+        &resolved.source,
+        &resolved.config,
+    );
+    if config_report.exit_code() != 0 {
+        print_report(&config_report, options.command.format)?;
+        return Ok(config_report.exit_code());
+    }
+    let target = probe_target(&options)?;
+    let bypass_mark = 0;
+    let policy = if let Some(path) = &options.quality_state {
+        dynet_runtime::RuntimePolicy::from_config_with_quality(
+            resolved.config,
+            load_quality_state(path)?,
+        )
+    } else {
+        dynet_runtime::RuntimePolicy::from_config(resolved.config)
+    };
+    let report = dynet_runtime::probe_https_head(dynet_runtime::ProbeSettings {
+        target,
+        inbound: options.inbound,
+        bypass_mark,
+        policy,
+    })?;
+    print_probe_report(&report, options.command.format)?;
+    Ok(if report.status == dynet_runtime::RuntimeStatus::Pass {
+        0
+    } else {
+        1
+    })
+}
+
+fn load_quality_state(path: &Path) -> Result<OutboundQualityState, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read quality state {}: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("failed to parse quality state {}: {error}", path.display()))
 }
 
 fn build_version() -> &'static str {
@@ -178,6 +264,139 @@ fn init_tracing(level: LogLevel) -> Result<(), String> {
         .with_writer(std::io::stderr)
         .try_init()
         .map_err(|error| format!("failed to initialize logging: {error}"))
+}
+
+fn runtime_dns_chain(
+    config: &DynetConfig,
+    upstream_dns: Option<&str>,
+) -> Result<dynet_runtime::DnsRuntimeChain, String> {
+    if let Some(value) = upstream_dns
+        .map(str::to_string)
+        .or_else(|| env::var("DYNET_DNS_UPSTREAM").ok())
+    {
+        let upstream_dns = value
+            .parse::<SocketAddr>()
+            .map_err(|error| format!("invalid upstream DNS `{value}`: {error}"))?;
+        return Ok(dynet_runtime::DnsRuntimeChain::Udp { upstream_dns });
+    }
+    if let Some(chain) = env_dns_chain()? {
+        return Ok(chain);
+    }
+    if let Some(chain) = configured_dns_chain(config) {
+        return dns_chain_from_config(chain);
+    }
+    Err("run requires dns.chains[0] or an explicit DNS diagnostic override".to_string())
+}
+
+fn env_dns_chain() -> Result<Option<dynet_runtime::DnsRuntimeChain>, String> {
+    let Some(endpoint) = env::var("DYNET_DOH_ENDPOINT").ok() else {
+        return Ok(None);
+    };
+    let bootstrap =
+        env::var("DYNET_DOH_BOOTSTRAP_IPS").unwrap_or_else(|_| "1.1.1.1,1.0.0.1".to_string());
+    let bootstrap_ips = parse_ip_list("DYNET_DOH_BOOTSTRAP_IPS", &bootstrap)?;
+    Ok(Some(dynet_runtime::DnsRuntimeChain::Doh {
+        endpoint,
+        bootstrap_ips,
+    }))
+}
+
+fn configured_dns_chain(config: &DynetConfig) -> Option<&DnsChain> {
+    config.dns.chains.first()
+}
+
+fn dns_chain_from_config(chain: &DnsChain) -> Result<dynet_runtime::DnsRuntimeChain, String> {
+    match chain.kind.as_str() {
+        "doh" => Ok(dynet_runtime::DnsRuntimeChain::Doh {
+            endpoint: chain
+                .endpoint
+                .clone()
+                .ok_or_else(|| format!("DNS chain `{}` has no endpoint", chain.tag))?,
+            bootstrap_ips: chain.bootstrap_ips.clone(),
+        }),
+        "udp" => {
+            let server = chain
+                .server
+                .as_deref()
+                .ok_or_else(|| format!("DNS chain `{}` has no UDP server", chain.tag))?;
+            let server = server
+                .parse::<IpAddr>()
+                .map_err(|error| format!("invalid DNS chain server `{server}`: {error}"))?;
+            let port = chain
+                .server_port
+                .ok_or_else(|| format!("DNS chain `{}` has no UDP serverPort", chain.tag))?;
+            Ok(dynet_runtime::DnsRuntimeChain::Udp {
+                upstream_dns: SocketAddr::new(server, port),
+            })
+        }
+        kind => Err(format!(
+            "DNS chain `{}` has unsupported runtime type `{kind}`",
+            chain.tag
+        )),
+    }
+}
+
+fn parse_ip_list(label: &str, value: &str) -> Result<Vec<IpAddr>, String> {
+    let mut addresses = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        addresses.push(
+            item.parse::<IpAddr>()
+                .map_err(|error| format!("invalid {label} IP `{item}`: {error}"))?,
+        );
+    }
+    if addresses.is_empty() {
+        return Err(format!("{label} must contain at least one IP address"));
+    }
+    Ok(addresses)
+}
+
+fn probe_target(options: &cli::ProbeOptions) -> Result<dynet_runtime::ProbeTarget, String> {
+    let from_url = match &options.url {
+        Some(url) => Some(parse_https_url(url)?),
+        None => None,
+    };
+    let host = options
+        .host
+        .clone()
+        .or_else(|| from_url.as_ref().map(|target| target.host.clone()))
+        .ok_or_else(|| "probe requires --url or --host".to_string())?;
+    let port = options
+        .port
+        .or_else(|| from_url.as_ref().map(|target| target.port))
+        .unwrap_or(443);
+    let path = options
+        .path
+        .clone()
+        .or_else(|| from_url.map(|target| target.path))
+        .unwrap_or_else(|| "/".to_string());
+    Ok(dynet_runtime::ProbeTarget { host, port, path })
+}
+
+fn parse_https_url(url: &str) -> Result<dynet_runtime::ProbeTarget, String> {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return Err("probe --url currently supports https:// URLs only".to_string());
+    };
+    let (host_port, path) = match rest.split_once('/') {
+        Some((host_port, path)) => (host_port, format!("/{path}")),
+        None => (rest, "/".to_string()),
+    };
+    if host_port.is_empty() {
+        return Err("probe --url host must not be empty".to_string());
+    }
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((host, port)) if !host.contains(']') => {
+            let port = port
+                .parse::<u16>()
+                .map_err(|error| format!("invalid probe URL port `{port}`: {error}"))?;
+            (host.to_string(), port)
+        }
+        _ => (host_port.to_string(), 443),
+    };
+    Ok(dynet_runtime::ProbeTarget { host, port, path })
 }
 
 fn plan_evaluation_input(

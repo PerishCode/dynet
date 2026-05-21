@@ -1,106 +1,12 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum OutputFormat {
-    Text,
-    Json,
-}
+mod help;
+mod types;
+mod values;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum LogLevel {
-    Off,
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct CommandOptions {
-    pub(crate) root: PathBuf,
-    pub(crate) config: Option<PathBuf>,
-    pub(crate) format: OutputFormat,
-    pub(crate) log_level: LogLevel,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum CliCommand {
-    Check(CommandOptions),
-    Doctor(CommandOptions),
-    Install(InstallOptions),
-    Plan(PlanOptions),
-    Repair(LifecycleOptions),
-    Run(CommandOptions),
-    Status(LifecycleOptions),
-    Uninstall(LifecycleOptions),
-    Verify(LifecycleOptions),
-    Api(ApiCommand),
-    Help,
-    Version,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct PlanOptions {
-    pub(crate) command: CommandOptions,
-    pub(crate) context: Option<String>,
-    pub(crate) dns_answers: Vec<String>,
-    pub(crate) dns_now_secs: Option<u64>,
-    pub(crate) dns_ttl_secs: u32,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct InstallOptions {
-    pub(crate) lifecycle: LifecycleOptions,
-    pub(crate) check: bool,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct LifecycleOptions {
-    pub(crate) root: PathBuf,
-    pub(crate) config: Option<PathBuf>,
-    pub(crate) format: OutputFormat,
-    pub(crate) log_level: LogLevel,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum ApiCommand {
-    Capabilities(ApiOptions),
-    Serve(ApiServeOptions),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct ApiOptions {
-    pub(crate) format: OutputFormat,
-    pub(crate) log_level: LogLevel,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct ApiServeOptions {
-    pub(crate) bind: String,
-    pub(crate) once: bool,
-    pub(crate) allow_non_loopback: bool,
-    pub(crate) log_level: LogLevel,
-}
-
-impl CliCommand {
-    pub(crate) fn log_level(&self) -> LogLevel {
-        match self {
-            CliCommand::Check(options) | CliCommand::Doctor(options) | CliCommand::Run(options) => {
-                options.log_level
-            }
-            CliCommand::Plan(options) => options.command.log_level,
-            CliCommand::Install(options) => options.lifecycle.log_level,
-            CliCommand::Repair(options)
-            | CliCommand::Status(options)
-            | CliCommand::Uninstall(options)
-            | CliCommand::Verify(options) => options.log_level,
-            CliCommand::Api(ApiCommand::Capabilities(options)) => options.log_level,
-            CliCommand::Api(ApiCommand::Serve(options)) => options.log_level,
-            CliCommand::Help | CliCommand::Version => LogLevel::Off,
-        }
-    }
-}
+pub(crate) use help::help_text;
+pub(crate) use types::*;
+use values::{parse_format, parse_log_level, parse_u16, parse_u32, parse_u64, parse_usize};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CommandMode {
@@ -108,6 +14,7 @@ enum CommandMode {
     Doctor,
     Install,
     Plan,
+    Probe,
     Repair,
     Run,
     Status,
@@ -143,6 +50,21 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     let mut plan_dns_answers = Vec::new();
     let mut plan_dns_now_secs = None;
     let mut plan_dns_ttl_secs = 300;
+    let mut probe_url = None;
+    let mut probe_host = None;
+    let mut probe_port = None;
+    let mut probe_path = None;
+    let mut probe_inbound = None;
+    let mut probe_quality_state = None;
+    let mut run_max_dns_queries = None;
+    let mut run_max_tun_packets = None;
+    let mut run_max_tcp_sessions = None;
+    let mut run_max_udp_sessions = None;
+    let mut run_timeout_secs = None;
+    let mut run_upstream_dns = None;
+    let mut run_quality_state = None;
+    let mut run_experimental_tcp_forward = false;
+    let mut run_experimental_udp_forward = false;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -166,6 +88,10 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             "plan" if !command_seen => {
                 command_seen = true;
                 mode = CommandMode::Plan;
+            }
+            "probe" if !command_seen => {
+                command_seen = true;
+                mode = CommandMode::Probe;
             }
             "repair" if !command_seen => {
                 command_seen = true;
@@ -259,6 +185,90 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
                     .ok_or_else(|| "--dns-ttl requires an integer seconds value".to_string())?;
                 plan_dns_ttl_secs = parse_u32("--dns-ttl", &value)?;
             }
+            "--url" if mode == CommandMode::Probe => {
+                probe_url = Some(
+                    args.next()
+                        .ok_or_else(|| "--url requires an https URL".to_string())?,
+                );
+            }
+            "--host" if mode == CommandMode::Probe => {
+                probe_host = Some(
+                    args.next()
+                        .ok_or_else(|| "--host requires a domain or address".to_string())?,
+                );
+            }
+            "--port" if mode == CommandMode::Probe => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--port requires a positive integer".to_string())?;
+                probe_port = Some(parse_u16("--port", &value)?);
+            }
+            "--path" if mode == CommandMode::Probe => {
+                probe_path = Some(
+                    args.next()
+                        .ok_or_else(|| "--path requires an absolute path".to_string())?,
+                );
+            }
+            "--inbound" if mode == CommandMode::Probe => {
+                probe_inbound = Some(
+                    args.next()
+                        .ok_or_else(|| "--inbound requires an inbound tag".to_string())?,
+                );
+            }
+            "--quality-state" if mode == CommandMode::Probe => {
+                probe_quality_state =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        "--quality-state requires a JSON path".to_string()
+                    })?));
+            }
+            "--max-dns-queries" if mode == CommandMode::Run => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--max-dns-queries requires a positive integer".to_string())?;
+                run_max_dns_queries = Some(parse_usize("--max-dns-queries", &value)?);
+            }
+            "--max-tun-packets" if mode == CommandMode::Run => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--max-tun-packets requires a positive integer".to_string())?;
+                run_max_tun_packets = Some(parse_usize("--max-tun-packets", &value)?);
+            }
+            "--max-tcp-sessions" if mode == CommandMode::Run => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--max-tcp-sessions requires a positive integer".to_string())?;
+                run_max_tcp_sessions = Some(parse_usize("--max-tcp-sessions", &value)?);
+            }
+            "--max-udp-sessions" if mode == CommandMode::Run => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--max-udp-sessions requires a positive integer".to_string())?;
+                run_max_udp_sessions = Some(parse_usize("--max-udp-sessions", &value)?);
+            }
+            "--timeout" if mode == CommandMode::Run => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--timeout requires integer seconds".to_string())?;
+                run_timeout_secs = Some(parse_u64("--timeout", &value)?);
+            }
+            "--upstream-dns" if mode == CommandMode::Run => {
+                run_upstream_dns = Some(
+                    args.next()
+                        .ok_or_else(|| "--upstream-dns requires ip:port".to_string())?,
+                );
+            }
+            "--quality-state" if mode == CommandMode::Run => {
+                run_quality_state =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        "--quality-state requires a JSON path".to_string()
+                    })?));
+            }
+            "--experimental-tcp-forward" if mode == CommandMode::Run => {
+                run_experimental_tcp_forward = true;
+            }
+            "--experimental-udp-forward" if mode == CommandMode::Run => {
+                run_experimental_udp_forward = true;
+            }
             other if other.starts_with("--root=") => {
                 root = PathBuf::from(&other["--root=".len()..]);
             }
@@ -285,6 +295,57 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             }
             other if mode == CommandMode::Plan && other.starts_with("--dns-ttl=") => {
                 plan_dns_ttl_secs = parse_u32("--dns-ttl", &other["--dns-ttl=".len()..])?;
+            }
+            other if mode == CommandMode::Probe && other.starts_with("--url=") => {
+                probe_url = Some(other["--url=".len()..].to_string());
+            }
+            other if mode == CommandMode::Probe && other.starts_with("--host=") => {
+                probe_host = Some(other["--host=".len()..].to_string());
+            }
+            other if mode == CommandMode::Probe && other.starts_with("--port=") => {
+                probe_port = Some(parse_u16("--port", &other["--port=".len()..])?);
+            }
+            other if mode == CommandMode::Probe && other.starts_with("--path=") => {
+                probe_path = Some(other["--path=".len()..].to_string());
+            }
+            other if mode == CommandMode::Probe && other.starts_with("--inbound=") => {
+                probe_inbound = Some(other["--inbound=".len()..].to_string());
+            }
+            other if mode == CommandMode::Probe && other.starts_with("--quality-state=") => {
+                probe_quality_state = Some(PathBuf::from(&other["--quality-state=".len()..]));
+            }
+            other if mode == CommandMode::Run && other.starts_with("--max-dns-queries=") => {
+                run_max_dns_queries = Some(parse_usize(
+                    "--max-dns-queries",
+                    &other["--max-dns-queries=".len()..],
+                )?);
+            }
+            other if mode == CommandMode::Run && other.starts_with("--max-tun-packets=") => {
+                run_max_tun_packets = Some(parse_usize(
+                    "--max-tun-packets",
+                    &other["--max-tun-packets=".len()..],
+                )?);
+            }
+            other if mode == CommandMode::Run && other.starts_with("--max-tcp-sessions=") => {
+                run_max_tcp_sessions = Some(parse_usize(
+                    "--max-tcp-sessions",
+                    &other["--max-tcp-sessions=".len()..],
+                )?);
+            }
+            other if mode == CommandMode::Run && other.starts_with("--max-udp-sessions=") => {
+                run_max_udp_sessions = Some(parse_usize(
+                    "--max-udp-sessions",
+                    &other["--max-udp-sessions=".len()..],
+                )?);
+            }
+            other if mode == CommandMode::Run && other.starts_with("--timeout=") => {
+                run_timeout_secs = Some(parse_u64("--timeout", &other["--timeout=".len()..])?);
+            }
+            other if mode == CommandMode::Run && other.starts_with("--upstream-dns=") => {
+                run_upstream_dns = Some(other["--upstream-dns=".len()..].to_string());
+            }
+            other if mode == CommandMode::Run && other.starts_with("--quality-state=") => {
+                run_quality_state = Some(PathBuf::from(&other["--quality-state=".len()..]));
             }
             other if mode == CommandMode::Api && other.starts_with("--bind=") => {
                 api_bind = other["--bind=".len()..].to_string();
@@ -324,8 +385,28 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             dns_now_secs: plan_dns_now_secs,
             dns_ttl_secs: plan_dns_ttl_secs,
         }),
+        CommandMode::Probe => CliCommand::Probe(ProbeOptions {
+            command: options,
+            url: probe_url,
+            host: probe_host,
+            port: probe_port,
+            path: probe_path,
+            inbound: probe_inbound,
+            quality_state: probe_quality_state,
+        }),
         CommandMode::Repair => CliCommand::Repair(lifecycle),
-        CommandMode::Run => CliCommand::Run(options),
+        CommandMode::Run => CliCommand::Run(RunOptions {
+            command: options,
+            max_dns_queries: run_max_dns_queries,
+            max_tun_packets: run_max_tun_packets,
+            max_tcp_sessions: run_max_tcp_sessions,
+            max_udp_sessions: run_max_udp_sessions,
+            timeout_secs: run_timeout_secs,
+            upstream_dns: run_upstream_dns,
+            quality_state: run_quality_state,
+            experimental_tcp_forward: run_experimental_tcp_forward,
+            experimental_udp_forward: run_experimental_udp_forward,
+        }),
         CommandMode::Status => CliCommand::Status(lifecycle),
         CommandMode::Uninstall => CliCommand::Uninstall(lifecycle),
         CommandMode::Verify => CliCommand::Verify(lifecycle),
@@ -341,96 +422,4 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             })),
         },
     })
-}
-
-pub(crate) fn help_text() -> &'static str {
-    r#"dynet
-
-Sing-box-like proxy CLI skeleton.
-
-Commands:
-  api capabilities [--format text|json]
-  api serve [--bind 127.0.0.1:9977] [--once] [--allow-non-loopback]
-  check [--root <path>] [--config <path>] [--format text|json]
-        [--log-level off|error|warn|info|debug|trace]
-  doctor [--root <path>] [--config <path>] [--format text|json]
-         [--log-level off|error|warn|info|debug|trace]
-  install --check [--root <path>] [--config <path>] [--format text|json]
-        [--log-level off|error|warn|info|debug|trace]
-  plan  [--root <path>] [--config <path>] [--format text|json]
-        [--context <json>] [--dns-answer domain=ip[,ip...]]
-        [--dns-now <seconds>] [--dns-ttl <seconds>]
-        [--log-level off|error|warn|info|debug|trace]
-  repair [--format text|json]
-  run   [--root <path>] [--config <path>] [--format text|json]
-        [--log-level off|error|warn|info|debug|trace]
-  status [--format text|json]
-  uninstall [--format text|json]
-  verify [--format text|json]
-  help
-  version
-
-Config:
-  --config, -c <path>  Load this JSON config. The file's directory becomes the
-                       project root for relative runtime state.
-  (no --config)        Walk ancestors of --root (default: cwd) looking for a
-                       dynet.json. The nearest match wins. `check` falls back
-                       to an empty built-in config if none is found.
-
-Reports:
-  check reports config summary and validation diagnostics in text or JSON.
-  doctor reports config, platform, tun, resolver, and API bind readiness.
-  install --check reports network ownership preflight, owned-resource scope,
-  render-only desired state artifacts, and artifact validation status.
-  plan compiles explicit routes into an explainable plan model.
-  status, verify, repair, and uninstall report dynet-owned resource state.
-
-API:
-  capabilities prints the local API surface. serve starts a loopback-only HTTP
-  skeleton with GET /health and GET /v1/capabilities.
-
-Runtime:
-  run validates config but does not start a proxy yet. Runtime execution will
-  land behind a separate boundary.
-
-Exit codes:
-  0  report completed without deny-level issues.
-  1  config read/parse/validation failure, lifecycle deny issue, or runtime
-     skeleton reached.
-
-Project:
-  Source:  https://github.com/PerishCode/dynet
-"#
-}
-
-fn parse_format(value: &str) -> Result<OutputFormat, String> {
-    match value {
-        "text" => Ok(OutputFormat::Text),
-        "json" => Ok(OutputFormat::Json),
-        other => Err(format!("unsupported output format: {other}")),
-    }
-}
-
-fn parse_log_level(value: &str) -> Result<LogLevel, String> {
-    match value {
-        "off" => Ok(LogLevel::Off),
-        "error" => Ok(LogLevel::Error),
-        "warn" | "warning" => Ok(LogLevel::Warn),
-        "info" => Ok(LogLevel::Info),
-        "debug" => Ok(LogLevel::Debug),
-        "trace" => Ok(LogLevel::Trace),
-        other => Err(format!("unsupported log level: {other}")),
-    }
-}
-
-fn parse_u64(flag: &str, value: &str) -> Result<u64, String> {
-    value
-        .parse()
-        .map_err(|_| format!("{flag} must be a non-negative integer"))
-}
-
-fn parse_u32(flag: &str, value: &str) -> Result<u32, String> {
-    value
-        .parse()
-        .map_err(|_| format!("{flag} must be a non-negative integer"))
 }

@@ -1,0 +1,65 @@
+{
+  "inbounds": [
+    { "tag": "tun-in", "type": "tun" }
+  ],
+  "outbounds": [
+    { "tag": "direct", "type": "direct" },
+    {
+      "tag": "airport-hk",
+      "type": "vmess",
+      "payload": {
+        "server": "hk.example.com",
+        "serverIp": "203.0.113.10",
+        "port": 443,
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "alterId": 0,
+        "cipher": "auto"
+      }
+    },
+    {
+      "tag": "airport-plan",
+      "type": "plan",
+      "capabilities": ["tcp", "dns", "ip-target", "domain-target", "probeable"],
+      "payload": {
+        "strategy": { "source": "internal", "key": "", "version": "", "options": {} },
+        "selection": {
+          "edges": [{ "type": "candidate", "to": "airport-hk" }]
+        }
+      }
+    },
+    {
+      "tag": "private",
+      "type": "ss",
+      "payload": {
+        "server": "private.example.com",
+        "serverIp": "198.51.100.10",
+        "port": 443,
+        "cipher": "aes-128-gcm",
+        "password": "private-password"
+      }
+    },
+    {
+      "tag": "private-via-airport",
+      "type": "dialer",
+      "payload": {
+        "bound": "airport-plan",
+        "target": "private"
+      }
+    }
+  ],
+  "rules": [
+    {
+      "tag": "identity-private",
+      "domainSuffix": "chatgpt.com",
+      "outbound": "private-via-airport"
+    },
+    {
+      "tag": "identity-private-ip",
+      "ipCidr": "198.18.0.0/15",
+      "outbound": "private-via-airport"
+    }
+  ],
+  "routes": [
+    { "outbound": "direct" }
+  ]
+}

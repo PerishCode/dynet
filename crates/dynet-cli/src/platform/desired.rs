@@ -66,19 +66,19 @@ fn desired_resources(config: &TakeoverConfig) -> Vec<DesiredResource> {
             detail: "local DNS ingress target for nft redirect templates".to_string(),
         },
         DesiredResource {
-            kind: "ip-rule".to_string(),
+            kind: "socket-mark".to_string(),
             name: format!("fwmark {}", config.route_mark),
-            operation: "reserve".to_string(),
-            detail: format!(
-                "policy rule priority {} for dynet-marked traffic",
-                config.route_table
-            ),
+            operation: "reserve-bypass".to_string(),
+            detail: "dynet-owned sockets use this mark to avoid DNS hijack loops".to_string(),
         },
         DesiredResource {
             kind: "route-table".to_string(),
             name: config.route_table.clone(),
             operation: "reserve".to_string(),
-            detail: format!("route table for {} policy routing", config.tun_name),
+            detail: format!(
+                "reserved for future {} packet forwarding routes",
+                config.tun_name
+            ),
         },
         DesiredResource {
             kind: "runtime-dir".to_string(),
@@ -126,21 +126,17 @@ fn validate_artifacts(
                 &format!("ip link show dev {}", config.tun_name),
                 &format!("ip tuntap add dev {} mode tun", config.tun_name),
                 &format!("ip link set dev {} up", config.tun_name),
-                &format!(
-                    "ip rule add fwmark {} lookup {} priority {}",
-                    config.route_mark, config.route_table, config.route_table
-                ),
-                &format!(
-                    "ip route replace default dev {} table {}",
-                    config.tun_name, config.route_table
-                ),
             ],
         ),
         forbidden_fragments_validation(
             "link-route-safety",
             "dynet-link-route.sh",
             link_route,
-            &["ip route del default", "ip route replace default\n"],
+            &[
+                "ip rule add",
+                "ip route del default",
+                "ip route replace default",
+            ],
         ),
         required_fragments_validation(
             "resolver-ownership",
@@ -317,13 +313,7 @@ if ! ip link show dev {tun_name} >/dev/null 2>&1; then
   ip tuntap add dev {tun_name} mode tun
 fi
 ip link set dev {tun_name} up
-if ! ip rule show | grep -q 'fwmark {route_mark}.*lookup {route_table}'; then
-  ip rule add fwmark {route_mark} lookup {route_table} priority {route_table}
-fi
-ip route replace default dev {tun_name} table {route_table}
 "#,
-        route_mark = config.route_mark,
-        route_table = config.route_table,
         tun_name = config.tun_name
     )
 }

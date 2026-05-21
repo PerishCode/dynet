@@ -10,6 +10,7 @@ fn parses_harness_config() {
 
     assert_eq!(config.summary().inbounds, 1);
     assert_eq!(config.summary().outbounds, 1);
+    assert_eq!(config.summary().rules, 0);
     assert_eq!(config.summary().routes, 1);
     assert!(validate_config(&config).is_empty());
 }
@@ -32,7 +33,7 @@ fn parses_tcp_udp_harness() {
         .capabilities
         .contains(&"udp".to_string()));
     assert!(network.outbounds[0]
-        .protocol_fields
+        .payload_fields
         .contains(&"serverPort".to_string()));
     assert!(network.outbounds[0]
         .fingerprint
@@ -52,6 +53,63 @@ fn parses_dns_reverse_harness() {
 
     assert_eq!(plan.rules[0].matcher.domain.as_deref(), Some("alpha.test"));
     assert_eq!(plan.rules[1].matcher.domain, None);
+}
+
+#[test]
+fn parses_dns_chain_harness() {
+    let config: DynetConfig =
+        serde_json::from_str(include_str!("../harness/configs/dns-chain.json")).unwrap();
+
+    assert_eq!(config.summary().dns_chains, 1);
+    assert!(validate_config(&config).is_empty());
+
+    let dns = config.dns_model();
+    assert_eq!(dns.schema, "dynet-dns/v1alpha1");
+    assert_eq!(dns.chains[0].kind, "doh");
+    assert_eq!(
+        dns.chains[0].endpoint.as_deref(),
+        Some("https://cloudflare-dns.com/dns-query")
+    );
+    assert_eq!(dns.chains[0].bootstrap_ips, ["1.1.1.1", "1.0.0.1"]);
+}
+
+#[test]
+fn denies_doh_without_bootstrap() {
+    let config: DynetConfig = serde_json::from_str(
+        r#"{
+            "dns": {
+                "chains": [
+                    {
+                        "tag": "polluted",
+                        "type": "doh",
+                        "endpoint": "https://cloudflare-dns.com/dns-query"
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let diagnostics = validate_config(&config);
+
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == Severity::Deny && diagnostic.path == "dns.chains[0].bootstrapIps"
+    }));
+}
+
+#[test]
+fn rejects_dns_default_field() {
+    let error = serde_json::from_str::<DynetConfig>(
+        r#"{
+            "dns": {
+                "default": "polluted",
+                "chains": []
+            }
+        }"#,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("unknown field `default`"));
 }
 
 #[test]
@@ -76,11 +134,46 @@ fn reports_unknown_route_target() {
 }
 
 #[test]
+fn validates_traditional_route_fields() {
+    let config: DynetConfig = serde_json::from_str(
+        r#"{
+            "outbounds": [{ "tag": "direct", "type": "direct" }],
+            "routes": [
+                { "domainSuffix": " ", "outbound": "direct" },
+                { "domainKeyword": "", "outbound": "direct" },
+                { "ipCidr": "8.8.8.8/99", "outbound": "direct" },
+                { "action": "reject", "outbound": "direct" },
+                { "domain": "example.com" }
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let diagnostics = validate_config(&config);
+
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.path == "routes[0].domainSuffix"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.path == "routes[1].domainKeyword"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.path == "routes[2].ipCidr"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.path == "routes[3]"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.path == "routes[4]"));
+}
+
+#[test]
 fn validates_tcp_udp_payloads() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
-            "inbounds": [{ "tag": "tcp-in", "type": "tcp", "listen": "", "listenPort": 70000 }],
-            "outbounds": [{ "tag": "udp-out", "type": "udp", "serverPort": "53" }],
+            "inbounds": [{ "tag": "tcp-in", "type": "tcp", "payload": { "listen": "", "listenPort": 70000 } }],
+            "outbounds": [{ "tag": "udp-out", "type": "udp", "payload": { "serverPort": "53" } }],
             "routes": [{ "inbound": "tcp-in", "outbound": "udp-out" }]
         }"#,
     )
@@ -90,24 +183,24 @@ fn validates_tcp_udp_payloads() {
 
     assert!(diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.path == "inbounds[0].listen"));
+        .any(|diagnostic| diagnostic.path == "inbounds[0].payload.listen"));
     assert!(diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.path == "inbounds[0].listenPort"));
+        .any(|diagnostic| diagnostic.path == "inbounds[0].payload.listenPort"));
     assert!(diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.path == "outbounds[0].server"));
+        .any(|diagnostic| diagnostic.path == "outbounds[0].payload.server"));
     assert!(diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.path == "outbounds[0].serverPort"));
+        .any(|diagnostic| diagnostic.path == "outbounds[0].payload.serverPort"));
 }
 
 #[test]
 fn denies_mismatched_transport() {
     let config: DynetConfig = serde_json::from_str(
         r#"{
-            "inbounds": [{ "tag": "tcp-in", "type": "tcp", "listen": "127.0.0.1", "listenPort": 1080 }],
-            "outbounds": [{ "tag": "udp-out", "type": "udp", "server": "1.1.1.1", "serverPort": 53 }],
+            "inbounds": [{ "tag": "tcp-in", "type": "tcp", "payload": { "listen": "127.0.0.1", "listenPort": 1080 } }],
+            "outbounds": [{ "tag": "udp-out", "type": "udp", "payload": { "server": "1.1.1.1", "serverPort": 53 } }],
             "routes": [{ "inbound": "tcp-in", "outbound": "udp-out" }]
         }"#,
     )

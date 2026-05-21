@@ -18,15 +18,16 @@ config discovery, report output, and exit behavior.
 - `src/platform/` owns platform command probes, desired-state templates,
   takeover config/manifest modeling, resource inventory, and lifecycle
   validation helpers. It may inventory dynet-owned nft/tun/DNS/routing
-  resources and render desired-state artifacts with non-mutating validation
-  status, but real network mutation stays gated until the VM evidence loop
-  proves the lifecycle.
+  resources, render desired-state artifacts, and call `dynet-runtime` for
+  explicit apply/cleanup operations. The mutation implementation itself belongs
+  in `dynet-runtime`.
 - `tests/unit/` contains CLI unit coverage. Register modules in
   `tests/unit.rs`.
 
 Do not add protocol backends, product runtime loops, service management, or
-platform network device mutation here. Read-only cold-start checks and the
-loopback API skeleton are allowed CLI contracts.
+platform network device mutation implementation here. Read-only cold-start
+checks, report shaping, runtime command dispatch, and the loopback API skeleton
+are allowed CLI contracts.
 
 ## Common Commands
 

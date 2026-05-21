@@ -2,8 +2,8 @@
 
 `dynet` is a sing-box-like proxy CLI skeleton. It owns CLI shape, config
 loading, report output, release packaging, and future proxy runtime boundaries.
-It does not yet own concrete protocol implementations, route engines, service
-supervision, or platform-specific network device management.
+It does not yet own concrete protocol implementations, route engines, or
+service supervision.
 
 `dynet` is also a new experimental VPN tool for complex user needs. It should
 learn high-value lessons from sing-box, Clash, WireGuard, and Tailscale without
@@ -21,12 +21,19 @@ choices.
   config discovery, reports, exit codes, and CLI-facing behavior.
 - `crates/dynet-core/` owns shared config/domain primitives and validation
   contracts that should not depend on CLI rendering or filesystem discovery.
+- `crates/dynet-runtime/` owns the self-written Linux runtime boundary for TUN,
+  DNS hijack serving, DNS chain execution, takeover apply/cleanup, socket
+  marking, and future outbound adapters.
 - `crates/*/harness/` contains representative fixtures owned by that crate.
   Harness fixtures should not become runtime discovery inputs.
 - `.github/workflows/` contains CI and release workflows.
 - `.github/scripts/` contains workflow-only helper scripts. Keep workflow-only
   scripts there.
 - `scripts/init.py` is the idempotent post-clone initializer.
+- `scripts/experiments/` owns standalone experiment tooling for access-profile
+  cleaning, black-box real-access probes, dynet-observed probe reruns,
+  TTL/windowed quality summaries, and trace attribution summaries; read
+  `scripts/experiments/AGENTS.md` before editing that subtree.
 - `scripts/vmctl.py` is the local aggregate entrypoint for VM lab operations.
 - `scripts/vm/` owns VM lab lifecycle tooling; read `scripts/vm/AGENTS.md`
   before editing that subtree.
@@ -48,6 +55,12 @@ When adding or removing a core subtree, update this file in the same change.
   because they already exist.
 - Keep runtime/protocol implementation details out of `dynet-cli`.
 - Keep reusable config and validation contracts in `dynet-core`.
+- Keep TUN/DNS/platform mutation and future outbound adapters in
+  `dynet-runtime`; do not wrap a generic TUN-to-proxy binary as dynet's product
+  runtime shape.
+- Keep DNS chain modeling in `dynet-core` and DNS chain execution in
+  `dynet-runtime`. Plain upstream UDP DNS is diagnostic only; product DNS
+  evidence should go through explicit chains such as DoH with bootstrap IPs.
 - Keep dynamic inbound/outbound node modeling in `dynet-core`: stable node
   identity/capability fields belong above protocol payloads, while concrete
   protocol adapters and runtime forwarding stay out of this repo slice.
@@ -58,10 +71,39 @@ When adding or removing a core subtree, update this file in the same change.
   boundary. Do not turn it into product runtime/network execution without a
   separate runtime crate/boundary.
 - `dynet install --check`, `status`, `verify`, `repair`, and `uninstall` are
-  the first platform ownership lifecycle boundary. Keep them CLI-only for now:
-  they may report and prove dynet-owned nft/tun/DNS/routing scope and render
-  desired-state artifacts with non-mutating validation status, but real network
-  mutation must stay gated until VM evidence proves the invariants.
+  the first platform ownership lifecycle boundary. CLI owns reporting; runtime
+  owns any real network mutation and cleanup.
+
+## Observability And Attribution
+
+- Observability has priority over planner, protocol, and node-quality
+  optimization. Do not optimize a strategy before dynet can explain where the
+  current failures occurred.
+- Treat local clients, disposable VMs, and the KVM lab as product dogfooding
+  surfaces. Black-box workloads are symptom generators; attribution must come
+  from dynet runtime events, reports, traces, quality state, and stage timings.
+- Preserve stable correlation whenever a feature touches traffic flow:
+  workload entry -> DNS query/cache record -> rule/route decision -> outbound
+  or plan -> selected candidate/bound -> dialer attempt -> TCP/UDP session ->
+  protocol stage -> close reason/error.
+- Every retained failure should be classifiable as one of:
+  `node-suspect`, `dynet-infra-suspect`, `plan-suspect`,
+  `target-or-probe-suspect`, `experiment-shape-suspect`, or `unknown`.
+  `unknown` is acceptable only when the missing evidence fields are named.
+- Do not claim "node unreliable" without repeatable correlation to a selected
+  node/candidate plus stage evidence. Do not claim "plan bad" without
+  repeatable correlation to planner selection, state, or fallback behavior.
+- Batch gates should separate non-node attribution cleanliness from node
+  quality confidence. Single-run `node-suspect` evidence may be retained as
+  observe-only, but it must not become a planner penalty until it repeats with
+  runtime-backed candidate and stage evidence.
+- Keep user identity out of observability artifacts by default. Do not retain
+  cookies, Authorization headers, account state, provider secrets, raw response
+  bodies, or response headers unless a later scoped experiment explicitly adds
+  sanitized capture.
+- Prefer structured events and machine-readable summaries over log-only
+  debugging. Human logs may explain, but artifacts should let scripts join and
+  classify evidence without text scraping.
 
 ## Common Commands
 
@@ -87,6 +129,11 @@ python3 scripts/vmctl.py smoke --host fuisp guest dynet-smoke --label cold-start
 python3 scripts/vmctl.py collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
 python3 scripts/vmctl.py capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
 python3 scripts/vmctl.py cleanup --host fuisp report
+python3 scripts/experiments/clash_verge_profile.py --help
+python3 scripts/experiments/real_access_blackbox.py --help
+python3 scripts/experiments/dynet_probe_manifest.py --help
+python3 scripts/experiments/dynet_probe_quality.py --help
+python3 scripts/experiments/dynet_trace_attribution.py --help
 ```
 
 ## Standard Workflow
@@ -101,10 +148,12 @@ python3 scripts/vmctl.py cleanup --host fuisp report
 
 ### Does `dynet run` Start A Proxy Yet?
 
-No. The skeleton validates config and reports clearly that runtime execution is
-not implemented yet. The runtime boundary will be introduced separately.
+It starts the self-owned runtime boundary for Linux TUN packet observation,
+real DNS hijack forwarding through dynet DNS chains, and DNS reverse capture.
+Full TCP/UDP forwarding and concrete outbound protocol adapters are still
+future work.
 
 ### Where Do Protocol Backends Belong?
 
-In future runtime or protocol crates. `dynet-cli` should consume stable
+In `dynet-runtime` or a crate below it. `dynet-cli` should consume stable
 contracts and reports, not backend-specific parser or network types.

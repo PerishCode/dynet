@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use dynet_core::DynetConfig;
 
@@ -8,10 +8,14 @@ use crate::{
     model::{ApiCapabilityReport, DoctorReport, PlanReport, Report, ReportMode},
     output::{
         print_api_capabilities, print_doctor_report, print_lifecycle_report, print_plan_report,
-        print_report, text_api_capabilities, text_doctor_report, text_lifecycle_report,
-        text_plan_report, text_report,
+        print_probe_report, print_report, print_runtime_report, text_api_capabilities,
+        text_doctor_report, text_lifecycle_report, text_plan_report, text_probe_report,
+        text_report, text_runtime_report,
     },
-    platform::{install_report, status_report, LifecycleAction, LifecycleStatus},
+    platform::{
+        install_report, runtime_takeover_settings, status_report, uninstall_report,
+        LifecycleAction, LifecycleStatus,
+    },
 };
 
 #[test]
@@ -27,8 +31,9 @@ fn text_report_summarizes_config() {
     let text = text_report(&report);
 
     assert!(text.contains("dynet check passed"));
-    assert!(text.contains("summary: inbounds 0, outbounds 0, routes 0"));
+    assert!(text.contains("summary: inbounds 0, outbounds 0, rules 0, routes 0, dns chains 0"));
     assert!(text.contains("network model: dynet-network/v1alpha1"));
+    assert!(text.contains("dns model: dynet-dns/v1alpha1"));
 }
 
 #[test]
@@ -89,6 +94,40 @@ fn text_plan_lists_rules() {
 }
 
 #[test]
+fn text_plan_route_matchers() {
+    let config: DynetConfig = serde_json::from_str(include_str!(
+        "../../../dynet-core/harness/configs/personal-static.json"
+    ))
+    .unwrap();
+    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config, None);
+
+    let text = text_plan_report(&report);
+
+    assert!(text.contains("domain suffix github.com -> use outbound proxy [dns-sensitive]"));
+    assert!(text.contains("domain keyword openai -> use outbound proxy [dns-sensitive]"));
+    assert!(
+        text.contains("transport dns, ip cidr 8.8.8.8/32 -> use outbound proxy [dns-sensitive]")
+    );
+    assert!(text.contains("domain suffix ad.com -> reject"));
+    print_plan_report(&report, OutputFormat::Json).unwrap();
+}
+
+#[test]
+fn text_plan_outbound() {
+    let config: DynetConfig = serde_json::from_str(include_str!(
+        "../../../dynet-core/harness/configs/outbound-plan.json"
+    ))
+    .unwrap();
+    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config, None);
+
+    let text = text_plan_report(&report);
+
+    assert!(text.contains("match inbound *, domain suffix github.com -> use outbound auto-proxy"));
+    assert_eq!(report.plan_summary.rules, 2);
+    print_plan_report(&report, OutputFormat::Json).unwrap();
+}
+
+#[test]
 fn text_report_lists_models() {
     let config: DynetConfig = serde_json::from_str(include_str!(
         "../../../dynet-core/harness/configs/tcp-udp.json"
@@ -120,6 +159,7 @@ fn doctor_report_lists_checks() {
     assert!(text.contains("checks:"));
     assert!(text.contains("config-source"));
     assert!(text.contains("network-model"));
+    assert!(text.contains("dns-model"));
     assert_eq!(report.exit_code(), 0);
     print_doctor_report(&report, OutputFormat::Json).unwrap();
 }
@@ -249,7 +289,7 @@ fn install_apply_is_gated() {
     );
     let text = text_lifecycle_report(&report);
 
-    assert!(text.contains("network apply is intentionally gated"));
+    assert!(text.contains("takeover apply skipped because preflight has deny issue(s)"));
     assert_eq!(report.exit_code(), 1);
 }
 
@@ -263,5 +303,89 @@ fn lifecycle_covers_cleanup() {
         let report = status_report(action);
         let text = text_lifecycle_report(&report);
         assert!(text.contains("owned resources:"));
+    }
+}
+
+#[test]
+fn uninstall_report_is_rendered() {
+    let report = uninstall_report();
+    let text = text_lifecycle_report(&report);
+
+    assert!(text.contains("dynet uninstall"));
+    assert!(text.contains("uninstall-engine"));
+}
+
+#[test]
+fn runtime_report_is_rendered() {
+    let report = dynet_runtime::RuntimeReport {
+        schema: "dynet-runtime/v1alpha1".to_string(),
+        status: dynet_runtime::RuntimeStatus::Pass,
+        reason: "runtime limits reached".to_string(),
+        tun_packets: 1,
+        dns_queries: 1,
+        route_decisions: 1,
+        proxied_dns_queries: 1,
+        dns_records: 0,
+        ipv6_packets_denied: 0,
+        tcp_sessions: 1,
+        tcp_session_failures: 0,
+        tcp_upstream_bytes: 32,
+        tcp_downstream_bytes: 64,
+        udp_sessions: 1,
+        udp_session_failures: 0,
+        udp_upstream_bytes: 16,
+        udp_downstream_bytes: 24,
+        udp_dropped_packets: 0,
+        dns_reverse: dynet_core::DnsReverseIndex::default(),
+        events: Vec::new(),
+    };
+    let text = text_runtime_report(&report);
+
+    assert!(text.contains("dynet runtime passed"));
+    assert!(text.contains("1 tun packet"));
+    assert!(text.contains("1 route decision"));
+    assert!(text.contains("1 proxied dns query"));
+    assert!(text.contains("1 session"));
+    print_runtime_report(&report, OutputFormat::Json).unwrap();
+}
+
+#[test]
+fn probe_report_is_rendered() {
+    let report = dynet_runtime::ProbeReport {
+        schema: "dynet-probe/v1alpha1".to_string(),
+        status: dynet_runtime::RuntimeStatus::Pass,
+        reason: "HTTPS HEAD completed with HTTP 200".to_string(),
+        target: dynet_runtime::ProbeTarget {
+            host: "example.com".to_string(),
+            port: 443,
+            path: "/".to_string(),
+        },
+        inbound: Some("tun-in".to_string()),
+        route_decisions: 1,
+        outbound_attempts: 1,
+        events: vec![dynet_runtime::RuntimeEvent {
+            schema: "dynet-runtime-event/v1alpha1".to_string(),
+            sequence: Some(1),
+            emitted_at_unix_ms: None,
+            kind: dynet_runtime::RuntimeEventKind::ProbeStarted,
+            fields: BTreeMap::from([("target".to_string(), "example.com:443".to_string())]),
+        }],
+    };
+
+    let text = text_probe_report(&report);
+
+    assert!(text.contains("dynet probe passed"));
+    assert!(text.contains("probe model: dynet-probe/v1alpha1"));
+    assert!(text.contains("target: https://example.com:443/"));
+    assert!(text.contains("runtime events:"));
+    print_probe_report(&report, OutputFormat::Json).unwrap();
+}
+
+#[test]
+fn runtime_takeover_preflight() {
+    let result = runtime_takeover_settings();
+
+    if let Err(error) = result {
+        assert!(error.contains("runtime takeover preflight failed"));
     }
 }
