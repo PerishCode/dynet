@@ -28,8 +28,12 @@ network experiments must stay inside disposable guests.
 
 ## File Roles
 
-- `common.py` owns shared SSH, path, logging, libvirt, and guest helper
-  functions.
+- `common.py` is the compatibility facade for shared SSH, path, logging,
+  libvirt, resource, and guest helpers.
+- `lib/common_resources.py` owns resource usage scans, reports, and guard
+  helpers used by VM lab commands.
+- `lib/common_guest.py` owns guest key, guest IP, guest SSH, guest SCP, and
+  remote command argument helpers.
 - `capture.py` owns packet captures scoped to guest tap interfaces or guest
   internal interfaces.
 - `check.py` owns high-level readiness checks that compose lower-level tools,

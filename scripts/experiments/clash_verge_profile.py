@@ -10,6 +10,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from clash_profile_taxonomy import CATEGORY_PATTERNS, MULTI_SUFFIXES
+
 
 ACCESS_RE = re.compile(
     r'^\[(?P<wall>[^\]]+)\] time="(?P<ts>[^"]+)" level=(?P<level>\w+) '
@@ -22,122 +24,6 @@ WARNING_RE = re.compile(
     r'\(match (?P<match>[^)]*)\) (?P<src>\S+) --> (?P<target>\S+) '
     r'error: (?P<error>.+)"$'
 )
-
-MULTI_SUFFIXES = {
-    "com.cn",
-    "net.cn",
-    "org.cn",
-    "gov.cn",
-    "edu.cn",
-    "com.hk",
-    "net.hk",
-    "org.hk",
-    "com.tw",
-    "net.tw",
-    "org.tw",
-    "co.jp",
-    "co.uk",
-    "org.uk",
-    "com.au",
-    "com.sg",
-}
-
-CATEGORY_PATTERNS = [
-    (
-        "ai",
-        (
-            "chatgpt.com",
-            "openai.com",
-            "oaistatic.com",
-            "oaiusercontent.com",
-            "anthropic.com",
-            "claude.ai",
-            "perplexity.ai",
-            "generativelanguage.googleapis.com",
-        ),
-    ),
-    (
-        "developer",
-        (
-            "github.com",
-            "githubusercontent.com",
-            "githubassets.com",
-            "github.io",
-            "githubcopilot.com",
-            "vscode-cdn.net",
-            "visualstudio.com",
-            "npmjs.org",
-            "crates.io",
-            "docker.com",
-            "ghcr.io",
-        ),
-    ),
-    (
-        "work",
-        (
-            "feilian.cn",
-            "feishu.cn",
-            "larksuite.com",
-            "powerformer.",
-            "slardar-bd.",
-            "volces.com",
-        ),
-    ),
-    (
-        "music-media-cn",
-        (
-            "qq.com",
-            "gtimg.cn",
-            "bdycdn.cn",
-            "kg.qq.com",
-            "music.qq.com",
-            "y.qq.com",
-            "bilibili.com",
-            "hdslb.com",
-        ),
-    ),
-    (
-        "apple",
-        (
-            "apple.com",
-            "icloud.com",
-            "apple-cloudkit.com",
-            "mzstatic.com",
-        ),
-    ),
-    (
-        "google",
-        (
-            "google.com",
-            "googleapis.com",
-            "gstatic.com",
-            "googlevideo.com",
-            "youtube.com",
-            "ytimg.com",
-        ),
-    ),
-    (
-        "microsoft",
-        (
-            "microsoft.com",
-            "live.com",
-            "office.com",
-            "windows.net",
-            "azureedge.net",
-        ),
-    ),
-    (
-        "infrastructure-cdn",
-        (
-            "cloudflare.com",
-            "cloudfront.net",
-            "fastly.net",
-            "datadoghq.com",
-            "akamai",
-            "cdn.",
-        ),
-    ),
-]
 
 
 def parse_target(target: str) -> tuple[str, int | None]:
@@ -237,6 +123,55 @@ def iter_log_files(log_dir: Path) -> list[Path]:
     return sorted((log_dir / "service").glob("*.log"))
 
 
+def access_event(row: dict[str, str]) -> dict[str, Any]:
+    host, port = parse_target(row["target"])
+    host = safe_host(host)
+    timestamp = parse_time(row["ts"])
+    site = site_for(host)
+    return {
+        "ts": row["ts"],
+        "hour": timestamp.strftime("%Y-%m-%dT%H:00%z") if timestamp else None,
+        "proto": row["proto"],
+        "host": host,
+        "site": site,
+        "port": port,
+        "match": row["match"],
+        "egress": egress_group(row["using"]),
+        "category": category_for(host, site),
+    }
+
+
+def warning_event(row: dict[str, str]) -> dict[str, Any]:
+    host, port = parse_target(row["target"])
+    host = safe_host(host)
+    site = site_for(host)
+    return {
+        "ts": row["ts"],
+        "proto": row["proto"],
+        "host": host,
+        "site": site,
+        "port": port,
+        "match": row["match"],
+        "egress": row["policy"].strip() or "unknown",
+        "category": category_for(host, site),
+        "reason": error_reason(row["error"]),
+    }
+
+
+def parse_log_line(line: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+    match = ACCESS_RE.match(line)
+    if match:
+        return "access", access_event(match.groupdict())
+    match = WARNING_RE.match(line)
+    if match:
+        return "warning", warning_event(match.groupdict())
+    return None, None
+
+
+def access_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (row["ts"], row["proto"], row["host"], str(row["port"]), row["egress"])
+
+
 def parse_logs(paths: list[Path]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     events = []
     errors = []
@@ -245,53 +180,16 @@ def parse_logs(paths: list[Path]) -> tuple[list[dict[str, Any]], list[dict[str, 
     for path in paths:
         for line in path.read_text(errors="replace").splitlines():
             lines += 1
-            match = ACCESS_RE.match(line)
-            if match:
-                row = match.groupdict()
-                host, port = parse_target(row["target"])
-                host = safe_host(host)
-                timestamp = parse_time(row["ts"])
-                group = egress_group(row["using"])
-                key = (row["ts"], row["proto"], host, str(port), group)
+            kind, row = parse_log_line(line)
+            if kind == "access":
+                key = access_key(row)
                 if key in seen:
                     continue
                 seen.add(key)
-                site = site_for(host)
-                events.append(
-                    {
-                        "ts": row["ts"],
-                        "hour": timestamp.strftime("%Y-%m-%dT%H:00%z")
-                        if timestamp
-                        else None,
-                        "proto": row["proto"],
-                        "host": host,
-                        "site": site,
-                        "port": port,
-                        "match": row["match"],
-                        "egress": group,
-                        "category": category_for(host, site),
-                    }
-                )
+                events.append(row)
                 continue
-            match = WARNING_RE.match(line)
-            if match:
-                row = match.groupdict()
-                host, port = parse_target(row["target"])
-                host = safe_host(host)
-                site = site_for(host)
-                errors.append(
-                    {
-                        "ts": row["ts"],
-                        "proto": row["proto"],
-                        "host": host,
-                        "site": site,
-                        "port": port,
-                        "match": row["match"],
-                        "egress": row["policy"].strip() or "unknown",
-                        "category": category_for(host, site),
-                        "reason": error_reason(row["error"]),
-                    }
-                )
+            if kind == "warning":
+                errors.append(row)
     return events, errors, lines
 
 

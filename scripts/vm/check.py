@@ -115,6 +115,67 @@ def guest_network_checks(
     ]
 
 
+def guest_readiness_checks(
+    lab: Lab,
+    guest: str,
+    *,
+    user: str,
+    source: str,
+    dns_name: str,
+    https_url: str,
+) -> list[CheckResult]:
+    return [
+        guest_check(
+            lab,
+            guest,
+            "guest SSH",
+            "true",
+            user=user,
+            source=source,
+        ),
+        guest_check(
+            lab,
+            guest,
+            "cloud-init done",
+            "cloud-init status | grep -q 'status: done'",
+            user=user,
+            source=source,
+        ),
+        guest_check(
+            lab,
+            guest,
+            "qemu guest agent",
+            "test \"$(systemctl is-active qemu-guest-agent)\" = active",
+            user=user,
+            source=source,
+        ),
+        *guest_network_checks(
+            lab,
+            guest,
+            user=user,
+            source=source,
+            dns_name=dns_name,
+            https_url=https_url,
+        ),
+        guest_check(
+            lab,
+            guest,
+            "dynet version",
+            "dynet version",
+            user=user,
+            source=source,
+        ),
+        guest_check(
+            lab,
+            guest,
+            "dynet check",
+            "dynet check --format json >/dev/null",
+            user=user,
+            source=source,
+        ),
+    ]
+
+
 def check_guest(lab: Lab, args: argparse.Namespace) -> None:
     guest = validate_name(args.guest, "guest")
     network = validate_name(args.network, "network")
@@ -153,56 +214,14 @@ def check_guest(lab: Lab, args: argparse.Namespace) -> None:
 
     if results[-1].ok:
         results.extend(
-            [
-                guest_check(
-                    lab,
-                    guest,
-                    "guest SSH",
-                    "true",
-                    user=args.user,
-                    source=args.source,
-                ),
-                guest_check(
-                    lab,
-                    guest,
-                    "cloud-init done",
-                    "cloud-init status | grep -q 'status: done'",
-                    user=args.user,
-                    source=args.source,
-                ),
-                guest_check(
-                    lab,
-                    guest,
-                    "qemu guest agent",
-                    "test \"$(systemctl is-active qemu-guest-agent)\" = active",
-                    user=args.user,
-                    source=args.source,
-                ),
-                *guest_network_checks(
-                    lab,
-                    guest,
-                    user=args.user,
-                    source=args.source,
-                    dns_name=args.dns_name,
-                    https_url=args.https_url,
-                ),
-                guest_check(
-                    lab,
-                    guest,
-                    "dynet version",
-                    "dynet version",
-                    user=args.user,
-                    source=args.source,
-                ),
-                guest_check(
-                    lab,
-                    guest,
-                    "dynet check",
-                    "dynet check --format json >/dev/null",
-                    user=args.user,
-                    source=args.source,
-                ),
-            ]
+            guest_readiness_checks(
+                lab,
+                guest,
+                user=args.user,
+                source=args.source,
+                dns_name=args.dns_name,
+                https_url=args.https_url,
+            )
         )
 
     for result in results:

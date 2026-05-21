@@ -53,6 +53,32 @@ STABILITY_PATTERNS = {
     "pendingFrameTimeouts": " is not ready",
     "dnsEarlyTimeouts": "Shadowsocks response salt is not ready",
 }
+SELECTION_EVENT_KINDS = {
+    "rule-matched",
+    "plan-bypassed",
+    "outbound-candidate-set",
+    "dialer-cascade-selected",
+    "dns-proxy-forward",
+    "outbound-attempt-finished",
+    "tcp-session-started",
+    "tcp-session-attributed",
+    "tcp-session-outbound-connecting",
+    "tcp-session-established",
+    "tcp-session-payload-first-write",
+    "tcp-session-payload-received",
+    "tcp-session-closed",
+    "tcp-session-failed",
+    "ip-packet-denied",
+    "udp-session-started",
+    "udp-session-attributed",
+    "udp-session-denied",
+    "udp-session-outbound-connecting",
+    "udp-session-established",
+    "udp-session-payload-sent",
+    "udp-session-payload-received",
+    "udp-session-closed",
+    "udp-session-failed",
+}
 
 
 def task_output_dir(raw: str | None, label: str) -> Path:
@@ -361,7 +387,7 @@ def udp_probe_python(target: str, timeout: int, output_path: str) -> str:
     )
 
 
-def ipv6_no_leak_probe_python(target: str, timeout: int, output_path: str) -> str:
+def ipv6_leak_probe_python(target: str, timeout: int, output_path: str) -> str:
     host, port = split_host_port(target)
     return (
         "DYNET_RUNTIME_IPV6_OUT="
@@ -844,7 +870,7 @@ def runtime_command(
     if args.udp_direct_probe:
         probe += udp_probe_python(args.udp_target, args.dns_timeout, udp_probe)
     if args.ipv6_no_leak:
-        probe += ipv6_no_leak_probe_python(args.ipv6_target, args.dns_timeout, ipv6_probe)
+        probe += ipv6_leak_probe_python(args.ipv6_target, args.dns_timeout, ipv6_probe)
     probe += (
         tcp_probe_python(dns_names, upstream_host, upstream_port, args.dns_timeout, tcp_probe)
         if args.tcp_forward
@@ -995,140 +1021,23 @@ def run_guest_once(
     error: Exception | None = None
 
     try:
-        if not args.skip_install:
-            artifact = recorder.run("build-artifact", lambda: build_artifact(lab, args))
-            recorder.run("install-artifact", lambda: install_artifact(lab, guest, artifact, args))
-
-        config_text, meta = recorder.run(
-            "build-secret-config", lambda: build_secret_config(args, output_dir)
-        )
-        config_text = recorder.run(
-            "augment-runtime-config", lambda: augment_runtime_config(config_text, args)
-        )
-        remote_config = f"/tmp/dynet-{label}-private-config.json"
-        remote_quality = f"/tmp/dynet-{label}-private-quality.json" if args.quality_state else None
-        remote_report = f"/tmp/dynet-{label}-private-runtime.json"
-        remote_log = f"/tmp/dynet-{label}-private-runtime.err"
-        remote_install = f"/tmp/dynet-{label}-private-install.json"
-        remote_uninstall = f"/tmp/dynet-{label}-private-uninstall.json"
-        remote_tcp_probe = f"/tmp/dynet-{label}-private-tcp-probe.json"
-        remote_udp_probe = f"/tmp/dynet-{label}-private-udp-probe.json"
-        remote_ipv6_probe = f"/tmp/dynet-{label}-private-ipv6-probe.json"
-        remote_workload = f"/tmp/dynet-{label}-private-workload-manifest.json" if workload_manifest else None
-        remote_workload_probe = f"/tmp/dynet-{label}-private-workload-probe.json"
-        guest_files = [
-            remote_config,
-            remote_report,
-            remote_log,
-            remote_install,
-            remote_uninstall,
-            remote_tcp_probe,
-            remote_udp_probe,
-            remote_ipv6_probe,
-            remote_workload_probe,
-        ] + ([remote_quality] if remote_quality else []) + ([remote_workload] if remote_workload else [])
-
-        recorder.run(
-            "prepare-nft-dropin",
-            lambda: guest_ssh(lab, guest, nft_dropin_command(), user=args.user, source=args.source),
-        )
-        recorder.run(
-            "write-secret-config",
-            lambda: write_guest_file(
-                lab,
-                guest,
-                remote_config,
-                config_text,
-                user=args.user,
-                source=args.source,
-            ),
-        )
-        if args.quality_state and remote_quality:
-            recorder.run(
-                "write-quality-state",
-                lambda: write_guest_file(
-                    lab,
-                    guest,
-                    remote_quality,
-                    Path(args.quality_state).read_text(),
-                    user=args.user,
-                    source=args.source,
-                ),
-            )
-        if workload_manifest and remote_workload:
-            recorder.run(
-                "write-workload-manifest",
-                lambda: write_guest_file(
-                    lab,
-                    guest,
-                    remote_workload,
-                    json.dumps(workload_manifest, ensure_ascii=False, sort_keys=True),
-                    user=args.user,
-                    source=args.source,
-                ),
-            )
-        version = recorder.run(
-            "dynet-version",
-            lambda: guest_ssh(
-                lab,
-                guest,
-                f"{q(args.dynet_bin)} version",
-                user=args.user,
-                source=args.source,
-                check=False,
-                capture=True,
-            ),
-        )
-        command = runtime_command(label, remote_config, remote_quality, remote_workload, dns_names, args)
-        logger.info("run private runtime acceptance")
-        command_result = recorder.run(
-            "run-acceptance",
-            lambda: guest_ssh(
-                lab,
-                guest,
-                command,
-                user=args.user,
-                source=args.source,
-                check=False,
-                capture=True,
-            ),
-        )
-        report = recorder.run(
-            "collect-runtime-report",
-            lambda: read_remote_json(lab, guest, remote_report, args),
-        )
-        log_text = recorder.run(
-            "collect-runtime-log",
-            lambda: read_remote_text(lab, guest, remote_log, args),
-        )
-        install_report = recorder.run(
-            "collect-install-report",
-            lambda: read_remote_json(lab, guest, remote_install, args),
-        )
-        uninstall_report = recorder.run(
-            "collect-uninstall-report",
-            lambda: read_remote_json(lab, guest, remote_uninstall, args),
-        )
-        if args.tcp_forward:
-            tcp_probe_report = recorder.run(
-                "collect-tcp-probe-report",
-                lambda: read_remote_json(lab, guest, remote_tcp_probe, args),
-            )
-        if args.udp_direct_probe:
-            udp_probe_report = recorder.run(
-                "collect-udp-probe-report",
-                lambda: read_remote_json(lab, guest, remote_udp_probe, args),
-            )
-        if args.ipv6_no_leak:
-            ipv6_probe_report = recorder.run(
-                "collect-ipv6-probe-report",
-                lambda: read_remote_json(lab, guest, remote_ipv6_probe, args),
-            )
-        if workload_manifest:
-            workload_probe_report = recorder.run(
-                "collect-workload-probe-report",
-                lambda: read_remote_json(lab, guest, remote_workload_probe, args),
-            )
+        maybe_install_artifact(recorder, lab, guest, args)
+        config_text, meta = build_runtime_config(recorder, args, output_dir)
+        remote_paths = runtime_paths(label, args, workload_manifest)
+        guest_files = runtime_guest_files(remote_paths)
+        write_runtime_inputs(recorder, lab, guest, remote_paths, config_text, workload_manifest, args)
+        version = collect_dynet_version(recorder, lab, guest, args)
+        command_result = run_acceptance(recorder, lab, guest, label, remote_paths, dns_names, args)
+        (
+            report,
+            log_text,
+            install_report,
+            uninstall_report,
+            tcp_probe_report,
+            udp_probe_report,
+            ipv6_probe_report,
+            workload_probe_report,
+        ) = collect_runtime_outputs(recorder, lab, guest, remote_paths, workload_manifest, args)
     except Exception as caught:
         error = caught
     finally:
@@ -1206,6 +1115,193 @@ def run_guest_once(
     write_json(output_dir / "summary.json", summary)
     write_markdown(output_dir / "summary.md", summary)
     return summary
+
+
+def maybe_install_artifact(
+    recorder: StageRecorder,
+    lab: Lab,
+    guest: str,
+    args: argparse.Namespace,
+) -> None:
+    if args.skip_install:
+        return
+    artifact = recorder.run("build-artifact", lambda: build_artifact(lab, args))
+    recorder.run("install-artifact", lambda: install_artifact(lab, guest, artifact, args))
+
+
+def build_runtime_config(
+    recorder: StageRecorder,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> tuple[str, dict]:
+    config_text, meta = recorder.run(
+        "build-secret-config", lambda: build_secret_config(args, output_dir)
+    )
+    config_text = recorder.run(
+        "augment-runtime-config", lambda: augment_runtime_config(config_text, args)
+    )
+    return config_text, meta
+
+
+def runtime_paths(label: str, args: argparse.Namespace, workload_manifest: dict | None) -> dict[str, str | None]:
+    return {
+        "config": f"/tmp/dynet-{label}-private-config.json",
+        "quality": f"/tmp/dynet-{label}-private-quality.json" if args.quality_state else None,
+        "report": f"/tmp/dynet-{label}-private-runtime.json",
+        "log": f"/tmp/dynet-{label}-private-runtime.err",
+        "install": f"/tmp/dynet-{label}-private-install.json",
+        "uninstall": f"/tmp/dynet-{label}-private-uninstall.json",
+        "tcpProbe": f"/tmp/dynet-{label}-private-tcp-probe.json",
+        "udpProbe": f"/tmp/dynet-{label}-private-udp-probe.json",
+        "ipv6Probe": f"/tmp/dynet-{label}-private-ipv6-probe.json",
+        "workload": f"/tmp/dynet-{label}-private-workload-manifest.json" if workload_manifest else None,
+        "workloadProbe": f"/tmp/dynet-{label}-private-workload-probe.json",
+    }
+
+
+def runtime_guest_files(paths: dict[str, str | None]) -> list[str]:
+    keys = [
+        "config",
+        "report",
+        "log",
+        "install",
+        "uninstall",
+        "tcpProbe",
+        "udpProbe",
+        "ipv6Probe",
+        "workloadProbe",
+        "quality",
+        "workload",
+    ]
+    return [path for key in keys if (path := paths[key])]
+
+
+def write_runtime_inputs(
+    recorder: StageRecorder,
+    lab: Lab,
+    guest: str,
+    paths: dict[str, str | None],
+    config_text: str,
+    workload_manifest: dict | None,
+    args: argparse.Namespace,
+) -> None:
+    recorder.run(
+        "prepare-nft-dropin",
+        lambda: guest_ssh(lab, guest, nft_dropin_command(), user=args.user, source=args.source),
+    )
+    recorder.run(
+        "write-secret-config",
+        lambda: write_guest_file(
+            lab, guest, str(paths["config"]), config_text, user=args.user, source=args.source
+        ),
+    )
+    if args.quality_state and paths["quality"]:
+        quality_text = Path(args.quality_state).read_text()
+        recorder.run(
+            "write-quality-state",
+            lambda: write_guest_file(
+                lab, guest, str(paths["quality"]), quality_text, user=args.user, source=args.source
+            ),
+        )
+    if workload_manifest and paths["workload"]:
+        workload_text = json.dumps(workload_manifest, ensure_ascii=False, sort_keys=True)
+        recorder.run(
+            "write-workload-manifest",
+            lambda: write_guest_file(
+                lab, guest, str(paths["workload"]), workload_text, user=args.user, source=args.source
+            ),
+        )
+
+
+def collect_dynet_version(
+    recorder: StageRecorder,
+    lab: Lab,
+    guest: str,
+    args: argparse.Namespace,
+) -> subprocess.CompletedProcess[str]:
+    return recorder.run(
+        "dynet-version",
+        lambda: guest_ssh(
+            lab,
+            guest,
+            f"{q(args.dynet_bin)} version",
+            user=args.user,
+            source=args.source,
+            check=False,
+            capture=True,
+        ),
+    )
+
+
+def run_acceptance(
+    recorder: StageRecorder,
+    lab: Lab,
+    guest: str,
+    label: str,
+    paths: dict[str, str | None],
+    dns_names: list[str],
+    args: argparse.Namespace,
+) -> subprocess.CompletedProcess[str]:
+    command = runtime_command(
+        label, str(paths["config"]), paths["quality"], paths["workload"], dns_names, args
+    )
+    logger.info("run private runtime acceptance")
+    return recorder.run(
+        "run-acceptance",
+        lambda: guest_ssh(
+            lab, guest, command, user=args.user, source=args.source, check=False, capture=True
+        ),
+    )
+
+
+def collect_runtime_outputs(
+    recorder: StageRecorder,
+    lab: Lab,
+    guest: str,
+    paths: dict[str, str | None],
+    workload_manifest: dict | None,
+    args: argparse.Namespace,
+) -> tuple[dict, str, dict, dict, dict, dict, dict, dict]:
+    report = recorder.run(
+        "collect-runtime-report",
+        lambda: read_remote_json(lab, guest, str(paths["report"]), args),
+    )
+    log_text = recorder.run(
+        "collect-runtime-log",
+        lambda: read_remote_text(lab, guest, str(paths["log"]), args),
+    )
+    install_report = recorder.run(
+        "collect-install-report",
+        lambda: read_remote_json(lab, guest, str(paths["install"]), args),
+    )
+    uninstall_report = recorder.run(
+        "collect-uninstall-report",
+        lambda: read_remote_json(lab, guest, str(paths["uninstall"]), args),
+    )
+    tcp_probe = optional_remote_json(recorder, lab, guest, paths["tcpProbe"], args, args.tcp_forward, "tcp")
+    udp_probe = optional_remote_json(recorder, lab, guest, paths["udpProbe"], args, args.udp_direct_probe, "udp")
+    ipv6_probe = optional_remote_json(recorder, lab, guest, paths["ipv6Probe"], args, args.ipv6_no_leak, "ipv6")
+    workload_probe = optional_remote_json(
+        recorder, lab, guest, paths["workloadProbe"], args, bool(workload_manifest), "workload"
+    )
+    return report, log_text, install_report, uninstall_report, tcp_probe, udp_probe, ipv6_probe, workload_probe
+
+
+def optional_remote_json(
+    recorder: StageRecorder,
+    lab: Lab,
+    guest: str,
+    path: str | None,
+    args: argparse.Namespace,
+    enabled: bool,
+    name: str,
+) -> dict:
+    if not enabled or not path:
+        return {}
+    return recorder.run(
+        f"collect-{name}-probe-report",
+        lambda: read_remote_json(lab, guest, path, args),
+    )
 
 
 def read_remote_json(lab: Lab, guest: str, path: str, args: argparse.Namespace) -> dict:
@@ -1499,145 +1595,126 @@ def acceptance_checks(
         check("uninstall-cleanup", has_lifecycle_pass(uninstall_report, "uninstall-engine")),
     ]
     if args.tcp_forward:
-        tcp_results = [
-            item
-            for item in tcp_probe_report.get("results", [])
-            if isinstance(item, dict)
-        ]
-        tcp_ok_names = {
-            item.get("name")
-            for item in tcp_results
-            if item.get("https", {}).get("ok") is True
-        }
-        checks.extend(
-            [
-                check(
-                    "tcp-sessions",
-                    int(report.get("tcpSessions") or 0) >= len(dns_names),
-                ),
-                check(
-                    "tcp-upstream-bytes",
-                    int(report.get("tcpUpstreamBytes") or 0) > 0,
-                ),
-                check(
-                    "tcp-downstream-bytes",
-                    int(report.get("tcpDownstreamBytes") or 0) > 0,
-                ),
-                check(
-                    "tcp-session-events",
-                    {
-                        "tcp-session-started",
-                        "tcp-session-attributed",
-                        "tcp-session-established",
-                        "tcp-session-payload-first-write",
-                    }.issubset(event_kinds),
-                ),
-                check(
-                    "tcp-blackbox-https",
-                    all(name in tcp_ok_names for name in dns_names),
-                ),
-                check(
-                    "tcp-no-session-failures",
-                    int(report.get("tcpSessionFailures") or 0) == 0
-                    and "tcp-session-failed" not in event_kinds,
-                ),
-                check(
-                    "tcp-session-closed",
-                    int(stability.get("tcpClosedSessions") or 0) >= len(dns_names),
-                ),
-                check(
-                    "tcp-no-protocol-short-read",
-                    int(stability.get("protocolShortReadErrors") or 0) == 0,
-                ),
-            ]
-        )
+        checks.extend(tcp_acceptance_checks(report, tcp_probe_report, dns_names, event_kinds, stability))
     if args.udp_forward:
-        checks.extend(
-            [
-                check(
-                    "udp-session-events",
-                    "udp-session-started" in event_kinds
-                    and (
-                        "udp-session-established" in event_kinds
-                        or "udp-session-denied" in event_kinds
-                        or "udp-session-failed" in event_kinds
-                    ),
-                ),
-                check(
-                    "udp-attribution-events",
-                    "udp-session-attributed" in event_kinds
-                    and (
-                        {"rule-matched", "plan-bypassed"}.issubset(event_kinds)
-                        or "route-matched" in event_kinds
-                    ),
-                ),
-            ]
-        )
-        if args.udp_direct_probe:
-            checks.extend(
-                [
-                    check("udp-direct-blackbox", udp_probe_report.get("ok") is True),
-                    check("udp-sessions", int(report.get("udpSessions") or 0) >= 1),
-                    check("udp-upstream-bytes", int(report.get("udpUpstreamBytes") or 0) > 0),
-                    check(
-                        "udp-downstream-bytes",
-                        int(report.get("udpDownstreamBytes") or 0) > 0,
-                    ),
-                    check("udp-no-session-failures", int(report.get("udpSessionFailures") or 0) == 0),
-                ]
-            )
-        else:
-            checks.append(
-                check(
-                    "udp-fail-closed",
-                    "udp-session-denied" in event_kinds
-                    or int(report.get("udpDroppedPackets") or 0) > 0,
-                )
-            )
+        checks.extend(udp_acceptance_checks(args, report, udp_probe_report, event_kinds))
     if args.ipv6_no_leak:
+        checks.extend(ipv6_acceptance_checks(report, ipv6_probe_report, event_kinds))
+    if args.workload_manifest:
+        checks.extend(workload_acceptance_checks(args, report, workload_probe_report, dns_names, queries))
+    return checks
+
+
+def tcp_acceptance_checks(
+    report: dict,
+    tcp_probe_report: dict,
+    dns_names: list[str],
+    event_kinds: set,
+    stability: dict,
+) -> list[dict]:
+    tcp_results = [item for item in tcp_probe_report.get("results", []) if isinstance(item, dict)]
+    tcp_ok_names = {item.get("name") for item in tcp_results if item.get("https", {}).get("ok") is True}
+    return [
+        check("tcp-sessions", int(report.get("tcpSessions") or 0) >= len(dns_names)),
+        check("tcp-upstream-bytes", int(report.get("tcpUpstreamBytes") or 0) > 0),
+        check("tcp-downstream-bytes", int(report.get("tcpDownstreamBytes") or 0) > 0),
+        check(
+            "tcp-session-events",
+            {
+                "tcp-session-started",
+                "tcp-session-attributed",
+                "tcp-session-established",
+                "tcp-session-payload-first-write",
+            }.issubset(event_kinds),
+        ),
+        check("tcp-blackbox-https", all(name in tcp_ok_names for name in dns_names)),
+        check(
+            "tcp-no-session-failures",
+            int(report.get("tcpSessionFailures") or 0) == 0 and "tcp-session-failed" not in event_kinds,
+        ),
+        check("tcp-session-closed", int(stability.get("tcpClosedSessions") or 0) >= len(dns_names)),
+        check("tcp-no-protocol-short-read", int(stability.get("protocolShortReadErrors") or 0) == 0),
+    ]
+
+
+def udp_acceptance_checks(
+    args: argparse.Namespace,
+    report: dict,
+    udp_probe_report: dict,
+    event_kinds: set,
+) -> list[dict]:
+    checks = [
+        check(
+            "udp-session-events",
+            "udp-session-started" in event_kinds
+            and (
+                "udp-session-established" in event_kinds
+                or "udp-session-denied" in event_kinds
+                or "udp-session-failed" in event_kinds
+            ),
+        ),
+        check(
+            "udp-attribution-events",
+            "udp-session-attributed" in event_kinds
+            and ({"rule-matched", "plan-bypassed"}.issubset(event_kinds) or "route-matched" in event_kinds),
+        ),
+    ]
+    if args.udp_direct_probe:
         checks.extend(
             [
-                check("ipv6-blackbox-no-response", ipv6_probe_report.get("ok") is True),
-                check("ipv6-denied-counter", int(report.get("ipv6PacketsDenied") or 0) >= 1),
-                check("ipv6-denied-event", "ip-packet-denied" in event_kinds),
+                check("udp-direct-blackbox", udp_probe_report.get("ok") is True),
+                check("udp-sessions", int(report.get("udpSessions") or 0) >= 1),
+                check("udp-upstream-bytes", int(report.get("udpUpstreamBytes") or 0) > 0),
+                check("udp-downstream-bytes", int(report.get("udpDownstreamBytes") or 0) > 0),
+                check("udp-no-session-failures", int(report.get("udpSessionFailures") or 0) == 0),
             ]
         )
-    if args.workload_manifest:
-        workload_results = [
-            item
-            for item in workload_probe_report.get("results", [])
-            if isinstance(item, dict)
-        ]
-        workload_domains_seen = {
-            str(item.get("domain"))
-            for item in workload_results
-            if isinstance(item.get("domain"), str)
-        }
-        successful_non_dns = [
-            item
-            for item in workload_results
-            if item.get("probe") != "dns" and item.get("ok") is True
-        ]
-        checks.extend(
-            [
-                check("workload-attempted", int(workload_probe_report.get("totals", {}).get("count") or 0) > 0),
-                check(
-                    "workload-success-rate",
-                    float(workload_probe_report.get("totals", {}).get("successRate") or 0)
-                    >= float(args.workload_min_success_rate),
-                ),
-                check(
-                    "workload-dns-observed",
-                    all(domain in queries for domain in workload_domains_seen),
-                ),
-                check(
-                    "workload-tcp-sessions",
-                    int(report.get("tcpSessions") or 0)
-                    >= len(dns_names) + len(successful_non_dns),
-                ),
-            ]
+    else:
+        checks.append(
+            check(
+                "udp-fail-closed",
+                "udp-session-denied" in event_kinds or int(report.get("udpDroppedPackets") or 0) > 0,
+            )
         )
     return checks
+
+
+def ipv6_acceptance_checks(report: dict, ipv6_probe_report: dict, event_kinds: set) -> list[dict]:
+    return [
+        check("ipv6-blackbox-no-response", ipv6_probe_report.get("ok") is True),
+        check("ipv6-denied-counter", int(report.get("ipv6PacketsDenied") or 0) >= 1),
+        check("ipv6-denied-event", "ip-packet-denied" in event_kinds),
+    ]
+
+
+def workload_acceptance_checks(
+    args: argparse.Namespace,
+    report: dict,
+    workload_probe_report: dict,
+    dns_names: list[str],
+    queries: set[str],
+) -> list[dict]:
+    workload_results = [item for item in workload_probe_report.get("results", []) if isinstance(item, dict)]
+    workload_domains_seen = {
+        str(item.get("domain"))
+        for item in workload_results
+        if isinstance(item.get("domain"), str)
+    }
+    successful_non_dns = [
+        item
+        for item in workload_results
+        if item.get("probe") != "dns" and item.get("ok") is True
+    ]
+    return [
+        check("workload-attempted", int(workload_probe_report.get("totals", {}).get("count") or 0) > 0),
+        check(
+            "workload-success-rate",
+            float(workload_probe_report.get("totals", {}).get("successRate") or 0)
+            >= float(args.workload_min_success_rate),
+        ),
+        check("workload-dns-observed", all(domain in queries for domain in workload_domains_seen)),
+        check("workload-tcp-sessions", int(report.get("tcpSessions") or 0) >= len(dns_names) + len(successful_non_dns)),
+    ]
 
 
 def check(name: str, passed: bool) -> dict:
@@ -1697,32 +1774,7 @@ def selection_brief(report: dict) -> dict:
         if not isinstance(event, dict):
             continue
         kind = event.get("kind")
-        if kind not in {
-            "rule-matched",
-            "plan-bypassed",
-            "outbound-candidate-set",
-            "dialer-cascade-selected",
-            "dns-proxy-forward",
-            "outbound-attempt-finished",
-            "tcp-session-started",
-            "tcp-session-attributed",
-            "tcp-session-outbound-connecting",
-            "tcp-session-established",
-            "tcp-session-payload-first-write",
-            "tcp-session-payload-received",
-            "tcp-session-closed",
-            "tcp-session-failed",
-            "ip-packet-denied",
-            "udp-session-started",
-            "udp-session-attributed",
-            "udp-session-denied",
-            "udp-session-outbound-connecting",
-            "udp-session-established",
-            "udp-session-payload-sent",
-            "udp-session-payload-received",
-            "udp-session-closed",
-            "udp-session-failed",
-        }:
+        if kind not in SELECTION_EVENT_KINDS:
             continue
         fields = event.get("fields", {})
         if isinstance(fields, dict):

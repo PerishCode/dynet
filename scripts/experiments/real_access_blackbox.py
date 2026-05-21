@@ -140,41 +140,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit("no supported workload behaviors selected")
     rng = random.Random(args.seed)
     weights = [max(int(pool.get("weight", 1)), 1) for pool in pools]
-    entries = []
-    history: list[str] = []
-    burst_domains: dict[str, str] = {}
-    for index in range(args.count):
-        pool = rng.choices(pools, weights=weights, k=1)[0]
-        modes = [
-            mode
-            for mode in pool["probeModes"]
-            if requested_modes is None or mode in requested_modes
-        ]
-        if not modes:
-            modes = list(DEFAULT_PROBES)
-        behavior = rng.choice(behaviors)
-        burst_id = None
-        if behavior == "repeat" and history:
-            domain = rng.choice(history)
-        elif behavior == "burst":
-            burst_id = f"burst-{rng.randrange(max(args.burst_groups, 1)) + 1:02d}"
-            domain = burst_domains.setdefault(burst_id, rng.choice(pool["domains"]))
-        else:
-            domain = rng.choice(pool["domains"])
-        probe = rng.choice(modes)
-        entries.append(
-            {
-                "id": f"{index + 1:04d}",
-                "bucket": pool["name"],
-                "domain": domain,
-                "behavior": behavior,
-                "groupId": burst_id or f"{behavior}-{site_for_domain(domain)}",
-                "probe": probe,
-                "port": default_port(probe),
-                "timeoutMs": int(args.timeout_seconds * 1000),
-            }
-        )
-        history.append(domain)
+    entries = manifest_entries(args, pools, weights, requested_modes, behaviors, rng)
     apply_schedule(entries, args, rng)
     return {
         "schema": MANIFEST_SCHEMA,
@@ -205,6 +171,74 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "controlDomains": control["domains"] if control else [],
         },
         "entries": entries,
+    }
+
+
+def manifest_entries(
+    args: argparse.Namespace,
+    pools: list[dict[str, Any]],
+    weights: list[int],
+    requested_modes: set[str] | None,
+    behaviors: list[str],
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    entries = []
+    history: list[str] = []
+    burst_domains: dict[str, str] = {}
+    for index in range(args.count):
+        pool = rng.choices(pools, weights=weights, k=1)[0]
+        modes = manifest_modes(pool, requested_modes)
+        behavior = rng.choice(behaviors)
+        domain, burst_id = select_manifest_domain(args, pool, behavior, history, burst_domains, rng)
+        probe = rng.choice(modes)
+        entries.append(manifest_entry(index, pool, domain, behavior, burst_id, probe, args))
+        history.append(domain)
+    return entries
+
+
+def manifest_modes(pool: dict[str, Any], requested_modes: set[str] | None) -> list[str]:
+    modes = [
+        mode
+        for mode in pool["probeModes"]
+        if requested_modes is None or mode in requested_modes
+    ]
+    return modes or list(DEFAULT_PROBES)
+
+
+def select_manifest_domain(
+    args: argparse.Namespace,
+    pool: dict[str, Any],
+    behavior: str,
+    history: list[str],
+    burst_domains: dict[str, str],
+    rng: random.Random,
+) -> tuple[str, str | None]:
+    if behavior == "repeat" and history:
+        return rng.choice(history), None
+    if behavior == "burst":
+        burst_id = f"burst-{rng.randrange(max(args.burst_groups, 1)) + 1:02d}"
+        return burst_domains.setdefault(burst_id, rng.choice(pool["domains"])), burst_id
+    return rng.choice(pool["domains"]), None
+
+
+def manifest_entry(
+    index: int,
+    pool: dict[str, Any],
+    domain: str,
+    behavior: str,
+    burst_id: str | None,
+    probe: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    return {
+        "id": f"{index + 1:04d}",
+        "bucket": pool["name"],
+        "domain": domain,
+        "behavior": behavior,
+        "groupId": burst_id or f"{behavior}-{site_for_domain(domain)}",
+        "probe": probe,
+        "port": default_port(probe),
+        "timeoutMs": int(args.timeout_seconds * 1000),
     }
 
 
@@ -503,10 +537,7 @@ def connect_resolved(
     try:
         for family, socktype, proto, _canonname, sockaddr in records:
             sock = socket.socket(family, socktype, proto)
-            attempt = {
-                "family": family_name(family),
-                "ok": False,
-            }
+            attempt = {"family": family_name(family), "ok": False}
             try:
                 sock.settimeout(timeout_seconds)
                 sock.connect(sockaddr)
@@ -1111,39 +1142,8 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         "- No dynet state/API/events were read.",
         "- No cookies, Authorization headers, browser profiles, or request bodies were used.",
         "- Response bodies, response headers, and resolved IP addresses were not stored.",
-        "",
-        "## By Bucket",
-        "",
     ]
-    for item in summary["byBucket"]:
-        lines.append(
-            f"- `{item['key']}`: success={item['success']}/{item['count']} "
-            f"rate={item['successRate']} p95={item['latencyMs']['p95']}ms"
-        )
-    lines.extend(["", "## By Behavior", ""])
-    for item in summary["byBehavior"]:
-        lines.append(
-            f"- `{item['key']}`: success={item['success']}/{item['count']} "
-            f"rate={item['successRate']} p95={item['latencyMs']['p95']}ms"
-        )
-    lines.extend(["", "## By Probe", ""])
-    for item in summary["byProbe"]:
-        lines.append(
-            f"- `{item['key']}`: success={item['success']}/{item['count']} "
-            f"rate={item['successRate']} p95={item['latencyMs']['p95']}ms"
-        )
-    lines.extend(["", "## By Stage", ""])
-    for item in summary["byStage"]:
-        lines.append(
-            f"- `{item['key']}`: success={item['success']}/{item['count']} "
-            f"rate={item['successRate']} p95={item['latencyMs']['p95']}ms"
-        )
-    lines.extend(["", "## Fault Signals", ""])
-    for item in summary["byFaultSignal"]:
-        lines.append(
-            f"- `{item['key']}`: success={item['success']}/{item['count']} "
-            f"rate={item['successRate']} p95={item['latencyMs']['p95']}ms"
-        )
+    append_report_groups(lines, summary)
     if summary["errors"]:
         lines.extend(["", "## Errors", ""])
         for item in summary["errors"]:
@@ -1186,6 +1186,22 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         ]
     )
     path.write_text("\n".join(lines) + "\n")
+
+
+def append_report_groups(lines: list[str], summary: dict[str, Any]) -> None:
+    for title, key in [
+        ("By Bucket", "byBucket"),
+        ("By Behavior", "byBehavior"),
+        ("By Probe", "byProbe"),
+        ("By Stage", "byStage"),
+        ("Fault Signals", "byFaultSignal"),
+    ]:
+        lines.extend(["", f"## {title}", ""])
+        for item in summary[key]:
+            lines.append(
+                f"- `{item['key']}`: success={item['success']}/{item['count']} "
+                f"rate={item['successRate']} p95={item['latencyMs']['p95']}ms"
+            )
 
 
 def load_summary_spec(spec: str) -> dict[str, Any]:
@@ -1416,66 +1432,7 @@ def write_comparison_report(path: Path, comparison: dict[str, Any]) -> None:
             f"success={run['successRate']} delta={run['successRateDelta']} "
             f"p95={run['p95Ms']}ms delta={run['p95DeltaMs']}ms"
         )
-    lines.extend(["", "## Buckets", ""])
-    for bucket in comparison["byBucket"]:
-        pieces = []
-        for run in bucket["runs"]:
-            if run["count"] == 0:
-                pieces.append(f"{run['label']}:none")
-            else:
-                pieces.append(
-                    f"{run['label']}:n={run['count']} sr={run['successRate']} "
-                    f"p95={run['p95Ms']}ms"
-                )
-        lines.append(f"- `{bucket['key']}`: " + "; ".join(pieces))
-    lines.extend(["", "## Behaviors", ""])
-    for behavior in comparison["byBehavior"]:
-        pieces = []
-        for run in behavior["runs"]:
-            if run["count"] == 0:
-                pieces.append(f"{run['label']}:none")
-            else:
-                pieces.append(
-                    f"{run['label']}:n={run['count']} sr={run['successRate']} "
-                    f"p95={run['p95Ms']}ms"
-                )
-        lines.append(f"- `{behavior['key']}`: " + "; ".join(pieces))
-    lines.extend(["", "## Probes", ""])
-    for probe in comparison["byProbe"]:
-        pieces = []
-        for run in probe["runs"]:
-            if run["count"] == 0:
-                pieces.append(f"{run['label']}:none")
-            else:
-                pieces.append(
-                    f"{run['label']}:n={run['count']} sr={run['successRate']} "
-                    f"p95={run['p95Ms']}ms"
-                )
-        lines.append(f"- `{probe['key']}`: " + "; ".join(pieces))
-    lines.extend(["", "## Stages", ""])
-    for stage in comparison["byStage"]:
-        pieces = []
-        for run in stage["runs"]:
-            if run["count"] == 0:
-                pieces.append(f"{run['label']}:none")
-            else:
-                pieces.append(
-                    f"{run['label']}:n={run['count']} sr={run['successRate']} "
-                    f"p95={run['p95Ms']}ms"
-                )
-        lines.append(f"- `{stage['key']}`: " + "; ".join(pieces))
-    lines.extend(["", "## Fault Signals", ""])
-    for signal in comparison["byFaultSignal"]:
-        pieces = []
-        for run in signal["runs"]:
-            if run["count"] == 0:
-                pieces.append(f"{run['label']}:none")
-            else:
-                pieces.append(
-                    f"{run['label']}:n={run['count']} sr={run['successRate']} "
-                    f"p95={run['p95Ms']}ms"
-                )
-        lines.append(f"- `{signal['key']}`: " + "; ".join(pieces))
+    append_comparison_groups(lines, comparison)
     if comparison["stableFailures"]:
         lines.extend(["", "## Stable Failures", ""])
         for item in comparison["stableFailures"]:
@@ -1506,6 +1463,26 @@ def write_comparison_report(path: Path, comparison: dict[str, Any]) -> None:
         ]
     )
     path.write_text("\n".join(lines) + "\n")
+
+
+def append_comparison_groups(lines: list[str], comparison: dict[str, Any]) -> None:
+    for title, key in [
+        ("Buckets", "byBucket"),
+        ("Behaviors", "byBehavior"),
+        ("Probes", "byProbe"),
+        ("Stages", "byStage"),
+        ("Fault Signals", "byFaultSignal"),
+    ]:
+        lines.extend(["", f"## {title}", ""])
+        for item in comparison[key]:
+            pieces = [comparison_run_piece(run) for run in item["runs"]]
+            lines.append(f"- `{item['key']}`: " + "; ".join(pieces))
+
+
+def comparison_run_piece(run: dict[str, Any]) -> str:
+    if run["count"] == 0:
+        return f"{run['label']}:none"
+    return f"{run['label']}:n={run['count']} sr={run['successRate']} p95={run['p95Ms']}ms"
 
 
 def run_output_dir(root: Path, environment: str, seed: str, label: str | None) -> Path:

@@ -92,47 +92,34 @@ def build_secret_config(args: argparse.Namespace, output_dir: Path) -> tuple[str
     meta_path = output_dir / "meta.json"
     with tempfile.TemporaryDirectory(prefix="dynet-vm-private-") as temp_dir:
         config_path = Path(temp_dir) / "private-cascade.json"
-        command = [
-            sys.executable,
-            str(ROOT / "scripts" / "experiments" / "tunnel_private_lab.py"),
-            "build",
-            "--output-config",
-            str(config_path),
-            "--output-meta",
-            str(meta_path),
-            "--tunnel-name",
-            args.tunnel_name,
-            "--filter",
-            args.filter,
-            "--strategy-key",
-            args.strategy_key,
-        ]
-        if args.limit:
-            command.extend(["--limit", str(args.limit)])
-        for value in args.domain_suffix:
-            command.extend(["--domain-suffix", value])
-        for value in args.domain:
-            command.extend(["--domain", value])
-        for value in args.supported_type:
-            command.extend(["--supported-type", value])
-        if getattr(args, "resolve_tunnel_server", False):
-            command.append("--resolve-tunnel-server")
         logger.info("build temporary dynet private config")
+        command = private_config_command(args, config_path, meta_path)
         subprocess.run(command, check=True, capture_output=True, text=True)
         config_text = config_path.read_text()
     meta = json.loads(meta_path.read_text())
     return config_text, meta
 
 
-def write_guest_file(
-    lab: Lab,
-    guest: str,
-    path: str,
-    content: str,
-    *,
-    user: str,
-    source: str,
-) -> None:
+def private_config_command(args: argparse.Namespace, config_path: Path, meta_path: Path) -> list[str]:
+    command = [
+        sys.executable, str(ROOT / "scripts" / "experiments" / "tunnel_private_lab.py"),
+        "build", "--output-config", str(config_path), "--output-meta", str(meta_path),
+        "--tunnel-name", args.tunnel_name, "--filter", args.filter, "--strategy-key", args.strategy_key,
+    ]
+    if args.limit:
+        command.extend(["--limit", str(args.limit)])
+    for value in args.domain_suffix:
+        command.extend(["--domain-suffix", value])
+    for value in args.domain:
+        command.extend(["--domain", value])
+    for value in args.supported_type:
+        command.extend(["--supported-type", value])
+    if getattr(args, "resolve_tunnel_server", False):
+        command.append("--resolve-tunnel-server")
+    return command
+
+
+def write_guest_file(lab: Lab, guest: str, path: str, content: str, *, user: str, source: str) -> None:
     guest_ssh(
         lab,
         guest,
@@ -143,14 +130,7 @@ def write_guest_file(
     )
 
 
-def cleanup_guest_files(
-    lab: Lab,
-    guest: str,
-    paths: list[str],
-    *,
-    user: str,
-    source: str,
-) -> None:
+def cleanup_guest_files(lab: Lab, guest: str, paths: list[str], *, user: str, source: str) -> None:
     if not paths:
         return
     command = "rm -f " + " ".join(q(path) for path in paths)
@@ -227,41 +207,67 @@ def command_guest(lab: Lab, args: argparse.Namespace) -> None:
 
     reports = []
     try:
-        write_guest_file(
-            lab,
-            guest,
-            remote_config,
-            config_text,
-            user=args.user,
-            source=args.source,
-        )
-        if args.quality_state and remote_quality:
-            write_guest_file(
-                lab,
-                guest,
-                remote_quality,
-                Path(args.quality_state).read_text(),
-                user=args.user,
-                source=args.source,
-            )
-        version = guest_ssh(
-            lab,
-            guest,
-            f"{q(args.dynet_bin)} version",
-            user=args.user,
-            source=args.source,
-            check=False,
-            capture=True,
-        )
-        for url in targets:
-            report = run_guest_probe(lab, guest, url, remote_config, remote_quality, args)
-            report_path = report_dir / f"{safe_slug(url)}.json"
-            write_json(report_path, clean_report(report))
-            reports.append(summarize_probe(report, url, report_path))
+        stage_guest_inputs(lab, guest, remote_config, config_text, remote_quality, args)
+        version = guest_dynet_version(lab, guest, args)
+        reports = run_guest_reports(lab, guest, targets, remote_config, remote_quality, report_dir, args)
     finally:
         cleanup_guest_files(lab, guest, guest_files, user=args.user, source=args.source)
 
-    summary = {
+    summary = build_summary(guest, label, version, meta, reports)
+    write_json(output_dir / "summary.json", summary)
+    write_markdown(output_dir / "summary.md", summary)
+    build_quality_state(output_dir)
+    print(json.dumps({"outputDir": str(output_dir), **summary["totals"]}, sort_keys=True))
+    if summary["totals"]["failed"]:
+        raise SystemExit(1)
+
+
+def stage_guest_inputs(
+    lab: Lab,
+    guest: str,
+    remote_config: str,
+    config_text: str,
+    remote_quality: str | None,
+    args: argparse.Namespace,
+) -> None:
+    write_guest_file(lab, guest, remote_config, config_text, user=args.user, source=args.source)
+    if args.quality_state and remote_quality:
+        quality_text = Path(args.quality_state).read_text()
+        write_guest_file(lab, guest, remote_quality, quality_text, user=args.user, source=args.source)
+
+
+def guest_dynet_version(lab: Lab, guest: str, args: argparse.Namespace) -> subprocess.CompletedProcess[str]:
+    return guest_ssh(
+        lab,
+        guest,
+        f"{q(args.dynet_bin)} version",
+        user=args.user,
+        source=args.source,
+        check=False,
+        capture=True,
+    )
+
+
+def run_guest_reports(
+    lab: Lab,
+    guest: str,
+    targets: list[str],
+    remote_config: str,
+    remote_quality: str | None,
+    report_dir: Path,
+    args: argparse.Namespace,
+) -> list[dict]:
+    reports = []
+    for url in targets:
+        report = run_guest_probe(lab, guest, url, remote_config, remote_quality, args)
+        report_path = report_dir / f"{safe_slug(url)}.json"
+        write_json(report_path, clean_report(report))
+        reports.append(summarize_probe(report, url, report_path))
+    return reports
+
+
+def build_summary(guest: str, label: str, version: subprocess.CompletedProcess[str], meta: dict, reports: list[dict]) -> dict:
+    return {
         "schema": "dynet-vm-private-cascade-run/v1alpha1",
         "guest": guest,
         "label": label,
@@ -283,12 +289,6 @@ def command_guest(lab: Lab, args: argparse.Namespace) -> None:
         },
         "reports": reports,
     }
-    write_json(output_dir / "summary.json", summary)
-    write_markdown(output_dir / "summary.md", summary)
-    build_quality_state(output_dir)
-    print(json.dumps({"outputDir": str(output_dir), **summary["totals"]}, sort_keys=True))
-    if summary["totals"]["failed"]:
-        raise SystemExit(1)
 
 
 def build_quality_state(output_dir: Path) -> None:

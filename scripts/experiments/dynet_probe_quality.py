@@ -123,34 +123,44 @@ def cascade_attempt_observations(
     for event in events:
         if event.get("kind") != "dialer-cascade-attempt-finished":
             continue
-        event_fields = fields(event)
-        bound_selected = event_fields.get("boundSelected") or "<unknown>"
-        cascade = selected.get(bound_selected, {})
-        status = "pass" if event_fields.get("status") == "success" else "deny"
         observations.append(
-            {
-                "path": report.get("_path"),
-                "scope": "dialer-bound",
-                "observedAtUnixMs": event_time(event),
-                "outbound": bound_selected,
-                "targetFamily": target_family(str(target.get("host", ""))),
-                "transport": fields(attempt).get("transport") or "tcp",
-                "status": status,
-                "reason": event_fields.get("error") or report.get("reason"),
-                "cascade": {
-                    "dialer": event_fields.get("dialer") or cascade.get("dialer"),
-                    "bound": cascade.get("bound"),
-                    "private": cascade.get("private"),
-                },
-                "stages": stage_obs(
-                    events,
-                    starts.get(event_fields.get("attempt")),
-                    event.get("sequence"),
-                ),
-            }
+            cascade_attempt_observation(report, target, attempt, selected, starts, events, event)
         )
     return observations
 
+
+def cascade_attempt_observation(
+    report: dict[str, Any],
+    target: dict[str, Any],
+    attempt: dict[str, Any],
+    selected: dict[str, dict[str, str]],
+    starts: dict[str | None, int | None],
+    events: list[dict[str, Any]],
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    event_fields = fields(event)
+    bound_selected = event_fields.get("boundSelected") or "<unknown>"
+    cascade = selected.get(bound_selected, {})
+    return {
+        "path": report.get("_path"),
+        "scope": "dialer-bound",
+        "observedAtUnixMs": event_time(event),
+        "outbound": bound_selected,
+        "targetFamily": target_family(str(target.get("host", ""))),
+        "transport": fields(attempt).get("transport") or "tcp",
+        "status": "pass" if event_fields.get("status") == "success" else "deny",
+        "reason": event_fields.get("error") or report.get("reason"),
+        "cascade": {
+            "dialer": event_fields.get("dialer") or cascade.get("dialer"),
+            "bound": cascade.get("bound"),
+            "private": cascade.get("private"),
+        },
+        "stages": stage_obs(
+            events,
+            starts.get(event_fields.get("attempt")),
+            event.get("sequence"),
+        ),
+    }
 
 def first_event(events: list[dict[str, Any]], kind: str) -> dict[str, Any]:
     for event in events:

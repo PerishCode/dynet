@@ -77,57 +77,79 @@ def guest_command(lab: Lab, args: argparse.Namespace) -> None:
     label = validate_name(args.label, "label")
     guest_touched = False
     try:
-        if args.artifact:
-            artifact = Path(args.artifact).expanduser().resolve()
-            if not lab.dry_run:
-                require_guest_elf(artifact, allow_any_binary=args.allow_any_binary)
-        else:
-            artifact = build_artifact(lab, args)
-
-        if not args.no_install:
-            guest_touched = True
-            run_vmctl(
-                lab,
-                [
-                    "setup",
-                    *lab_args(lab),
-                    "install-bin",
-                    guest,
-                    str(artifact),
-                    "--user",
-                    args.user,
-                    "--source",
-                    args.source,
-                ]
-                + (["--allow-any-binary"] if args.allow_any_binary else []),
-            )
-
-        if not args.no_smoke:
-            guest_touched = True
-            smoke_args = [
-                "smoke",
-                *lab_args(lab),
-                "guest",
-                guest,
-                "--label",
-                label,
-                "--user",
-                args.user,
-                "--source",
-                args.source,
-            ]
-            if args.collect:
-                smoke_args.append("--collect")
-            if args.capture:
-                smoke_args.append("--capture")
-            run_vmctl(lab, smoke_args)
-
-        if not args.no_check:
-            guest_touched = True
-            run_vmctl(lab, ["check", *lab_args(lab), "guest", guest])
+        artifact = resolve_artifact(lab, args)
+        guest_touched = run_guest_loop(lab, args, guest, label, artifact)
     except subprocess.CalledProcessError as error:
         collect_failure_evidence(lab, args, guest, label, guest_touched)
         raise error
+
+
+def resolve_artifact(lab: Lab, args: argparse.Namespace) -> Path:
+    if not args.artifact:
+        return build_artifact(lab, args)
+    artifact = Path(args.artifact).expanduser().resolve()
+    if not lab.dry_run:
+        require_guest_elf(artifact, allow_any_binary=args.allow_any_binary)
+    return artifact
+
+
+def run_guest_loop(
+    lab: Lab,
+    args: argparse.Namespace,
+    guest: str,
+    label: str,
+    artifact: Path,
+) -> bool:
+    touched = False
+    if not args.no_install:
+        touched = True
+        install_guest_artifact(lab, args, guest, artifact)
+    if not args.no_smoke:
+        touched = True
+        run_guest_smoke(lab, args, guest, label)
+    if not args.no_check:
+        touched = True
+        run_vmctl(lab, ["check", *lab_args(lab), "guest", guest])
+    return touched
+
+
+def install_guest_artifact(
+    lab: Lab, args: argparse.Namespace, guest: str, artifact: Path
+) -> None:
+    command = [
+        "setup",
+        *lab_args(lab),
+        "install-bin",
+        guest,
+        str(artifact),
+        "--user",
+        args.user,
+        "--source",
+        args.source,
+    ]
+    if args.allow_any_binary:
+        command.append("--allow-any-binary")
+    run_vmctl(lab, command)
+
+
+def run_guest_smoke(lab: Lab, args: argparse.Namespace, guest: str, label: str) -> None:
+    command = [
+        "smoke",
+        *lab_args(lab),
+        "guest",
+        guest,
+        "--label",
+        label,
+        "--user",
+        args.user,
+        "--source",
+        args.source,
+    ]
+    if args.collect:
+        command.append("--collect")
+    if args.capture:
+        command.append("--capture")
+    run_vmctl(lab, command)
 
 
 def lab_args(lab: Lab) -> list[str]:

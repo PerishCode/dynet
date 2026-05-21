@@ -22,6 +22,8 @@ product research without becoming product runtime code.
 
 - `clash_verge_profile.py` cleans local Clash Verge Rev service logs into a
   privacy-preserving access profile.
+- `clash_profile_taxonomy.py` owns static suffix/category taxonomy used by
+  `clash_verge_profile.py`.
 - `real_access_blackbox.py` builds deterministic replay manifests from an
   access profile and runs zero-identity black-box network probes.
 - `dynet_probe_manifest.py` replays selected manifest HTTPS targets through
@@ -33,3 +35,7 @@ product research without becoming product runtime code.
   route/plan/outbound/stage attribution evidence that can be compared with
   black-box probe failures, and aggregates repeated summaries into
   planner-safe batch evidence.
+- `tunnel_private_config.py` owns Clash/Tunnel provider loading, bootstrap
+  resolution, and dynet config construction for Tunnel-to-Private experiments.
+- `tunnel_private_lab.py` owns CLI commands that build/probe those configs and
+  write sanitized run reports.

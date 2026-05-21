@@ -17,7 +17,7 @@ DEFAULT_BATCH_OUTPUT_JSON = ".task/resources/dynet-trace-attribution-batch.json"
 DEFAULT_BATCH_OUTPUT_MD = ".task/resources/dynet-trace-attribution-batch.md"
 DEFAULT_MIN_REPEAT_RUNS = 2
 DEFAULT_MAX_UNKNOWN_RATE = 0.1
-DEFAULT_MAX_MISSING_CORRELATION_RATE = 0.25
+MAX_MISSING_CORRELATION_RATE = 0.25
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -327,66 +327,8 @@ def runtime_sessions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         session = fields.get("session")
         if not session:
             continue
-        row = grouped.setdefault(
-            session,
-            {
-                "session": session,
-                "flowId": fields.get("flowId"),
-                "transport": fields.get("sessionTransport"),
-                "target": fields.get("target"),
-                "domains": set(),
-                "outbounds": set(),
-                "selectedCandidates": set(),
-                "selectedOutbounds": set(),
-                "closeReasons": [],
-                "failures": [],
-                "stageFailures": [],
-                "eventKinds": Counter(),
-                "startedAtUnixMs": None,
-                "finishedAtUnixMs": None,
-            },
-        )
-        timestamp = event.get("emittedAtUnixMs")
-        if isinstance(timestamp, int):
-            if row["startedAtUnixMs"] is None or timestamp < row["startedAtUnixMs"]:
-                row["startedAtUnixMs"] = timestamp
-            if row["finishedAtUnixMs"] is None or timestamp > row["finishedAtUnixMs"]:
-                row["finishedAtUnixMs"] = timestamp
-        row["eventKinds"][event_kind(event)] += 1
-        for key in ("domain", "query"):
-            value = fields.get(key)
-            if value and value != "<none>" and value != "<unparsed>":
-                row["domains"].add(value)
-        for key in ("outbound", "selected", "boundSelected"):
-            value = fields.get(key)
-            if value and value != "<none>":
-                row["outbounds"].add(value)
-        selected = fields.get("selected")
-        if event_kind(event) == "outbound-candidate-set" and selected and selected != "<none>":
-            row["selectedCandidates"].add(selected)
-        if event_kind(event) == "outbound-graph-selected" and selected and selected != "<none>":
-            row["selectedOutbounds"].add(selected)
-        bound_selected = fields.get("boundSelected")
-        if (
-            event_kind(event) == "dialer-cascade-selected"
-            and bound_selected
-            and bound_selected != "<none>"
-        ):
-            row["selectedCandidates"].add(bound_selected)
-        if event_kind(event) in {"tcp-session-closed", "udp-session-closed"}:
-            row["closeReasons"].append(fields.get("reason", "<unknown>"))
-        failed = fields.get("status") == "failed" or event_kind(event).endswith("-failed")
-        if failed:
-            failure = {
-                "kind": event_kind(event),
-                "outbound": fields.get("outbound"),
-                "stage": fields.get("stage"),
-                "errorType": fields.get("errorType"),
-                "reason": fields.get("reason") or fields.get("error"),
-            }
-            row["failures"].append(failure)
-            if event_kind(event) == "outbound-stage-finished":
-                row["stageFailures"].append(failure)
+        row = grouped.setdefault(session, session_group_row(fields, session))
+        add_session_event(row, event, fields, event_kind(event))
     output = []
     for row in grouped.values():
         output.append(
@@ -409,58 +351,8 @@ def runtime_dns_flows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         dns_query_id = fields.get("dnsQueryId")
         if not dns_query_id:
             continue
-        row = grouped.setdefault(
-            dns_query_id,
-            {
-                "dnsQueryId": dns_query_id,
-                "flowId": fields.get("flowId"),
-                "query": fields.get("query"),
-                "listener": fields.get("listener"),
-                "outbounds": set(),
-                "selectedCandidates": set(),
-                "selectedOutbounds": set(),
-                "failures": [],
-                "stageFailures": [],
-                "eventKinds": Counter(),
-                "startedAtUnixMs": None,
-                "finishedAtUnixMs": None,
-            },
-        )
-        timestamp = event.get("emittedAtUnixMs")
-        if isinstance(timestamp, int):
-            if row["startedAtUnixMs"] is None or timestamp < row["startedAtUnixMs"]:
-                row["startedAtUnixMs"] = timestamp
-            if row["finishedAtUnixMs"] is None or timestamp > row["finishedAtUnixMs"]:
-                row["finishedAtUnixMs"] = timestamp
-        row["eventKinds"][event_kind(event)] += 1
-        for key in ("outbound", "selected", "boundSelected"):
-            value = fields.get(key)
-            if value and value != "<none>":
-                row["outbounds"].add(value)
-        selected = fields.get("selected")
-        if event_kind(event) == "outbound-candidate-set" and selected and selected != "<none>":
-            row["selectedCandidates"].add(selected)
-        if event_kind(event) == "outbound-graph-selected" and selected and selected != "<none>":
-            row["selectedOutbounds"].add(selected)
-        bound_selected = fields.get("boundSelected")
-        if (
-            event_kind(event) == "dialer-cascade-selected"
-            and bound_selected
-            and bound_selected != "<none>"
-        ):
-            row["selectedCandidates"].add(bound_selected)
-        failed = fields.get("status") == "failed" or event_kind(event) == "dns-resolve-failed"
-        if failed:
-            failure = {
-                "kind": event_kind(event),
-                "outbound": fields.get("outbound"),
-                "stage": fields.get("stage"),
-                "errorType": fields.get("errorType"),
-                "reason": fields.get("reason") or fields.get("error"),
-            }
-            row["failures"].append(failure)
-            if event_kind(event) == "outbound-stage-finished":
-                row["stageFailures"].append(failure)
+        row = grouped.setdefault(dns_query_id, dns_group_row(fields, dns_query_id))
+        add_dns_event(row, event, fields, event_kind(event))
     output = []
     for row in grouped.values():
         output.append(
@@ -478,6 +370,119 @@ def runtime_dns_flows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if str(item["dnsQueryId"]).isdigit()
         else 0,
     )
+
+
+def session_group_row(fields: dict[str, str], session: str) -> dict[str, Any]:
+    return {
+        "session": session,
+        "flowId": fields.get("flowId"),
+        "transport": fields.get("sessionTransport"),
+        "target": fields.get("target"),
+        "domains": set(),
+        "outbounds": set(),
+        "selectedCandidates": set(),
+        "selectedOutbounds": set(),
+        "closeReasons": [],
+        "failures": [],
+        "stageFailures": [],
+        "eventKinds": Counter(),
+        "startedAtUnixMs": None,
+        "finishedAtUnixMs": None,
+    }
+
+
+def dns_group_row(fields: dict[str, str], dns_query_id: str) -> dict[str, Any]:
+    return {
+        "dnsQueryId": dns_query_id,
+        "flowId": fields.get("flowId"),
+        "query": fields.get("query"),
+        "listener": fields.get("listener"),
+        "outbounds": set(),
+        "selectedCandidates": set(),
+        "selectedOutbounds": set(),
+        "failures": [],
+        "stageFailures": [],
+        "eventKinds": Counter(),
+        "startedAtUnixMs": None,
+        "finishedAtUnixMs": None,
+    }
+
+
+def add_session_event(row: dict[str, Any], event: dict[str, Any], fields: dict[str, str], kind: str) -> None:
+    update_time_bounds(row, event)
+    row["eventKinds"][kind] += 1
+    add_field_values(row["domains"], fields, ("domain", "query"), skip_unparsed=True)
+    add_field_values(row["outbounds"], fields, ("outbound", "selected", "boundSelected"))
+    add_selected_values(row, fields, kind)
+    if kind in {"tcp-session-closed", "udp-session-closed"}:
+        row["closeReasons"].append(fields.get("reason", "<unknown>"))
+    append_event_failure(row, fields, kind, dns_failure=False)
+
+
+def add_dns_event(row: dict[str, Any], event: dict[str, Any], fields: dict[str, str], kind: str) -> None:
+    update_time_bounds(row, event)
+    row["eventKinds"][kind] += 1
+    add_field_values(row["outbounds"], fields, ("outbound", "selected", "boundSelected"))
+    add_selected_values(row, fields, kind)
+    append_event_failure(row, fields, kind, dns_failure=True)
+
+
+def update_time_bounds(row: dict[str, Any], event: dict[str, Any]) -> None:
+    timestamp = event.get("emittedAtUnixMs")
+    if not isinstance(timestamp, int):
+        return
+    if row["startedAtUnixMs"] is None or timestamp < row["startedAtUnixMs"]:
+        row["startedAtUnixMs"] = timestamp
+    if row["finishedAtUnixMs"] is None or timestamp > row["finishedAtUnixMs"]:
+        row["finishedAtUnixMs"] = timestamp
+
+
+def add_field_values(
+    target: set[str],
+    fields: dict[str, str],
+    keys: tuple[str, ...],
+    *,
+    skip_unparsed: bool = False,
+) -> None:
+    for key in keys:
+        value = fields.get(key)
+        if value and value != "<none>" and (not skip_unparsed or value != "<unparsed>"):
+            target.add(value)
+
+
+def add_selected_values(row: dict[str, Any], fields: dict[str, str], kind: str) -> None:
+    selected = fields.get("selected")
+    if kind == "outbound-candidate-set" and selected and selected != "<none>":
+        row["selectedCandidates"].add(selected)
+    if kind == "outbound-graph-selected" and selected and selected != "<none>":
+        row["selectedOutbounds"].add(selected)
+    bound_selected = fields.get("boundSelected")
+    if kind == "dialer-cascade-selected" and bound_selected and bound_selected != "<none>":
+        row["selectedCandidates"].add(bound_selected)
+
+
+def append_event_failure(
+    row: dict[str, Any],
+    fields: dict[str, str],
+    kind: str,
+    *,
+    dns_failure: bool,
+) -> None:
+    failed = fields.get("status") == "failed" or kind.endswith("-failed")
+    if dns_failure:
+        failed = fields.get("status") == "failed" or kind == "dns-resolve-failed"
+    if not failed:
+        return
+    failure = {
+        "kind": kind,
+        "outbound": fields.get("outbound"),
+        "stage": fields.get("stage"),
+        "errorType": fields.get("errorType"),
+        "reason": fields.get("reason") or fields.get("error"),
+    }
+    row["failures"].append(failure)
+    if kind == "outbound-stage-finished":
+        row["stageFailures"].append(failure)
 
 
 def matching_sessions(
@@ -567,7 +572,7 @@ def classify_workload_result(
             dns_flows,
             "pure tcp-connect is a known weak VM forwarding workload shape",
         )
-    if missing_runtime_session_after_route(result, sessions, dns_flows):
+    if missing_routed_session(result, sessions, dns_flows):
         return workload_item(
             result,
             "experiment-shape-suspect",
@@ -648,7 +653,7 @@ def runtime_infra_signal(sessions: list[dict[str, Any]]) -> bool:
     return False
 
 
-def missing_runtime_session_after_route(
+def missing_routed_session(
     result: dict[str, Any],
     sessions: list[dict[str, Any]],
     dns_flows: list[dict[str, Any]],
@@ -863,36 +868,8 @@ def build_batch(
     runs = []
     all_items = []
     for path in summary_paths:
-        summary = load_json(path)
-        workload = summary.get("workloadAttribution", {})
-        items = workload.get("items", []) if isinstance(workload, dict) else []
-        run_label = path.parent.name
-        annotated = [
-            {**item, "runLabel": run_label, "summaryPath": str(path)}
-            for item in items
-            if isinstance(item, dict)
-        ]
-        runs.append(
-            {
-                "label": run_label,
-                "summaryPath": str(path),
-                "runtimeStatus": summary.get("runtimeStatus"),
-                "runtimeReason": summary.get("runtimeReason"),
-                "ruleBypassOk": all(
-                    rule.get("bypassesPlan") is True
-                    for rule in summary.get("rules", [])
-                    if isinstance(rule, dict)
-                ),
-                "dialerSelections": len(summary.get("dialers", [])),
-                "items": len(annotated),
-                "failures": sum(
-                    1
-                    for item in annotated
-                    if item.get("classification") != "healthy"
-                ),
-                "classes": top(Counter(str(item.get("classification")) for item in annotated)),
-            }
-        )
+        run, annotated = batch_run(path)
+        runs.append(run)
         all_items.extend(annotated)
 
     failures = [item for item in all_items if item.get("classification") != "healthy"]
@@ -961,6 +938,34 @@ def build_batch(
         "candidateSignals": candidate_signals,
         "repeatedEvidence": repeated_evidence_rows(failures, repeated_keys),
     }
+
+
+def batch_run(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    summary = load_json(path)
+    workload = summary.get("workloadAttribution", {})
+    items = workload.get("items", []) if isinstance(workload, dict) else []
+    run_label = path.parent.name
+    annotated = [
+        {**item, "runLabel": run_label, "summaryPath": str(path)}
+        for item in items
+        if isinstance(item, dict)
+    ]
+    run = {
+        "label": run_label,
+        "summaryPath": str(path),
+        "runtimeStatus": summary.get("runtimeStatus"),
+        "runtimeReason": summary.get("runtimeReason"),
+        "ruleBypassOk": all(
+            rule.get("bypassesPlan") is True
+            for rule in summary.get("rules", [])
+            if isinstance(rule, dict)
+        ),
+        "dialerSelections": len(summary.get("dialers", [])),
+        "items": len(annotated),
+        "failures": sum(1 for item in annotated if item.get("classification") != "healthy"),
+        "classes": top(Counter(str(item.get("classification")) for item in annotated)),
+    }
+    return run, annotated
 
 
 def repeated_evidence_keys(
@@ -1150,52 +1155,56 @@ def candidate_batch_signals(
             grouped[candidate].append(item)
     rows = []
     for candidate, candidate_items in sorted(grouped.items()):
-        failures = [
-            item
-            for item in candidate_items
-            if item.get("classification") != "healthy"
-        ]
-        node_suspects = [
-            item
-            for item in failures
-            if item.get("classification") == "node-suspect"
-        ]
-        repeated_node = [
-            item
-            for item in node_suspects
-            if evidence_key(item) in repeated_keys
-        ]
-        node_runs = {str(item.get("runLabel")) for item in node_suspects}
-        planner_action = "observe"
-        confidence = "none"
-        if repeated_node and len(node_runs) >= min_repeat_runs:
-            planner_action = "penalize-candidate"
-            confidence = "repeat-stage-correlated"
-        elif node_suspects:
-            confidence = "single-run-suspect"
-        rows.append(
-            {
-                "candidate": candidate,
-                "items": len(candidate_items),
-                "failures": len(failures),
-                "failureRate": round(len(failures) / len(candidate_items), 4)
-                if candidate_items
-                else 0,
-                "classes": top(Counter(str(item.get("classification")) for item in candidate_items)),
-                "nodeSuspectItems": len(node_suspects),
-                "nodeSuspectRuns": len(node_runs),
-                "repeatedNodeSuspectItems": len(repeated_node),
-                "stageFailures": top(Counter(
-                    signature
-                    for item in failures
-                    for signature in stage_failure_signatures(item)
-                )),
-                "domains": top(Counter(str(item.get("domain")) for item in failures)),
-                "plannerAction": planner_action,
-                "confidence": confidence,
-            }
-        )
+        rows.append(candidate_signal_row(candidate, candidate_items, repeated_keys, min_repeat_runs))
     return rows
+
+
+def candidate_signal_row(
+    candidate: str,
+    candidate_items: list[dict[str, Any]],
+    repeated_keys: set[tuple[str, ...]],
+    min_repeat_runs: int,
+) -> dict[str, Any]:
+    failures = [item for item in candidate_items if item.get("classification") != "healthy"]
+    node_suspects = [item for item in failures if item.get("classification") == "node-suspect"]
+    repeated_node = [item for item in node_suspects if evidence_key(item) in repeated_keys]
+    node_runs = {str(item.get("runLabel")) for item in node_suspects}
+    planner_action, confidence = candidate_planner_signal(
+        repeated_node, node_runs, node_suspects, min_repeat_runs
+    )
+    return {
+        "candidate": candidate,
+        "items": len(candidate_items),
+        "failures": len(failures),
+        "failureRate": round(len(failures) / len(candidate_items), 4) if candidate_items else 0,
+        "classes": top(Counter(str(item.get("classification")) for item in candidate_items)),
+        "nodeSuspectItems": len(node_suspects),
+        "nodeSuspectRuns": len(node_runs),
+        "repeatedNodeSuspectItems": len(repeated_node),
+        "stageFailures": top(
+            Counter(
+                signature
+                for item in failures
+                for signature in stage_failure_signatures(item)
+            )
+        ),
+        "domains": top(Counter(str(item.get("domain")) for item in failures)),
+        "plannerAction": planner_action,
+        "confidence": confidence,
+    }
+
+
+def candidate_planner_signal(
+    repeated_node: list[dict[str, Any]],
+    node_runs: set[str],
+    node_suspects: list[dict[str, Any]],
+    min_repeat_runs: int,
+) -> tuple[str, str]:
+    if repeated_node and len(node_runs) >= min_repeat_runs:
+        return "penalize-candidate", "repeat-stage-correlated"
+    if node_suspects:
+        return "observe", "single-run-suspect"
+    return "observe", "none"
 
 
 def repeated_evidence_rows(
@@ -1384,40 +1393,45 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         lines.extend(["", "## Missing", ""])
         for item in summary["attributionReadiness"]["missing"]:
             lines.append(f"- `{item}`")
-    workload = summary.get("workloadAttribution", {})
-    if workload.get("enabled"):
-        lines.extend(["", "## Workload Attribution", ""])
-        for item in workload.get("byClass", []):
-            lines.append(f"- `{item['key']}`: {item['count']}")
-        if workload.get("byCandidate"):
-            lines.extend(["", "### By Candidate", ""])
-            for item in workload.get("byCandidate", []):
-                lines.append(
-                    f"- `{item['candidate']}` failures={item['failures']}/{item['items']} "
-                    f"rate={item['failureRate']} classes={item['classes']}"
-                )
-        failures = [
-            item
-            for item in workload.get("items", [])
-            if item.get("classification") != "healthy"
-        ]
-        if failures:
-            lines.extend(["", "### Workload Failures", ""])
-            for item in failures:
-                sessions = ",".join(
-                    str(session.get("session")) for session in item.get("sessions", [])
-                )
-                dns_flows = ",".join(
-                    str(flow.get("dnsQueryId")) for flow in item.get("dnsFlows", [])
-                )
-                lines.append(
-                    f"- `{item['id']}` {item['domain']} probe=`{item['probe']}` "
-                    f"class=`{item['classification']}` stage=`{item['errorStage']}` "
-                    f"error=`{item['errorType']}` sessions=`{sessions or '<none>'}` "
-                    f"dns=`{dns_flows or '<none>'}` "
-                    f"missing={','.join(item.get('missingFields', []))}"
-                )
+    append_workload_report(lines, summary.get("workloadAttribution", {}))
     path.write_text("\n".join(lines) + "\n")
+
+
+def append_workload_report(lines: list[str], workload: dict[str, Any]) -> None:
+    if not workload.get("enabled"):
+        return
+    lines.extend(["", "## Workload Attribution", ""])
+    for item in workload.get("byClass", []):
+        lines.append(f"- `{item['key']}`: {item['count']}")
+    append_workload_candidates(lines, workload)
+    append_workload_failures(lines, workload)
+
+
+def append_workload_candidates(lines: list[str], workload: dict[str, Any]) -> None:
+    if not workload.get("byCandidate"):
+        return
+    lines.extend(["", "### By Candidate", ""])
+    for item in workload.get("byCandidate", []):
+        lines.append(
+            f"- `{item['candidate']}` failures={item['failures']}/{item['items']} "
+            f"rate={item['failureRate']} classes={item['classes']}"
+        )
+
+
+def append_workload_failures(lines: list[str], workload: dict[str, Any]) -> None:
+    failures = [item for item in workload.get("items", []) if item.get("classification") != "healthy"]
+    if not failures:
+        return
+    lines.extend(["", "### Workload Failures", ""])
+    for item in failures:
+        sessions = ",".join(str(session.get("session")) for session in item.get("sessions", []))
+        dns_flows = ",".join(str(flow.get("dnsQueryId")) for flow in item.get("dnsFlows", []))
+        lines.append(
+            f"- `{item['id']}` {item['domain']} probe=`{item['probe']}` "
+            f"class=`{item['classification']}` stage=`{item['errorStage']}` "
+            f"error=`{item['errorType']}` sessions=`{sessions or '<none>'}` "
+            f"dns=`{dns_flows or '<none>'}` missing={','.join(item.get('missingFields', []))}"
+        )
 
 
 def write_batch_report(path: Path, batch: dict[str, Any]) -> None:
@@ -1599,7 +1613,7 @@ def command_batch(args: argparse.Namespace) -> int:
             args.max_missing_correlation_rate,
             manifest,
             "maxMissingCorrelationRate",
-            DEFAULT_MAX_MISSING_CORRELATION_RATE,
+            MAX_MISSING_CORRELATION_RATE,
         ),
     )
     output_json = output_path_setting(
