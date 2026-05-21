@@ -10,14 +10,32 @@ from typing import Any
 
 SUMMARY_SCHEMA = "dynet-trace-attribution-summary/v1alpha1"
 BATCH_SCHEMA = "dynet-trace-attribution-batch/v1alpha1"
+BATCH_MANIFEST_SCHEMA = "dynet-trace-attribution-batch-manifest/v1alpha1"
 DEFAULT_OUTPUT_JSON = ".task/resources/dynet-trace-attribution-summary.json"
 DEFAULT_OUTPUT_MD = ".task/resources/dynet-trace-attribution-summary.md"
 DEFAULT_BATCH_OUTPUT_JSON = ".task/resources/dynet-trace-attribution-batch.json"
 DEFAULT_BATCH_OUTPUT_MD = ".task/resources/dynet-trace-attribution-batch.md"
+DEFAULT_MIN_REPEAT_RUNS = 2
+DEFAULT_MAX_UNKNOWN_RATE = 0.1
+DEFAULT_MAX_MISSING_CORRELATION_RATE = 0.25
 
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    manifest = load_json(path)
+    if manifest.get("schema") not in {BATCH_MANIFEST_SCHEMA, None}:
+        raise SystemExit(
+            f"unsupported batch manifest schema in {path}: {manifest.get('schema')}"
+        )
+    summaries = manifest.get("summaries")
+    if not isinstance(summaries, list) or not summaries:
+        raise SystemExit(f"batch manifest must contain a non-empty summaries list: {path}")
+    if any(not isinstance(item, str) or not item for item in summaries):
+        raise SystemExit(f"batch manifest summaries must be non-empty strings: {path}")
+    return manifest
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
@@ -896,6 +914,11 @@ def build_batch(
     unknown_items = [
         item for item in all_items if item.get("classification") == "unknown"
     ]
+    candidate_signals = candidate_batch_signals(
+        all_items,
+        repeated_keys,
+        min_repeat_runs,
+    )
     gates = batch_gates(
         runs,
         all_items,
@@ -903,14 +926,10 @@ def build_batch(
         unknown_items,
         missing_repeat,
         node_missing_repeat,
+        candidate_signals,
         min_repeat_runs,
         max_unknown_rate,
         max_missing_correlation_rate,
-    )
-    candidate_signals = candidate_batch_signals(
-        all_items,
-        repeated_keys,
-        min_repeat_runs,
     )
     return {
         "schema": BATCH_SCHEMA,
@@ -1032,6 +1051,7 @@ def batch_gates(
     unknown_items: list[dict[str, Any]],
     missing_repeat: list[dict[str, Any]],
     node_missing_repeat: list[dict[str, Any]],
+    candidate_signals: list[dict[str, Any]],
     min_repeat_runs: int,
     max_unknown_rate: float,
     max_missing_correlation_rate: float,
@@ -1046,6 +1066,15 @@ def batch_gates(
         if non_node_failure_count
         else 0.0
     )
+    unsafe_planner_signals = [
+        signal
+        for signal in candidate_signals
+        if signal.get("plannerAction") == "penalize-candidate"
+        and (
+            signal.get("confidence") != "repeat-stage-correlated"
+            or int_value(signal.get("repeatedNodeSuspectItems")) in (None, 0)
+        )
+    ]
     return [
         {
             "name": "min-repeat-runs",
@@ -1079,8 +1108,8 @@ def batch_gates(
         },
         {
             "name": "planner-signals-repeat-only",
-            "passed": True,
-            "value": "enforced",
+            "passed": not unsafe_planner_signals,
+            "value": len(unsafe_planner_signals),
             "required": "candidate penalty requires repeated node-suspect evidence",
         },
         {
@@ -1429,6 +1458,103 @@ def write_batch_report(path: Path, batch: dict[str, Any]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+def manifest_input_path(raw: str, manifest_path: Path) -> Path:
+    path = Path(raw)
+    if path.is_absolute() or path.exists():
+        return path
+    return manifest_path.parent / path
+
+
+def manifest_output_path(raw: str, manifest_path: Path) -> Path:
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    if path.parts and path.parts[0].startswith("."):
+        return path
+    return manifest_path.parent / path
+
+
+def batch_paths_from_args(
+    args: argparse.Namespace,
+) -> tuple[list[Path], dict[str, Any] | None, Path | None]:
+    manifest = None
+    manifest_path = None
+    paths: list[Path] = []
+    if args.manifest:
+        manifest_path = Path(args.manifest)
+        manifest = load_manifest(manifest_path)
+        paths.extend(
+            manifest_input_path(path, manifest_path)
+            for path in manifest.get("summaries", [])
+        )
+    paths.extend(Path(path) for path in args.summary or [])
+    if not paths:
+        raise SystemExit("batch requires at least one --summary or a --manifest")
+    return paths, manifest, manifest_path
+
+
+def manifest_section(manifest: dict[str, Any] | None, key: str) -> dict[str, Any]:
+    if not manifest:
+        return {}
+    section = manifest.get(key, {})
+    return section if isinstance(section, dict) else {}
+
+
+def int_setting(
+    cli_value: int | None,
+    manifest: dict[str, Any] | None,
+    key: str,
+    default: int,
+) -> int:
+    if cli_value is not None:
+        return cli_value
+    value = manifest_section(manifest, "thresholds").get(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"invalid integer threshold {key}: {value}") from None
+
+
+def float_setting(
+    cli_value: float | None,
+    manifest: dict[str, Any] | None,
+    key: str,
+    default: float,
+) -> float:
+    if cli_value is not None:
+        return cli_value
+    value = manifest_section(manifest, "thresholds").get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise SystemExit(f"invalid float threshold {key}: {value}") from None
+
+
+def output_path_setting(
+    cli_value: str | None,
+    manifest: dict[str, Any] | None,
+    manifest_path: Path | None,
+    key: str,
+    default: str,
+) -> Path:
+    if cli_value is not None:
+        return Path(cli_value)
+    value = manifest_section(manifest, "outputs").get(key)
+    if isinstance(value, str) and value:
+        if manifest_path:
+            return manifest_output_path(value, manifest_path)
+        return Path(value)
+    return Path(default)
+
+
+def failed_gate_names(batch: dict[str, Any]) -> list[str]:
+    return [gate["name"] for gate in batch["gates"] if not gate["passed"]]
+
+
 def command_summary(args: argparse.Namespace) -> int:
     report = load_json(Path(args.runtime_report))
     workload_probe = load_json(Path(args.workload_probe)) if args.workload_probe else None
@@ -1454,17 +1580,45 @@ def command_summary(args: argparse.Namespace) -> int:
 
 
 def command_batch(args: argparse.Namespace) -> int:
-    paths = [Path(path) for path in args.summary]
+    paths, manifest, manifest_path = batch_paths_from_args(args)
     batch = build_batch(
         paths,
-        args.min_repeat_runs,
-        args.max_unknown_rate,
-        args.max_missing_correlation_rate,
+        int_setting(
+            args.min_repeat_runs,
+            manifest,
+            "minRepeatRuns",
+            DEFAULT_MIN_REPEAT_RUNS,
+        ),
+        float_setting(
+            args.max_unknown_rate,
+            manifest,
+            "maxUnknownRate",
+            DEFAULT_MAX_UNKNOWN_RATE,
+        ),
+        float_setting(
+            args.max_missing_correlation_rate,
+            manifest,
+            "maxMissingCorrelationRate",
+            DEFAULT_MAX_MISSING_CORRELATION_RATE,
+        ),
     )
-    output_json = Path(args.output_json)
-    output_md = Path(args.output_md)
+    output_json = output_path_setting(
+        args.output_json,
+        manifest,
+        manifest_path,
+        "json",
+        DEFAULT_BATCH_OUTPUT_JSON,
+    )
+    output_md = output_path_setting(
+        args.output_md,
+        manifest,
+        manifest_path,
+        "md",
+        DEFAULT_BATCH_OUTPUT_MD,
+    )
     write_json(output_json, batch)
     write_batch_report(output_md, batch)
+    failed_gates = failed_gate_names(batch)
     print(
         json.dumps(
             {
@@ -1472,16 +1626,12 @@ def command_batch(args: argparse.Namespace) -> int:
                 "outputMd": str(output_md),
                 "runs": batch["totals"]["runs"],
                 "items": batch["totals"]["items"],
-                "failedGates": [
-                    gate["name"]
-                    for gate in batch["gates"]
-                    if not gate["passed"]
-                ],
+                "failedGates": failed_gates,
             },
             sort_keys=True,
         )
     )
-    return 0
+    return 1 if args.fail_on_gate and failed_gates else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1501,12 +1651,21 @@ def build_parser() -> argparse.ArgumentParser:
         "batch",
         help="aggregate multiple attribution summaries into planner-safe evidence",
     )
-    batch_parser.add_argument("--summary", action="append", required=True)
-    batch_parser.add_argument("--output-json", default=DEFAULT_BATCH_OUTPUT_JSON)
-    batch_parser.add_argument("--output-md", default=DEFAULT_BATCH_OUTPUT_MD)
-    batch_parser.add_argument("--min-repeat-runs", type=int, default=2)
-    batch_parser.add_argument("--max-unknown-rate", type=float, default=0.1)
-    batch_parser.add_argument("--max-missing-correlation-rate", type=float, default=0.25)
+    batch_parser.add_argument("--summary", action="append")
+    batch_parser.add_argument(
+        "--manifest",
+        help="JSON manifest with summaries, thresholds, and optional outputs",
+    )
+    batch_parser.add_argument("--output-json")
+    batch_parser.add_argument("--output-md")
+    batch_parser.add_argument("--min-repeat-runs", type=int)
+    batch_parser.add_argument("--max-unknown-rate", type=float)
+    batch_parser.add_argument("--max-missing-correlation-rate", type=float)
+    batch_parser.add_argument(
+        "--fail-on-gate",
+        action="store_true",
+        help="return non-zero when any batch gate fails",
+    )
     batch_parser.set_defaults(handler=command_batch)
 
     return parser
