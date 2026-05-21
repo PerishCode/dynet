@@ -246,36 +246,10 @@ impl ShadowsocksTcpStream {
         }
         let payload_len = match self.pending_payload_len {
             Some(payload_len) => payload_len,
-            None => {
-                let mut encrypted_len =
-                    match self.read_buffered(2 + TAG_LEN, "Shadowsocks chunk length")? {
-                        BufferedRead::Ready(bytes) => bytes,
-                        BufferedRead::Pending => {
-                            return Err(buffered_read::pending(
-                                "Shadowsocks chunk length is not ready",
-                            ));
-                        }
-                        BufferedRead::Eof => {
-                            self.eof = true;
-                            return Ok(());
-                        }
-                    };
-                let length = self
-                    .opener
-                    .as_mut()
-                    .expect("response opener initialized")
-                    .open(&mut encrypted_len, "length")
-                    .map_err(buffered_read::invalid_data)?;
-                if length.len() != 2 {
-                    return Err(buffered_read::invalid_data(format!(
-                        "Shadowsocks chunk length plaintext was {} bytes",
-                        length.len()
-                    )));
-                }
-                let payload_len = usize::from(u16::from_be_bytes([length[0], length[1]]));
-                self.pending_payload_len = Some(payload_len);
-                payload_len
-            }
+            None => match self.read_chunk_len()? {
+                Some(payload_len) => payload_len,
+                None => return Ok(()),
+            },
         };
         if payload_len == 0 {
             self.eof = true;
@@ -311,6 +285,36 @@ impl ShadowsocksTcpStream {
             .map_err(buffered_read::invalid_data)?;
         self.plain_read.extend(plaintext);
         Ok(())
+    }
+
+    fn read_chunk_len(&mut self) -> io::Result<Option<usize>> {
+        let mut encrypted_len = match self.read_buffered(2 + TAG_LEN, "Shadowsocks chunk length")? {
+            BufferedRead::Ready(bytes) => bytes,
+            BufferedRead::Pending => {
+                return Err(buffered_read::pending(
+                    "Shadowsocks chunk length is not ready",
+                ));
+            }
+            BufferedRead::Eof => {
+                self.eof = true;
+                return Ok(None);
+            }
+        };
+        let length = self
+            .opener
+            .as_mut()
+            .expect("response opener initialized")
+            .open(&mut encrypted_len, "length")
+            .map_err(buffered_read::invalid_data)?;
+        if length.len() != 2 {
+            return Err(buffered_read::invalid_data(format!(
+                "Shadowsocks chunk length plaintext was {} bytes",
+                length.len()
+            )));
+        }
+        let payload_len = usize::from(u16::from_be_bytes([length[0], length[1]]));
+        self.pending_payload_len = Some(payload_len);
+        Ok(Some(payload_len))
     }
 
     fn ensure_response_opener(&mut self) -> io::Result<()> {

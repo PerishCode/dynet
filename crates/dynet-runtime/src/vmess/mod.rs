@@ -253,38 +253,7 @@ impl VmessTcpStream {
         };
         let content_len = match self.response_header_content_len {
             Some(content_len) => content_len,
-            None => {
-                let mut encrypted_len =
-                    match self.read_buffered(2 + AEAD_TAG_LEN, "VMess response header length")? {
-                        BufferedRead::Ready(bytes) => bytes,
-                        BufferedRead::Pending => {
-                            return Err(buffered_read::pending(
-                                "VMess response header length is not ready",
-                            ));
-                        }
-                        BufferedRead::Eof => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "failed to read VMess response header length: unexpected EOF",
-                            ))
-                        }
-                    };
-                let len_key = kdf(&info.key, &[b"AEAD Resp Header Len Key"]);
-                let len_nonce = kdf(&info.iv, &[b"AEAD Resp Header Len IV"]);
-                let length_plain =
-                    open_aes_gcm(&len_key[..16], &len_nonce[..12], &[], &mut encrypted_len)
-                        .map_err(buffered_read::invalid_data)?;
-                if length_plain.len() != 2 {
-                    return Err(buffered_read::invalid_data(format!(
-                        "VMess response header length plaintext was {} bytes",
-                        length_plain.len()
-                    )));
-                }
-                let content_len =
-                    usize::from(u16::from_be_bytes([length_plain[0], length_plain[1]]));
-                self.response_header_content_len = Some(content_len);
-                content_len
-            }
+            None => self.read_response_header_len(&info)?,
         };
         let mut encrypted_header =
             match self.read_buffered(content_len + AEAD_TAG_LEN, "VMess response header")? {
@@ -323,6 +292,37 @@ impl VmessTcpStream {
         self.response_header = None;
         self.response_header_content_len = None;
         Ok(())
+    }
+
+    fn read_response_header_len(&mut self, info: &ResponseHeaderInfo) -> io::Result<usize> {
+        let mut encrypted_len =
+            match self.read_buffered(2 + AEAD_TAG_LEN, "VMess response header length")? {
+                BufferedRead::Ready(bytes) => bytes,
+                BufferedRead::Pending => {
+                    return Err(buffered_read::pending(
+                        "VMess response header length is not ready",
+                    ));
+                }
+                BufferedRead::Eof => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "failed to read VMess response header length: unexpected EOF",
+                    ))
+                }
+            };
+        let len_key = kdf(&info.key, &[b"AEAD Resp Header Len Key"]);
+        let len_nonce = kdf(&info.iv, &[b"AEAD Resp Header Len IV"]);
+        let length_plain = open_aes_gcm(&len_key[..16], &len_nonce[..12], &[], &mut encrypted_len)
+            .map_err(buffered_read::invalid_data)?;
+        if length_plain.len() != 2 {
+            return Err(buffered_read::invalid_data(format!(
+                "VMess response header length plaintext was {} bytes",
+                length_plain.len()
+            )));
+        }
+        let content_len = usize::from(u16::from_be_bytes([length_plain[0], length_plain[1]]));
+        self.response_header_content_len = Some(content_len);
+        Ok(content_len)
     }
 
     fn read_buffered(&mut self, len: usize, label: &str) -> io::Result<BufferedRead> {

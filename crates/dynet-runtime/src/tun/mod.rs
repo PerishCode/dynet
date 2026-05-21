@@ -97,40 +97,7 @@ pub(crate) fn read_packets(
     while !stop.load(Ordering::SeqCst) {
         match tun.file.read(&mut buffer) {
             Ok(0) => thread::sleep(Duration::from_millis(50)),
-            Ok(size) => {
-                counters.tun_packets.fetch_add(1, Ordering::SeqCst);
-                if let Some(summary) = PacketSummary::parse(&buffer[..size]) {
-                    if summary.version == 6 {
-                        counters.ipv6_packets_denied.fetch_add(1, Ordering::SeqCst);
-                        counters.emit(
-                            RuntimeEvent::new(RuntimeEventKind::IpPacketDenied)
-                                .field("ipVersion", 6)
-                                .field("protocol", summary.protocol)
-                                .field("source", summary.source)
-                                .field("destination", summary.destination)
-                                .field(
-                                    "destinationPort",
-                                    summary
-                                        .destination_port
-                                        .map(|port| port.to_string())
-                                        .unwrap_or_else(|| "<none>".to_string()),
-                                )
-                                .field("reason", "ipv6 forwarding is not implemented; fail closed"),
-                        )?;
-                    }
-                    debug!(
-                        version = summary.version,
-                        protocol = %summary.protocol,
-                        source = %summary.source,
-                        destination = %summary.destination,
-                        destination_port = ?summary.destination_port,
-                        bytes = size,
-                        "tun.packet"
-                    );
-                } else {
-                    debug!(bytes = size, "tun.packet.unparsed");
-                }
-            }
+            Ok(size) => handle_packet(&buffer[..size], size, &counters)?,
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(50));
             }
@@ -139,6 +106,46 @@ pub(crate) fn read_packets(
         }
     }
     Ok(())
+}
+
+fn handle_packet(packet: &[u8], size: usize, counters: &RuntimeCounters) -> Result<(), String> {
+    counters.tun_packets.fetch_add(1, Ordering::SeqCst);
+    if let Some(summary) = PacketSummary::parse(packet) {
+        if summary.version == 6 {
+            emit_ipv6_denied(&summary, counters)?;
+        }
+        debug!(
+            version = summary.version,
+            protocol = %summary.protocol,
+            source = %summary.source,
+            destination = %summary.destination,
+            destination_port = ?summary.destination_port,
+            bytes = size,
+            "tun.packet"
+        );
+    } else {
+        debug!(bytes = size, "tun.packet.unparsed");
+    }
+    Ok(())
+}
+
+fn emit_ipv6_denied(summary: &PacketSummary, counters: &RuntimeCounters) -> Result<(), String> {
+    counters.ipv6_packets_denied.fetch_add(1, Ordering::SeqCst);
+    counters.emit(
+        RuntimeEvent::new(RuntimeEventKind::IpPacketDenied)
+            .field("ipVersion", 6)
+            .field("protocol", summary.protocol)
+            .field("source", summary.source)
+            .field("destination", summary.destination)
+            .field(
+                "destinationPort",
+                summary
+                    .destination_port
+                    .map(|port| port.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            )
+            .field("reason", "ipv6 forwarding is not implemented; fail closed"),
+    )
 }
 
 struct PacketSummary {
