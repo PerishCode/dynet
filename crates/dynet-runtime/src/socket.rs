@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 
 #[cfg(target_os = "linux")]
@@ -26,6 +27,6 @@ pub(crate) fn set_socket_mark<T: AsRawFd>(socket: &T, mark: u32) -> Result<(), S
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn set_socket_mark<T: AsRawFd>(_socket: &T, _mark: u32) -> Result<(), String> {
+pub(crate) fn set_socket_mark<T>(_socket: &T, _mark: u32) -> Result<(), String> {
     Ok(())
 }

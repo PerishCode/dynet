@@ -214,15 +214,7 @@ fn forward_datagram(
     };
     if !sessions.contains_key(&key) {
         match start_session(
-            policy,
-            &selection.context,
-            &selection.outbound,
-            selection.domain.as_deref(),
-            &domains,
-            settings,
-            counters,
-            client,
-            target,
+            policy, &selection, &domains, settings, counters, client, target,
         ) {
             Ok(session) => {
                 sessions.insert(key.clone(), session);
@@ -368,15 +360,16 @@ fn select_udp_outbound(
 
 fn start_session(
     policy: &crate::RuntimePolicy,
-    context: &InboundContext,
-    outbound_tag: &str,
-    decision_domain: Option<&str>,
+    selection: &UdpSelection,
     domains: &[String],
     settings: &RuntimeSettings,
     counters: &RuntimeCounters,
     client: SocketAddr,
     target: SocketAddr,
 ) -> Result<Session, String> {
+    let context = &selection.context;
+    let outbound_tag = selection.outbound.as_str();
+    let decision_domain = selection.domain.as_deref();
     let id = counters.udp_sessions.fetch_add(1, Ordering::SeqCst) + 1;
     counters.emit(
         RuntimeEvent::new(RuntimeEventKind::UdpSessionStarted)

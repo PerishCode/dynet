@@ -1,7 +1,7 @@
 use std::{
     env,
     net::{IpAddr, SocketAddr},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use serde::Serialize;
@@ -204,15 +204,8 @@ pub(super) fn load_config() -> (TakeoverConfig, Vec<LifecycleCheck>) {
         &mut overrides,
         &mut checks,
     );
-    let manifest_path = Path::new(&state_dir)
-        .join("takeover")
-        .join("manifest.json")
-        .display()
-        .to_string();
-    let nft_dropin_path = Path::new(&nft_dropin_dir)
-        .join("dynet.nft")
-        .display()
-        .to_string();
+    let manifest_path = target_path_join(&state_dir, &["takeover", "manifest.json"]);
+    let nft_dropin_path = target_path_join(&nft_dropin_dir, &["dynet.nft"]);
 
     checks.push(LifecycleCheck {
         status: LifecycleStatus::Pass,
@@ -450,17 +443,29 @@ fn validate_nft_table(value: &str) -> Result<(), String> {
 }
 
 fn validate_absolute_path(value: &str) -> Result<(), String> {
-    let path = PathBuf::from(value);
-    if !path.is_absolute() {
+    if !value.starts_with('/') {
         return Err("path override must be absolute".to_string());
     }
-    for component in path.components() {
-        match component {
-            Component::RootDir | Component::Normal(_) => {}
-            _ => return Err("path override must not contain traversal or prefixes".to_string()),
+    for segment in value.split('/').skip(1) {
+        if segment.is_empty() {
+            continue;
+        }
+        if matches!(segment, "." | "..") || segment.contains('\\') {
+            return Err("path override must not contain traversal or prefixes".to_string());
         }
     }
     Ok(())
+}
+
+fn target_path_join(base: &str, segments: &[&str]) -> String {
+    let mut path = base.trim_end_matches('/').to_string();
+    for segment in segments {
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str(segment.trim_matches('/'));
+    }
+    path
 }
 
 fn validate_route_mark(value: &str) -> Result<(), String> {
