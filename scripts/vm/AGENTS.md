@@ -57,6 +57,9 @@ network experiments must stay inside disposable guests.
   runtime acceptance. It verifies `dynet run` takeover, DNS hijack, scoped
   quality-driven dialer selection, TUN packet observation, cleanup, and retained
   sanitized runtime reports without retaining secret configs.
+- `private_runtime_lib/` owns helper modules for the Private runtime acceptance
+  entrypoint: generated guest probe scripts, runtime command construction, VM
+  orchestration, summaries, checks, and sanitized report rendering.
 - `smoke.py` owns VM guest cold-start smoke checks that exercise guest network
   access, dynet CLI contracts, loopback API health, and the minimal
   install/run/uninstall TUN + DNS runtime boundary inside a disposable guest.
