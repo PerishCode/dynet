@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VM_PATH = ROOT / "scripts" / "vm"
 COMMANDS = {
-    "capture": ROOT / "scripts" / "vm" / "capture.py",
-    "check": ROOT / "scripts" / "vm" / "check.py",
-    "cleanup": ROOT / "scripts" / "vm" / "cleanup.py",
-    "collect": ROOT / "scripts" / "vm" / "collect.py",
-    "dev": ROOT / "scripts" / "vm" / "dev.py",
-    "image": ROOT / "scripts" / "vm" / "image.py",
-    "guest": ROOT / "scripts" / "vm" / "guest.py",
-    "setup": ROOT / "scripts" / "vm" / "setup.py",
-    "net": ROOT / "scripts" / "vm" / "net.py",
-    "private-probe": ROOT / "scripts" / "vm" / "private_probe.py",
-    "private-runtime": ROOT / "scripts" / "vm" / "private_runtime.py",
-    "smoke": ROOT / "scripts" / "vm" / "smoke.py",
-    "snapshot": ROOT / "scripts" / "vm" / "snapshot.py",
+    "capture": VM_PATH / "ops" / "capture.py",
+    "check": VM_PATH / "ops" / "check.py",
+    "cleanup": VM_PATH / "ops" / "cleanup.py",
+    "collect": VM_PATH / "ops" / "collect.py",
+    "dev": VM_PATH / "ops" / "dev.py",
+    "image": VM_PATH / "image.py",
+    "guest": VM_PATH / "guest.py",
+    "setup": VM_PATH / "setup.py",
+    "net": VM_PATH / "net.py",
+    "private-probe": VM_PATH / "private_probe.py",
+    "private-runtime": VM_PATH / "private_runtime.py",
+    "smoke": VM_PATH / "smoke.py",
+    "snapshot": VM_PATH / "snapshot.py",
 }
 
 
@@ -47,7 +49,12 @@ def main(argv: list[str]) -> int:
         print(f"unknown vm command: {command}", file=sys.stderr)
         print_help()
         return 2
-    return subprocess.run([sys.executable, str(script), *argv[1:]]).returncode
+    env = os.environ.copy()
+    python_path = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(VM_PATH) if not python_path else str(VM_PATH) + os.pathsep + python_path
+    )
+    return subprocess.run([sys.executable, str(script), *argv[1:]], env=env).returncode
 
 
 if __name__ == "__main__":

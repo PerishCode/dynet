@@ -188,13 +188,13 @@ python3 scripts/vmctl.py cleanup prune-local pcap --older-than-days 7
 staging and installing local dynet artifacts into guests. `scripts/vm/guest.py`
 owns guest definitions and lifecycle commands. `scripts/vm/net.py` owns explicit
 libvirt network operations. `scripts/vm/snapshot.py` owns offline qcow2
-snapshot/revert operations. `scripts/vm/collect.py` owns host/guest evidence
-bundles. `scripts/vm/check.py` owns high-level readiness checks.
-`scripts/vm/capture.py` owns short scoped packet captures on guest tap
-interfaces or inside guest interfaces. `scripts/vm/cleanup.py` owns resource
+snapshot/revert operations. `scripts/vm/ops/collect.py` owns host/guest evidence
+bundles. `scripts/vm/ops/check.py` owns high-level readiness checks.
+`scripts/vm/ops/capture.py` owns short scoped packet captures on guest tap
+interfaces or inside guest interfaces. `scripts/vm/ops/cleanup.py` owns resource
 usage reporting and safe pruning for generated cache/artifact buckets.
 `scripts/vm/smoke.py` owns guest cold-start smoke checks for dynet CLI/API
-contracts. `scripts/vm/dev.py` owns the high-frequency build/install/smoke/check
+contracts. `scripts/vm/ops/dev.py` owns the high-frequency build/install/smoke/check
 developer loop.
 
 Commands that can grow image caches, overlays, cloud-init seeds, staged

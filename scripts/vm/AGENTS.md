@@ -34,15 +34,15 @@ network experiments must stay inside disposable guests.
   helpers used by VM lab commands.
 - `lib/common_guest.py` owns guest key, guest IP, guest SSH, guest SCP, and
   remote command argument helpers.
-- `capture.py` owns packet captures scoped to guest tap interfaces or guest
+- `ops/capture.py` owns packet captures scoped to guest tap interfaces or guest
   internal interfaces.
-- `check.py` owns high-level readiness checks that compose lower-level tools,
+- `ops/check.py` owns high-level readiness checks that compose lower-level tools,
   including guest default route, resolver, DNS lookup, and HTTPS egress
   baselines.
-- `cleanup.py` owns resource usage reporting and safe pruning of generated lab
+- `ops/cleanup.py` owns resource usage reporting and safe pruning of generated lab
   cache/artifact buckets.
-- `collect.py` owns host/guest evidence bundles for lab runs.
-- `dev.py` owns high-frequency developer loops that compose local Linux artifact
+- `ops/collect.py` owns host/guest evidence bundles for lab runs.
+- `ops/dev.py` owns high-frequency developer loops that compose local Linux artifact
   builds, guest installation, smoke checks, and readiness checks.
 - `image.py` owns cloud image catalog, downloads, image validation, and overlay
   creation.
