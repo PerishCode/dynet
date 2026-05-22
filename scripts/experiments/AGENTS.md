@@ -26,6 +26,8 @@ product research without becoming product runtime code.
   `clash_verge_profile.py`.
 - `dynet_clash_contract.py` builds a GitHub-focused dynet-vs-Clash proof
   contract from sanitized Clash profile aggregates.
+- `dynet_clash_compare.py` compares a real-access Clash baseline summary with a
+  dynet probe manifest summary for the GitHub proof lane.
 - `real_access_blackbox.py` builds deterministic replay manifests from an
   access profile and runs zero-identity black-box network probes.
 - `dynet_probe_manifest.py` replays selected manifest HTTPS targets through
