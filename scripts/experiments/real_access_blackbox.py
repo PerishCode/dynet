@@ -15,6 +15,7 @@ from real_access.common import (
     write_json,
 )
 from real_access.comparison import build_comparison
+from real_access.controller import add_controller_args
 from real_access.manifest import build_manifest
 from real_access.reports import write_comparison_report
 from real_access.runner import run_manifest
@@ -109,6 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--manifest")
     run_parser.add_argument("--output-root", default=DEFAULT_RUN_ROOT)
     run_parser.add_argument("--label")
+    add_controller_args(run_parser)
     run_parser.add_argument(
         "--no-respect-schedule",
         action="store_false",

@@ -44,8 +44,9 @@ product research without becoming product runtime code.
   rendering. Keep
   `dynet_trace_attribution.py` as the CLI entrypoint.
 - `real_access/` owns helper modules for real-access manifest sampling,
-  zero-identity probe execution, run aggregation, comparison, and report
-  rendering. Keep `real_access_blackbox.py` as the CLI entrypoint.
+  zero-identity probe execution, optional sanitized Clash controller
+  attribution, run aggregation, comparison, and report rendering. Keep
+  `real_access_blackbox.py` as the CLI entrypoint.
 - `tunnel_private_config.py` owns Clash/Tunnel provider loading, bootstrap
   resolution, and dynet config construction for Tunnel-to-Private experiments.
 - `tunnel_private_lab.py` owns CLI commands that build/probe those configs and

@@ -26,6 +26,7 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         "- Response bodies, response headers, and resolved IP addresses were not stored.",
     ]
     append_report_groups(lines, summary)
+    append_controller(lines, summary.get("controllerAttribution", {}))
     if summary["errors"]:
         lines.extend(["", "## Errors", ""])
         for item in summary["errors"]:
@@ -68,6 +69,23 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         ]
     )
     path.write_text("\n".join(lines) + "\n")
+
+def append_controller(lines: list[str], controller: dict[str, Any]) -> None:
+    if not controller.get("enabled"):
+        return
+    lines.extend(["", "## Clash Controller Attribution", ""])
+    lines.append(
+        f"- observed={controller['observed']}/{controller['items']} "
+        f"missing={controller['missing']} rawNodeNamesStored={controller['rawNodeNamesStored']}"
+    )
+    if controller.get("chainKeys"):
+        lines.append("- chain keys:")
+        for item in controller["chainKeys"]:
+            lines.append(f"  - `{item['key']}`: {item['count']}")
+    if controller.get("rules"):
+        lines.append("- rules:")
+        for item in controller["rules"]:
+            lines.append(f"  - `{item['key']}`: {item['count']}")
 
 def append_report_groups(lines: list[str], summary: dict[str, Any]) -> None:
     for title, key in [

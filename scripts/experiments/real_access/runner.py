@@ -14,6 +14,7 @@ from real_access.common import (
     utc_now,
     write_json,
 )
+from real_access.controller import ClashSampler, sampler_from_args
 from real_access.net import classify_error, first_failed_stage, probe
 from real_access.reports import write_report
 
@@ -22,12 +23,13 @@ def run_manifest(manifest: dict[str, Any], args: argparse.Namespace, output_dir:
     started = utc_now()
     started_monotonic = time.perf_counter()
     results = []
+    sampler = sampler_from_args(args)
     jsonl = output_dir / "results.jsonl"
     jsonl.parent.mkdir(parents=True, exist_ok=True)
     with jsonl.open("w") as sink:
         for entry in manifest["entries"]:
             lag = sleep_until_entry(entry, args, started_monotonic)
-            result = run_probe(entry, args.timeout_seconds, lag)
+            result = run_probe(entry, args.timeout_seconds, lag, sampler)
             results.append(result)
             sink.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
             sink.flush()
@@ -53,11 +55,17 @@ def sleep_until_entry(
         return 0
     return int((now - due) * 1000)
 
-def run_probe(entry: dict[str, Any], timeout_seconds: float, schedule_lag_ms: int | None) -> dict[str, Any]:
+def run_probe(
+    entry: dict[str, Any],
+    timeout_seconds: float,
+    schedule_lag_ms: int | None,
+    sampler: ClashSampler | None = None,
+) -> dict[str, Any]:
     started = utc_now()
     begin = time.perf_counter()
     stages: list[dict[str, Any]] = []
     policy = target_policy(entry)
+    capture = sampler.capture(entry) if sampler else None
     try:
         details = probe(entry, timeout_seconds, stages)
         ok = True
@@ -71,6 +79,8 @@ def run_probe(entry: dict[str, Any], timeout_seconds: float, schedule_lag_ms: in
         error = failed_stage.get("errorType") if failed_stage else classify_error(exc)
         error_stage = failed_stage.get("name") if failed_stage else "probe"
         error_class = type(exc).__name__
+    finally:
+        clash_controller = capture.close() if capture else {"enabled": False}
     elapsed = int((time.perf_counter() - begin) * 1000)
     result = {
         "id": entry["id"],
@@ -91,6 +101,7 @@ def run_probe(entry: dict[str, Any], timeout_seconds: float, schedule_lag_ms: in
         "errorType": error,
         "errorStage": error_stage,
         "errorClass": error_class,
+        "clashController": clash_controller,
         "attribution": result_attribution(entry, ok, elapsed, error, error_stage, policy),
     }
     result.update(details)

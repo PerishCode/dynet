@@ -38,6 +38,7 @@ def summarize_run(
         "byFaultSignal": aggregate_fault_signal_groups(results),
         "byDomain": aggregate_groups(results, "domain"),
         "schedule": schedule_summary(results),
+        "controllerAttribution": controller_summary(results),
         "errors": top(Counter(row["errorType"] for row in results if row["errorType"])),
         "failureClusters": failure_clusters(results),
         "latencyHotspots": latency_hotspots(results),
@@ -264,4 +265,27 @@ def run_attribution(results: list[dict[str, Any]]) -> dict[str, Any]:
         "canBlamePlan": False,
         "canBlameNode": False,
         "reason": "black-box outcomes do not expose selected outbound, candidate set, cascade attempts, or gate verdicts",
+    }
+
+def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    enabled = [row for row in results if row.get("clashController", {}).get("enabled")]
+    observed = [row for row in enabled if row.get("clashController", {}).get("observed")]
+    chains = Counter(
+        chain
+        for row in observed
+        for chain in row.get("clashController", {}).get("chainKeys", [])
+    )
+    rules = Counter(
+        rule
+        for row in observed
+        for rule in row.get("clashController", {}).get("rules", [])
+    )
+    return {
+        "enabled": bool(enabled),
+        "items": len(enabled),
+        "observed": len(observed),
+        "missing": len(enabled) - len(observed),
+        "chainKeys": top(chains),
+        "rules": top(rules),
+        "rawNodeNamesStored": False,
     }
