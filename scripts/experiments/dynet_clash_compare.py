@@ -194,6 +194,7 @@ def clash_controller_summary(clash: dict[str, Any]) -> dict[str, Any]:
         "rawNodeNamesStored": bool(controller.get("rawNodeNamesStored", False)),
         "chainKeys": controller.get("chainKeys", []),
         "rules": controller.get("rules", []),
+        "failureGroups": controller.get("failureGroups", []),
     }
 
 
@@ -281,6 +282,15 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         )
         for item in controller.get("chainKeys", [])[:8]:
             lines.append(f"- chain `{item['key']}` count=`{item['count']}`")
+        if controller.get("failureGroups"):
+            lines.append("- failure groups:")
+            for item in controller["failureGroups"][:10]:
+                lines.append(
+                    f"  - chain=`{item['chainKey']}` observed=`{item['observed']}` "
+                    f"domain=`{item['domain']}` probe=`{item['probe']}` "
+                    f"stage=`{item['errorStage']}` error=`{item['errorType']}` "
+                    f"count=`{item['count']}`"
+                )
     if report["dynetFailures"]:
         lines.extend(["", "## Dynet Failures", ""])
         for item in report["dynetFailures"]:

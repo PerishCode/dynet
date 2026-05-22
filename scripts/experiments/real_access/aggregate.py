@@ -287,5 +287,71 @@ def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "missing": len(enabled) - len(observed),
         "chainKeys": top(chains),
         "rules": top(rules),
+        "failureGroups": controller_failure_groups(results),
         "rawNodeNamesStored": False,
     }
+
+def controller_failure_groups(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in results:
+        if row.get("ok"):
+            continue
+        controller = row.get("clashController", {})
+        if not controller.get("enabled"):
+            continue
+        chains = observed_chain_keys(controller)
+        for chain in chains:
+            key = (
+                chain,
+                str(row.get("domain")),
+                str(row.get("bucket")),
+                str(row.get("probe")),
+                str(row.get("errorStage")),
+                str(row.get("errorType")),
+            )
+            grouped[key].append(row)
+    output = []
+    for (
+        chain,
+        domain,
+        bucket,
+        probe,
+        error_stage,
+        error_type,
+    ), rows in sorted(grouped.items(), key=controller_failure_sort_key):
+        rules = Counter(
+            rule
+            for row in rows
+            for rule in row.get("clashController", {}).get("rules", [])
+            if isinstance(rule, str)
+        )
+        output.append(
+            {
+                "chainKey": chain,
+                "observed": chain != "missing-observation",
+                "domain": domain,
+                "bucket": bucket,
+                "probe": probe,
+                "errorStage": error_stage,
+                "errorType": error_type,
+                "count": len(rows),
+                "rules": top(rules),
+            }
+        )
+    return output
+
+def observed_chain_keys(controller: dict[str, Any]) -> list[str]:
+    if not controller.get("observed"):
+        return ["missing-observation"]
+    chains = [
+        str(chain)
+        for chain in controller.get("chainKeys", [])
+        if isinstance(chain, str)
+    ]
+    return chains or ["missing-observation"]
+
+def controller_failure_sort_key(
+    item: tuple[tuple[str, str, str, str, str, str], list[dict[str, Any]]],
+) -> tuple[int, str, str, str]:
+    (chain, domain, _bucket, probe, _error_stage, _error_type), rows = item
+    return (-len(rows), domain, chain, probe)

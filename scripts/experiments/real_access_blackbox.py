@@ -12,12 +12,14 @@ from real_access.common import (
     DEFAULT_SEED,
     load_json,
     run_output_dir,
+    utc_now,
     write_json,
 )
+from real_access.aggregate import summarize_run
 from real_access.comparison import build_comparison
 from real_access.controller import add_controller_args
 from real_access.manifest import build_manifest
-from real_access.reports import write_comparison_report
+from real_access.reports import write_comparison_report, write_report
 from real_access.runner import run_manifest
 
 
@@ -72,6 +74,46 @@ def command_compare(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+def command_summarize(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    manifest = load_json(Path(args.manifest or run_dir / "manifest.json"))
+    results = read_results_jsonl(Path(args.results_jsonl or run_dir / "results.jsonl"))
+    existing_summary = Path(args.existing_summary or run_dir / "summary.json")
+    previous = load_json(existing_summary) if existing_summary.exists() else {}
+    started = args.started_at or previous.get("startedAt") or first_started_at(results)
+    ended = args.ended_at or previous.get("endedAt") or utc_now()
+    summary = summarize_run(manifest, results, str(started), str(ended))
+    output_json = Path(args.output_json or run_dir / "summary.json")
+    output_md = Path(args.output_md or run_dir / "report.md")
+    write_json(output_json, summary)
+    write_report(output_md, summary)
+    print(
+        json.dumps(
+            {
+                "outputJson": str(output_json),
+                "outputMd": str(output_md),
+                "count": summary["totals"]["count"],
+                "successRate": summary["totals"]["successRate"],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+def read_results_jsonl(path: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]
+
+def first_started_at(results: list[dict[str, object]]) -> str:
+    for row in results:
+        value = row.get("startedAt")
+        if isinstance(value, str):
+            return value
+    return utc_now()
 
 def add_sampling_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", default=DEFAULT_PROFILE)
@@ -130,6 +172,20 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("--output-json", required=True)
     compare_parser.add_argument("--output-md", required=True)
     compare_parser.set_defaults(handler=command_compare)
+
+    summarize_parser = subparsers.add_parser(
+        "summarize",
+        help="rebuild a run summary/report from results.jsonl",
+    )
+    summarize_parser.add_argument("--run-dir", required=True)
+    summarize_parser.add_argument("--manifest")
+    summarize_parser.add_argument("--results-jsonl")
+    summarize_parser.add_argument("--existing-summary")
+    summarize_parser.add_argument("--started-at")
+    summarize_parser.add_argument("--ended-at")
+    summarize_parser.add_argument("--output-json")
+    summarize_parser.add_argument("--output-md")
+    summarize_parser.set_defaults(handler=command_summarize)
 
     return parser
 
