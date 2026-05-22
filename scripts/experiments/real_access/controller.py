@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import ipaddress
 import json
 import socket
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -41,6 +43,13 @@ class ControllerCapture:
         self.polls = 0
         self.fetch_errors = 0
         self.connections_seen = 0
+        self.polls_with_target_ips = 0
+        self.connections_seen_with_target_ips = 0
+        self.host_fields = Counter()
+        self.destination_ip_families = Counter()
+        self.target_ip_hit_families = Counter()
+        self.destination_ip_present = 0
+        self.target_ip_hits = 0
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -59,6 +68,7 @@ class ControllerCapture:
             fetch_errors=self.fetch_errors,
             connections_seen=self.connections_seen,
             target_ip_count=self.target_ip_count(),
+            match_diagnostics=self.match_diagnostics(),
         )
 
     def _run(self) -> None:
@@ -78,7 +88,11 @@ class ControllerCapture:
         ]
         self.connections_seen += len(connections)
         target_ips = self.target_ip_snapshot()
+        if target_ips:
+            self.polls_with_target_ips += 1
+            self.connections_seen_with_target_ips += len(connections)
         for item in connections:
+            self.record_match_diagnostics(item, target_ips)
             match_source = connection_match_source(item, self.domain, target_ips)
             if match_source:
                 self.samples.append(
@@ -97,6 +111,37 @@ class ControllerCapture:
     def target_ip_count(self) -> int:
         with self.lock:
             return len(self.target_ips)
+
+    def record_match_diagnostics(
+        self,
+        item: dict[str, Any],
+        target_ips: set[str],
+    ) -> None:
+        diagnostic = connection_diagnostic(item, target_ips)
+        for field in diagnostic["hostFields"]:
+            self.host_fields[field] += 1
+        if diagnostic["destinationIpPresent"]:
+            self.destination_ip_present += 1
+        if diagnostic["destinationIpFamily"]:
+            self.destination_ip_families[diagnostic["destinationIpFamily"]] += 1
+        if diagnostic["targetIpHit"]:
+            self.target_ip_hits += 1
+            if diagnostic["destinationIpFamily"]:
+                self.target_ip_hit_families[diagnostic["destinationIpFamily"]] += 1
+
+    def match_diagnostics(self) -> dict[str, Any]:
+        return {
+            "pollsWithTargetIps": self.polls_with_target_ips,
+            "connectionsSeenWithTargetIps": self.connections_seen_with_target_ips,
+            "hostFields": counter_rows(self.host_fields),
+            "targetIpFamilies": counter_rows(Counter(
+                ip_family(ip) for ip in self.target_ip_snapshot()
+            )),
+            "destinationIpFamilies": counter_rows(self.destination_ip_families),
+            "destinationIpPresent": self.destination_ip_present,
+            "targetIpHits": self.target_ip_hits,
+            "targetIpHitFamilies": counter_rows(self.target_ip_hit_families),
+        }
 
 
 def sampler_from_args(args: argparse.Namespace) -> ClashSampler | None:
@@ -216,6 +261,32 @@ def connection_match_source(
     return None
 
 
+def connection_diagnostic(
+    item: dict[str, Any],
+    target_ips: set[str],
+) -> dict[str, Any]:
+    metadata = item.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {
+            "hostFields": [],
+            "destinationIpPresent": False,
+            "destinationIpFamily": None,
+            "targetIpHit": False,
+        }
+    host_fields = [
+        field
+        for field in ("host", "sniffHost", "remoteDestination")
+        if normalize_host(metadata.get(field))
+    ]
+    destination_ip = string_or_none(metadata.get("destinationIP"))
+    return {
+        "hostFields": host_fields,
+        "destinationIpPresent": bool(destination_ip),
+        "destinationIpFamily": ip_family(destination_ip) if destination_ip else None,
+        "targetIpHit": bool(destination_ip and destination_ip in target_ips),
+    }
+
+
 def metadata_hosts(metadata: dict[str, Any]) -> set[str]:
     return {
         host
@@ -276,6 +347,18 @@ def string_or_none(value: Any) -> str | None:
     return str(value)
 
 
+def ip_family(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return "unknown"
+    if address.version == 4:
+        return "ipv4"
+    if address.version == 6:
+        return "ipv6"
+    return "unknown"
+
+
 def hash_value(value: Any, salt: str) -> str:
     raw = f"{salt}\0{value}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
@@ -288,6 +371,7 @@ def summarize_samples(
     fetch_errors: int = 0,
     connections_seen: int = 0,
     target_ip_count: int = 0,
+    match_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     chain_keys = sorted(
         {
@@ -316,8 +400,29 @@ def summarize_samples(
         "fetchErrors": fetch_errors,
         "connectionsSeen": connections_seen,
         "targetIpCount": target_ip_count,
+        "matchDiagnostics": match_diagnostics or empty_match_diagnostics(),
         "missReason": miss_reason(observed, polls, fetch_errors, connections_seen),
     }
+
+
+def empty_match_diagnostics() -> dict[str, Any]:
+    return {
+        "pollsWithTargetIps": 0,
+        "connectionsSeenWithTargetIps": 0,
+        "hostFields": [],
+        "targetIpFamilies": [],
+        "destinationIpFamilies": [],
+        "destinationIpPresent": 0,
+        "targetIpHits": 0,
+        "targetIpHitFamilies": [],
+    }
+
+
+def counter_rows(counter: Counter[str]) -> list[dict[str, Any]]:
+    return [
+        {"key": key, "count": count}
+        for key, count in counter.most_common()
+    ]
 
 
 def miss_reason(

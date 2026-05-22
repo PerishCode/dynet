@@ -299,9 +299,55 @@ def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rules": top(rules),
         "matchSources": top(match_sources),
         "missReasons": top(miss_reasons),
+        "missDiagnostics": controller_miss_diagnostics(enabled),
         "failureGroups": controller_failure_groups(results),
         "rawNodeNamesStored": False,
     }
+
+def controller_miss_diagnostics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    missing = [
+        row.get("clashController", {})
+        for row in results
+        if not row.get("clashController", {}).get("observed")
+    ]
+    return {
+        "pollsWithTargetIps": sum(
+            int(row.get("matchDiagnostics", {}).get("pollsWithTargetIps", 0))
+            for row in missing
+        ),
+        "connectionsSeenWithTargetIps": sum(
+            int(
+                row.get("matchDiagnostics", {}).get(
+                    "connectionsSeenWithTargetIps",
+                    0,
+                )
+            )
+            for row in missing
+        ),
+        "hostFields": top(sum_match_rows(missing, "hostFields")),
+        "targetIpFamilies": top(sum_match_rows(missing, "targetIpFamilies")),
+        "destinationIpFamilies": top(sum_match_rows(
+            missing,
+            "destinationIpFamilies",
+        )),
+        "destinationIpPresent": sum(
+            int(row.get("matchDiagnostics", {}).get("destinationIpPresent", 0))
+            for row in missing
+        ),
+        "targetIpHits": sum(
+            int(row.get("matchDiagnostics", {}).get("targetIpHits", 0))
+            for row in missing
+        ),
+        "targetIpHitFamilies": top(sum_match_rows(missing, "targetIpHitFamilies")),
+    }
+
+def sum_match_rows(rows: list[dict[str, Any]], key: str) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for row in rows:
+        for item in row.get("matchDiagnostics", {}).get(key, []):
+            if isinstance(item, dict):
+                counter[str(item.get("key"))] += int(item.get("count", 0))
+    return counter
 
 def controller_failure_groups(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)

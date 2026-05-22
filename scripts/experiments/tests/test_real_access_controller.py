@@ -63,6 +63,23 @@ class RealAccessControllerTest(unittest.TestCase):
             )
         )
 
+    def test_connection_diagnostic(self) -> None:
+        diagnostic = controller.connection_diagnostic(
+            {
+                "metadata": {
+                    "host": "api.github.com",
+                    "remoteDestination": "api.github.com:443",
+                    "destinationIP": "203.0.113.10",
+                }
+            },
+            {"203.0.113.10"},
+        )
+
+        self.assertEqual(diagnostic["hostFields"], ["host", "remoteDestination"])
+        self.assertTrue(diagnostic["destinationIpPresent"])
+        self.assertEqual(diagnostic["destinationIpFamily"], "ipv4")
+        self.assertTrue(diagnostic["targetIpHit"])
+
     def test_summarizes_samples(self) -> None:
         summary = controller.summarize_samples([
             {"chainHashes": ["a", "b"], "rule": "Match"},
@@ -74,6 +91,7 @@ class RealAccessControllerTest(unittest.TestCase):
         self.assertEqual(summary["chainKeys"], ["a>b"])
         self.assertEqual(summary["rules"], ["Match"])
         self.assertIsNone(summary["missReason"])
+        self.assertEqual(summary["matchDiagnostics"]["targetIpHits"], 0)
 
     def test_summarizes_miss_reason(self) -> None:
         summary = controller.summarize_samples(
@@ -81,10 +99,25 @@ class RealAccessControllerTest(unittest.TestCase):
             polls=3,
             fetch_errors=0,
             connections_seen=10,
+            match_diagnostics={
+                "pollsWithTargetIps": 2,
+                "connectionsSeenWithTargetIps": 7,
+                "hostFields": [{"key": "host", "count": 4}],
+                "targetIpFamilies": [{"key": "ipv4", "count": 1}],
+                "destinationIpFamilies": [{"key": "ipv4", "count": 6}],
+                "destinationIpPresent": 6,
+                "targetIpHits": 0,
+                "targetIpHitFamilies": [],
+            },
         )
 
         self.assertFalse(summary["observed"])
         self.assertEqual(summary["missReason"], "no-domain-match")
+        self.assertEqual(summary["matchDiagnostics"]["destinationIpPresent"], 6)
+        self.assertEqual(
+            summary["matchDiagnostics"]["destinationIpFamilies"],
+            [{"key": "ipv4", "count": 6}],
+        )
 
     def test_decodes_chunked_body(self) -> None:
         body = b"7\r\n{\"a\":1}\r\n0\r\n\r\n"

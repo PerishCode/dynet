@@ -109,6 +109,8 @@ def append_controller(lines: list[str], controller: dict[str, Any]) -> None:
         lines.append("- miss reasons:")
         for item in controller["missReasons"]:
             lines.append(f"  - `{item['key']}`: {item['count']}")
+    if controller.get("missDiagnostics"):
+        append_miss_diagnostics(lines, controller["missDiagnostics"])
     if controller.get("failureGroups"):
         lines.append("- failure groups:")
         for item in controller["failureGroups"]:
@@ -124,6 +126,32 @@ def append_controller(lines: list[str], controller: dict[str, Any]) -> None:
                 f"stage=`{item['errorStage']}` error=`{item['errorType']}` "
                 f"count={item['count']} rules=`{rules}` matchSources=`{sources}`"
             )
+
+def append_miss_diagnostics(lines: list[str], diagnostics: dict[str, Any]) -> None:
+    lines.append(
+        "- miss diagnostics: "
+        f"pollsWithTargetIps={diagnostics.get('pollsWithTargetIps', 0)} "
+        f"connectionsSeenWithTargetIps={diagnostics.get('connectionsSeenWithTargetIps', 0)} "
+        f"destinationIpPresent={diagnostics.get('destinationIpPresent', 0)} "
+        f"targetIpHits={diagnostics.get('targetIpHits', 0)}"
+    )
+    if diagnostics.get("hostFields"):
+        fields = ", ".join(
+            f"{item['key']}={item['count']}"
+            for item in diagnostics["hostFields"]
+        )
+        lines.append(f"- miss host fields: {fields}")
+    for title, key in [
+        ("target IP families", "targetIpFamilies"),
+        ("destination IP families", "destinationIpFamilies"),
+        ("target IP hit families", "targetIpHitFamilies"),
+    ]:
+        if diagnostics.get(key):
+            values = ", ".join(
+                f"{item['key']}={item['count']}"
+                for item in diagnostics[key]
+            )
+            lines.append(f"- miss {title}: {values}")
 
 def append_report_groups(lines: list[str], summary: dict[str, Any]) -> None:
     for title, key in [

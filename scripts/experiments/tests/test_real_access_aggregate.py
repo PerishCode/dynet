@@ -22,6 +22,19 @@ class RealAccessAggregateTest(unittest.TestCase):
         self.assertEqual(summary["matchSources"], [])
         self.assertEqual(summary["missReasons"], [{"key": "unknown", "count": 1}])
         self.assertEqual(
+            summary["missDiagnostics"],
+            {
+                "pollsWithTargetIps": 2,
+                "connectionsSeenWithTargetIps": 7,
+                "hostFields": [{"key": "host", "count": 4}],
+                "targetIpFamilies": [{"key": "ipv4", "count": 1}],
+                "destinationIpFamilies": [{"key": "ipv4", "count": 6}],
+                "destinationIpPresent": 6,
+                "targetIpHits": 0,
+                "targetIpHitFamilies": [],
+            },
+        )
+        self.assertEqual(
             summary["failureGroups"],
             [
                 {
@@ -72,6 +85,16 @@ def result(
             "observed": bool(chain_keys),
             "chainKeys": chain_keys,
             "rules": rules,
+            "matchDiagnostics": {
+                "pollsWithTargetIps": 2,
+                "connectionsSeenWithTargetIps": 7,
+                "hostFields": [{"key": "host", "count": 4}],
+                "targetIpFamilies": [{"key": "ipv4", "count": 1}],
+                "destinationIpFamilies": [{"key": "ipv4", "count": 6}],
+                "destinationIpPresent": 6,
+                "targetIpHits": 0,
+                "targetIpHitFamilies": [],
+            },
         },
     }
 
