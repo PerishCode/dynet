@@ -132,6 +132,7 @@ python3 scripts/vmctl.py cleanup --host fuisp report
 python3 scripts/experiments/clash_verge_profile.py --help
 python3 scripts/experiments/real_access_blackbox.py --help
 python3 scripts/experiments/dynet_probe_manifest.py --help
+python3 scripts/experiments/dynet_clash_compare.py batch --help
 python3 scripts/experiments/dynet_probe_quality.py --help
 python3 scripts/experiments/dynet_trace_attribution.py --help
 ```

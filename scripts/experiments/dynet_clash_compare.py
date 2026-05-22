@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -416,6 +417,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "batch":
+        from dynet_clash.batch import command
+
+        return command(sys.argv[2:])
     args = build_parser().parse_args()
     report = build_comparison(args)
     write_json(Path(args.output_json), report)
