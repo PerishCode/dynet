@@ -19,12 +19,14 @@ class RealAccessAggregateTest(unittest.TestCase):
 
         self.assertEqual(summary["observed"], 2)
         self.assertEqual(summary["missing"], 1)
+        self.assertEqual(summary["missReasons"], [{"key": "unknown", "count": 1}])
         self.assertEqual(
             summary["failureGroups"],
             [
                 {
                     "chainKey": "a>b",
                     "observed": True,
+                    "missReason": None,
                     "domain": "api.github.com",
                     "bucket": "github-proof",
                     "probe": "tls-handshake",
@@ -36,6 +38,7 @@ class RealAccessAggregateTest(unittest.TestCase):
                 {
                     "chainKey": "missing-observation",
                     "observed": False,
+                    "missReason": "unknown",
                     "domain": "github.com",
                     "bucket": "github-proof",
                     "probe": "tls-handshake",

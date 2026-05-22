@@ -280,6 +280,11 @@ def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         for row in observed
         for rule in row.get("clashController", {}).get("rules", [])
     )
+    miss_reasons = Counter(
+        str(row.get("clashController", {}).get("missReason") or "unknown")
+        for row in enabled
+        if not row.get("clashController", {}).get("observed")
+    )
     return {
         "enabled": bool(enabled),
         "items": len(enabled),
@@ -287,6 +292,7 @@ def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "missing": len(enabled) - len(observed),
         "chainKeys": top(chains),
         "rules": top(rules),
+        "missReasons": top(miss_reasons),
         "failureGroups": controller_failure_groups(results),
         "rawNodeNamesStored": False,
     }
@@ -329,6 +335,7 @@ def controller_failure_groups(results: list[dict[str, Any]]) -> list[dict[str, A
             {
                 "chainKey": chain,
                 "observed": chain != "missing-observation",
+                "missReason": group_miss_reason(rows, chain),
                 "domain": domain,
                 "bucket": bucket,
                 "probe": probe,
@@ -349,6 +356,15 @@ def observed_chain_keys(controller: dict[str, Any]) -> list[str]:
         if isinstance(chain, str)
     ]
     return chains or ["missing-observation"]
+
+def group_miss_reason(rows: list[dict[str, Any]], chain: str) -> str | None:
+    if chain != "missing-observation":
+        return None
+    reasons = Counter(
+        str(row.get("clashController", {}).get("missReason") or "unknown")
+        for row in rows
+    )
+    return reasons.most_common(1)[0][0] if reasons else "unknown"
 
 def controller_failure_sort_key(
     item: tuple[tuple[str, str, str, str, str, str], list[dict[str, Any]]],

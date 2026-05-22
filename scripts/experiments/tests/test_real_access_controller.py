@@ -49,6 +49,18 @@ class RealAccessControllerTest(unittest.TestCase):
         self.assertEqual(summary["samples"], 2)
         self.assertEqual(summary["chainKeys"], ["a>b"])
         self.assertEqual(summary["rules"], ["Match"])
+        self.assertIsNone(summary["missReason"])
+
+    def test_summarizes_miss_reason(self) -> None:
+        summary = controller.summarize_samples(
+            [],
+            polls=3,
+            fetch_errors=0,
+            connections_seen=10,
+        )
+
+        self.assertFalse(summary["observed"])
+        self.assertEqual(summary["missReason"], "no-domain-match")
 
     def test_decodes_chunked_body(self) -> None:
         body = b"7\r\n{\"a\":1}\r\n0\r\n\r\n"

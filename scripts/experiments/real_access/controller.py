@@ -36,6 +36,9 @@ class ControllerCapture:
         self.domain = domain
         self.stop_event = threading.Event()
         self.samples: list[dict[str, Any]] = []
+        self.polls = 0
+        self.fetch_errors = 0
+        self.connections_seen = 0
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -44,19 +47,31 @@ class ControllerCapture:
             time.sleep(self.settings.tail_ms / 1000)
         self.stop_event.set()
         self.thread.join(timeout=2)
-        return summarize_samples(self.samples)
+        return summarize_samples(
+            self.samples,
+            polls=self.polls,
+            fetch_errors=self.fetch_errors,
+            connections_seen=self.connections_seen,
+        )
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
             try:
                 snapshot = fetch_connections(self.settings)
+                self.polls += 1
+                connections = [
+                    item
+                    for item in snapshot.get("connections", [])
+                    if isinstance(item, dict)
+                ]
+                self.connections_seen += len(connections)
                 self.samples.extend(
                     sanitize_connection(item, self.domain, self.settings.hash_salt)
-                    for item in snapshot.get("connections", [])
+                    for item in connections
                     if connection_matches(item, self.domain)
                 )
             except Exception:
-                pass
+                self.fetch_errors += 1
             self.stop_event.wait(max(self.settings.poll_ms, 10) / 1000)
 
 
@@ -186,7 +201,13 @@ def hash_value(value: Any, salt: str) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_samples(
+    samples: list[dict[str, Any]],
+    *,
+    polls: int = 0,
+    fetch_errors: int = 0,
+    connections_seen: int = 0,
+) -> dict[str, Any]:
     chain_keys = sorted(
         {
             ">".join(sample.get("chainHashes", []))
@@ -195,13 +216,35 @@ def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
         }
     )
     rules = sorted({sample.get("rule") for sample in samples if sample.get("rule")})
+    observed = bool(samples)
     return {
         "enabled": True,
         "samples": len(samples),
-        "observed": bool(samples),
+        "observed": observed,
         "chainKeys": chain_keys,
         "rules": rules,
+        "polls": polls,
+        "fetchErrors": fetch_errors,
+        "connectionsSeen": connections_seen,
+        "missReason": miss_reason(observed, polls, fetch_errors, connections_seen),
     }
+
+
+def miss_reason(
+    observed: bool,
+    polls: int,
+    fetch_errors: int,
+    connections_seen: int,
+) -> str | None:
+    if observed:
+        return None
+    if fetch_errors and not polls:
+        return "fetch-error"
+    if polls and connections_seen == 0:
+        return "no-controller-connections"
+    if polls:
+        return "no-domain-match"
+    return "not-polled"
 
 
 def add_controller_args(parser: argparse.ArgumentParser) -> None:

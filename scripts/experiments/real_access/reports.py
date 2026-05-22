@@ -86,13 +86,19 @@ def append_controller(lines: list[str], controller: dict[str, Any]) -> None:
         lines.append("- rules:")
         for item in controller["rules"]:
             lines.append(f"  - `{item['key']}`: {item['count']}")
+    if controller.get("missReasons"):
+        lines.append("- miss reasons:")
+        for item in controller["missReasons"]:
+            lines.append(f"  - `{item['key']}`: {item['count']}")
     if controller.get("failureGroups"):
         lines.append("- failure groups:")
         for item in controller["failureGroups"]:
             rules = ", ".join(rule["key"] for rule in item.get("rules", [])) or "none"
+            miss = item.get("missReason") or "none"
             lines.append(
                 f"  - chain=`{item['chainKey']}` observed={item['observed']} "
-                f"domain=`{item['domain']}` probe=`{item['probe']}` "
+                f"missReason=`{miss}` domain=`{item['domain']}` "
+                f"probe=`{item['probe']}` "
                 f"stage=`{item['errorStage']}` error=`{item['errorType']}` "
                 f"count={item['count']} rules=`{rules}`"
             )
