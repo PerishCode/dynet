@@ -21,8 +21,11 @@ ACCESS_RE = re.compile(
 WARNING_RE = re.compile(
     r'^\[(?P<wall>[^\]]+)\] time="(?P<ts>[^"]+)" level=warning '
     r'msg="\[(?P<proto>[A-Z]+)\] dial (?P<policy>.*?) '
-    r'\(match (?P<match>[^)]*)\) (?P<src>\S+) --> (?P<target>\S+) '
+    r'\(match (?P<match>.*?)\) (?P<src>\S+) --> (?P<target>\S+) '
     r'error: (?P<error>.+)"$'
+)
+FRACTIONAL_TIME_RE = re.compile(
+    r"^(?P<head>[^.]+)\.(?P<fraction>\d+)(?P<suffix>Z|[+-]\d{2}:\d{2})?$"
 )
 
 
@@ -98,15 +101,36 @@ def egress_group(using: str) -> str:
 
 
 def parse_time(value: str) -> dt.datetime | None:
+    normalized = normalize_time(value)
     try:
-        return dt.datetime.fromisoformat(value)
+        return dt.datetime.fromisoformat(normalized)
     except ValueError:
         return None
 
 
+def normalize_time(value: str) -> str:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    match = FRACTIONAL_TIME_RE.match(value)
+    if not match:
+        return value
+    fraction = match.group("fraction")[:6].ljust(6, "0")
+    return f"{match.group('head')}.{fraction}{match.group('suffix') or ''}"
+
+
+def time_bucket(timestamp: dt.datetime | None, minutes: int) -> str | None:
+    if timestamp is None:
+        return None
+    minute = (timestamp.minute // minutes) * minutes
+    bucketed = timestamp.replace(minute=minute, second=0, microsecond=0)
+    if minutes == 60:
+        return bucketed.strftime("%Y-%m-%dT%H:00%z")
+    return bucketed.strftime("%Y-%m-%dT%H:%M%z")
+
+
 def error_reason(error: str) -> str:
     lowered = error.lower()
-    if "timeout" in lowered:
+    if "timeout" in lowered or "deadline exceeded" in lowered or "timed out" in lowered:
         return "timeout"
     if "refused" in lowered:
         return "refused"
@@ -130,7 +154,8 @@ def access_event(row: dict[str, str]) -> dict[str, Any]:
     site = site_for(host)
     return {
         "ts": row["ts"],
-        "hour": timestamp.strftime("%Y-%m-%dT%H:00%z") if timestamp else None,
+        "hour": time_bucket(timestamp, 60),
+        "window5m": time_bucket(timestamp, 5),
         "proto": row["proto"],
         "host": host,
         "site": site,
@@ -144,9 +169,12 @@ def access_event(row: dict[str, str]) -> dict[str, Any]:
 def warning_event(row: dict[str, str]) -> dict[str, Any]:
     host, port = parse_target(row["target"])
     host = safe_host(host)
+    timestamp = parse_time(row["ts"])
     site = site_for(host)
     return {
         "ts": row["ts"],
+        "hour": time_bucket(timestamp, 60),
+        "window5m": time_bucket(timestamp, 5),
         "proto": row["proto"],
         "host": host,
         "site": site,
@@ -197,6 +225,10 @@ def top(counter: Counter[str], limit: int = 20) -> list[dict[str, Any]]:
     return [{"key": key, "count": count} for key, count in counter.most_common(limit)]
 
 
+def time_distribution(counter: Counter[str], limit: int = 500) -> list[dict[str, Any]]:
+    return [{"key": key, "count": counter[key]} for key in sorted(counter)[:limit]]
+
+
 def top_domains(events: list[dict[str, Any]], errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_host: dict[str, list[dict[str, Any]]] = defaultdict(list)
     error_count = Counter(row["host"] for row in errors)
@@ -205,6 +237,8 @@ def top_domains(events: list[dict[str, Any]], errors: list[dict[str, Any]]) -> l
     ranked = sorted(by_host.items(), key=lambda item: len(item[1]), reverse=True)
     output = []
     for host, rows in ranked[:80]:
+        windows = Counter(row["window5m"] for row in rows if row.get("window5m"))
+        hours = Counter(row["hour"] for row in rows if row.get("hour"))
         output.append(
             {
                 "domain": host,
@@ -218,6 +252,9 @@ def top_domains(events: list[dict[str, Any]], errors: list[dict[str, Any]]) -> l
                 "matches": sorted({row["match"] for row in rows}),
                 "firstSeen": min(row["ts"] for row in rows),
                 "lastSeen": max(row["ts"] for row in rows),
+                "activeHours": len(hours),
+                "activeWindows5m": len(windows),
+                "maxPer5m": max(windows.values()) if windows else 0,
             }
         )
     return output
@@ -233,6 +270,8 @@ def top_sites(events: list[dict[str, Any]], errors: list[dict[str, Any]]) -> lis
     for site, rows in ranked[:50]:
         domains = Counter(row["host"] for row in rows)
         categories = Counter(row["category"] for row in rows)
+        windows = Counter(row["window5m"] for row in rows if row.get("window5m"))
+        hours = Counter(row["hour"] for row in rows if row.get("hour"))
         output.append(
             {
                 "site": site,
@@ -242,6 +281,9 @@ def top_sites(events: list[dict[str, Any]], errors: list[dict[str, Any]]) -> lis
                 "topDomains": [key for key, _ in domains.most_common(8)],
                 "egressGroups": sorted({row["egress"] for row in rows}),
                 "matches": sorted({row["match"] for row in rows}),
+                "activeHours": len(hours),
+                "activeWindows5m": len(windows),
+                "maxPer5m": max(windows.values()) if windows else 0,
             }
         )
     return output
@@ -347,7 +389,10 @@ def build_report(
             "byCategory": top(Counter(row["category"] for row in events)),
             "byEgressGroup": top(Counter(row["egress"] for row in events)),
             "byMatch": top(Counter(row["match"] for row in events)),
-            "byHour": top(Counter(row["hour"] for row in events if row["hour"]), 200),
+            "byHour": time_distribution(Counter(row["hour"] for row in events if row["hour"])),
+            "byFiveMinute": time_distribution(
+                Counter(row["window5m"] for row in events if row["window5m"]),
+            ),
         },
         "topDomains": domains,
         "topSites": top_sites(events, errors),
@@ -355,6 +400,10 @@ def build_report(
             "byReason": top(Counter(row["reason"] for row in errors)),
             "byDomain": top(Counter(row["host"] for row in errors)),
             "byEgressGroup": top(Counter(row["egress"] for row in errors)),
+            "byHour": time_distribution(Counter(row["hour"] for row in errors if row["hour"])),
+            "byFiveMinute": time_distribution(
+                Counter(row["window5m"] for row in errors if row["window5m"]),
+            ),
         },
         "experimentProfile": {
             "seedBasis": "stable random seed should be supplied by the experiment harness",
@@ -385,12 +434,17 @@ def write_markdown(report: dict[str, Any], output: Path) -> None:
     lines.extend(["", "## Egress Mix", ""])
     for item in report["distribution"]["byEgressGroup"]:
         lines.append(f"- `{item['key']}`: {item['count']}")
+    if report["distribution"]["byHour"]:
+        lines.extend(["", "## Hourly Events", ""])
+        for item in report["distribution"]["byHour"][:24]:
+            lines.append(f"- `{item['key']}`: {item['count']}")
     lines.extend(["", "## Top Sites", ""])
     for item in report["topSites"][:20]:
         egress = ",".join(item["egressGroups"])
         lines.append(
             f"- `{item['site']}` [{item['category']}]: {item['count']} events, "
-            f"{item['errors']} errors, egress={egress}"
+            f"{item['errors']} errors, active5m={item['activeWindows5m']}, "
+            f"max5m={item['maxPer5m']}, egress={egress}"
         )
     lines.extend(["", "## Experiment Pools", ""])
     for pool in report["experimentProfile"]["samplePools"]:

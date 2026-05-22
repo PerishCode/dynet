@@ -55,10 +55,25 @@ def control_pool(args: argparse.Namespace) -> dict[str, Any] | None:
         "probeModes": list(DEFAULT_PROBES),
     }
 
+def focus_pool(args: argparse.Namespace) -> dict[str, Any] | None:
+    domains = unique_domains(list(args.focus_domain or []))
+    if not domains:
+        return None
+    return {
+        "name": args.focus_bucket,
+        "weight": args.focus_weight,
+        "purpose": "operator-selected high-priority proof targets",
+        "domains": domains,
+        "probeModes": list(DEFAULT_PROBES),
+    }
+
 def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     profile_path = Path(args.profile)
     profile = load_json(profile_path)
     pools = load_pools(profile, parse_csv(args.buckets))
+    focus = focus_pool(args)
+    if focus is not None:
+        pools.insert(0, focus)
     control = control_pool(args)
     if control is not None:
         pools.append(control)
@@ -107,6 +122,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             "buckets": sorted({pool["name"] for pool in pools}),
             "probeModes": sorted(requested_modes or DEFAULT_PROBES),
             "controlDomains": control["domains"] if control else [],
+            "focusDomains": focus["domains"] if focus else [],
         },
         "entries": entries,
     }

@@ -88,6 +88,9 @@ def add_sampling_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--control-domain", action="append")
     parser.add_argument("--control-weight", type=int, default=8)
     parser.add_argument("--no-default-controls", action="store_true")
+    parser.add_argument("--focus-domain", action="append")
+    parser.add_argument("--focus-weight", type=int, default=25)
+    parser.add_argument("--focus-bucket", default="target-focus")
     parser.add_argument("--timeout-seconds", type=float, default=5)
 
 def build_parser() -> argparse.ArgumentParser:

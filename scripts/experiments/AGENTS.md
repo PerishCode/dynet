@@ -24,6 +24,8 @@ product research without becoming product runtime code.
   privacy-preserving access profile.
 - `clash_profile_taxonomy.py` owns static suffix/category taxonomy used by
   `clash_verge_profile.py`.
+- `dynet_clash_contract.py` builds a GitHub-focused dynet-vs-Clash proof
+  contract from sanitized Clash profile aggregates.
 - `real_access_blackbox.py` builds deterministic replay manifests from an
   access profile and runs zero-identity black-box network probes.
 - `dynet_probe_manifest.py` replays selected manifest HTTPS targets through
