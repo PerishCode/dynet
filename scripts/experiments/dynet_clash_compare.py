@@ -58,7 +58,7 @@ def build_comparison_from_summaries(
         "clashController": clash_controller_summary(clash),
         "dynetFailures": dynet_failures(dynet),
         "verdict": verdict(buckets, args),
-        "limits": comparison_limits(clash, dynet),
+        "limits": comparison_limits(clash, dynet, args),
     }
 
 
@@ -200,13 +200,19 @@ def clash_controller_summary(clash: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def comparison_limits(clash: dict[str, Any], dynet: dict[str, Any]) -> list[str]:
+def comparison_limits(
+    clash: dict[str, Any],
+    dynet: dict[str, Any],
+    args: argparse.Namespace,
+) -> list[str]:
     limits = []
     controller = clash_controller_summary(clash)
     if not controller["enabled"]:
         limits.append("black-box Clash summary lacks selected-node and candidate-plan evidence")
     elif controller.get("missing"):
         limits.append("some Clash probes lack controller selected-chain observations")
+    limits.extend(clash_guardrail_limits(clash, args))
+    limits.extend(dynet_guardrail_limits(dynet, args))
     if not dynet.get("replay", {}).get("schedule"):
         limits.insert(
             0,
@@ -223,6 +229,30 @@ def comparison_limits(clash: dict[str, Any], dynet: dict[str, Any]) -> list[str]
             1,
             "some dynet tls-handshake source probes were not replayed as TLS-only probes",
         )
+    return limits
+
+
+def dynet_guardrail_limits(dynet: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    buckets = dynet_bucket_map(dynet)
+    limits = []
+    for key in args.guardrail_bucket or []:
+        item = buckets.get(key)
+        if item and item["successRate"] < args.min_guardrail_rate:
+            limits.append(
+                f"dynet guardrail bucket `{key}` is below clean baseline threshold"
+            )
+    return limits
+
+
+def clash_guardrail_limits(clash: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    buckets = clash_bucket_map(clash)
+    limits = []
+    for key in args.guardrail_bucket or []:
+        item = buckets.get(key)
+        if item and item["successRate"] < args.min_guardrail_rate:
+            limits.append(
+                f"Clash guardrail bucket `{key}` is below clean baseline threshold"
+            )
     return limits
 
 

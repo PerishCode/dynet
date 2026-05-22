@@ -32,6 +32,7 @@ class DynetClashCompareTest(unittest.TestCase):
                     {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
                 ]
             },
+            sample_args(),
         )
 
         self.assertIn(
@@ -49,6 +50,7 @@ class DynetClashCompareTest(unittest.TestCase):
                     {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
                 ],
             },
+            sample_args(),
         )
 
         self.assertNotIn(
@@ -63,6 +65,7 @@ class DynetClashCompareTest(unittest.TestCase):
                 "replay": {"schedule": True},
                 "items": [],
             },
+            sample_args(),
         )
 
         self.assertNotIn(
@@ -77,6 +80,7 @@ class DynetClashCompareTest(unittest.TestCase):
                 "replay": {"schedule": True},
                 "items": [],
             },
+            sample_args(),
         )
 
         self.assertNotIn(
@@ -98,10 +102,52 @@ class DynetClashCompareTest(unittest.TestCase):
                 "replay": {"schedule": True},
                 "items": [],
             },
+            sample_args(),
         )
 
         self.assertIn(
             "some Clash probes lack controller selected-chain observations",
+            limits,
+        )
+
+    def test_clash_guardrail_limit(self) -> None:
+        clash = sample_clash_controller()
+        clash["byBucket"].append(
+            {
+                "key": "control-global",
+                "count": 15,
+                "success": 14,
+                "failure": 1,
+                "successRate": 0.9333,
+            }
+        )
+
+        limits = compare.comparison_limits(
+            clash,
+            {
+                "replay": {"schedule": True},
+                "items": [],
+            },
+            sample_args(),
+        )
+
+        self.assertIn(
+            "Clash guardrail bucket `control-global` is below clean baseline threshold",
+            limits,
+        )
+
+    def test_dynet_guardrail_limit(self) -> None:
+        dynet = sample_dynet()
+        dynet["replay"] = {"schedule": True}
+
+        limits = compare.comparison_limits(
+            sample_clash_controller(),
+            dynet,
+            sample_args(),
+        )
+
+        self.assertIn(
+            "dynet guardrail bucket `work-direct` is below clean baseline threshold",
             limits,
         )
 
