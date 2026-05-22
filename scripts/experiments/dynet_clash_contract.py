@@ -305,6 +305,7 @@ def command_hints(args: argparse.Namespace, primary_domains: list[dict[str, Any]
         "dynetRun": (
             "python3 scripts/experiments/dynet_probe_manifest.py "
             f"--manifest {manifest} --config dynet.json "
+            "--inbound mixed-in "
             "--output-dir .task/resources/dynet-probe-runs/github-proof"
         ),
     }
