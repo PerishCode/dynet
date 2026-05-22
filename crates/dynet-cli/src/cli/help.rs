@@ -18,6 +18,7 @@ Commands:
         [--log-level off|error|warn|info|debug|trace]
   probe [--root <path>] [--config <path>] [--format text|json]
         --url https://host/path | --host <host> [--port 443] [--path /]
+        [--protocol https-head|tls-handshake]
         [--inbound <tag>] [--quality-state <path>]
         [--log-level off|error|warn|info|debug|trace]
   repair [--format text|json]
@@ -47,8 +48,8 @@ Reports:
   install --check reports network ownership preflight, owned-resource scope,
   render-only desired state artifacts, and artifact validation status.
   plan compiles explicit routes into an explainable plan model.
-  probe runs an explicit dynet-observed HTTPS HEAD through route, plan,
-  outbound selection, and outbound stage tracing. probe is unprivileged by
+  probe runs an explicit dynet-observed HTTPS HEAD or TLS handshake through
+  route, plan, outbound selection, and outbound stage tracing. probe is unprivileged by
   default and does not apply the runtime socket mark. --quality-state loads an
   expiring observation snapshot for quality-aware diagnostic strategies.
   status, verify, repair, and uninstall report dynet-owned resource state.

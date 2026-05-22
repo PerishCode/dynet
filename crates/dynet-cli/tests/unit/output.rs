@@ -355,6 +355,7 @@ fn probe_report_is_rendered() {
         schema: "dynet-probe/v1alpha1".to_string(),
         status: dynet_runtime::RuntimeStatus::Pass,
         reason: "HTTPS HEAD completed with HTTP 200".to_string(),
+        protocol: dynet_runtime::ProbeProtocol::HttpsHead,
         target: dynet_runtime::ProbeTarget {
             host: "example.com".to_string(),
             port: 443,
@@ -376,6 +377,7 @@ fn probe_report_is_rendered() {
 
     assert!(text.contains("dynet probe passed"));
     assert!(text.contains("probe model: dynet-probe/v1alpha1"));
+    assert!(text.contains("protocol: https-head"));
     assert!(text.contains("target: https://example.com:443/"));
     assert!(text.contains("runtime events:"));
     print_probe_report(&report, OutputFormat::Json).unwrap();

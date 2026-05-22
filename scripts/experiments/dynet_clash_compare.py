@@ -57,11 +57,7 @@ def build_comparison_from_summaries(
         "byDomain": domains,
         "dynetFailures": dynet_failures(dynet),
         "verdict": verdict(buckets, args),
-        "limits": [
-            "dynet probe manifest is diagnostic and does not replay the original schedule",
-            "dynet probe currently runs HTTPS HEAD even when sourceProbe says tls-handshake",
-            "black-box Clash summary lacks selected-node and candidate-plan evidence",
-        ],
+        "limits": comparison_limits(dynet),
     }
 
 
@@ -177,6 +173,25 @@ def dynet_failures(summary: dict[str, Any]) -> list[dict[str, Any]]:
             "reason": item.get("reason"),
         })
     return output
+
+
+def comparison_limits(dynet: dict[str, Any]) -> list[str]:
+    limits = [
+        "dynet probe manifest is diagnostic and does not replay the original schedule",
+        "black-box Clash summary lacks selected-node and candidate-plan evidence",
+    ]
+    mismatches = [
+        item
+        for item in dynet.get("items", [])
+        if item.get("sourceProbe") == "tls-handshake"
+        and item.get("dynetProtocol") != "tls-handshake"
+    ]
+    if mismatches:
+        limits.insert(
+            1,
+            "some dynet tls-handshake source probes were not replayed as TLS-only probes",
+        )
+    return limits
 
 
 def verdict(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:

@@ -62,6 +62,7 @@ pub(crate) fn text_probe_report(report: &dynet_runtime::ProbeReport) -> String {
     };
     writeln!(&mut text, "dynet probe {status}: {}", report.reason).expect("write string");
     writeln!(&mut text, "probe model: {}", report.schema).expect("write string");
+    writeln!(&mut text, "protocol: {}", report.protocol.as_str()).expect("write string");
     writeln!(
         &mut text,
         "target: https://{}:{}{}",

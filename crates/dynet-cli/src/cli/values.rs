@@ -1,4 +1,4 @@
-use super::{LogLevel, OutputFormat};
+use super::{LogLevel, OutputFormat, ProbeProtocol};
 
 pub(super) fn parse_format(value: &str) -> Result<OutputFormat, String> {
     match value {
@@ -17,6 +17,14 @@ pub(super) fn parse_log_level(value: &str) -> Result<LogLevel, String> {
         "debug" => Ok(LogLevel::Debug),
         "trace" => Ok(LogLevel::Trace),
         other => Err(format!("unsupported log level: {other}")),
+    }
+}
+
+pub(super) fn parse_probe_protocol(value: &str) -> Result<ProbeProtocol, String> {
+    match value {
+        "https-head" => Ok(ProbeProtocol::HttpsHead),
+        "tls-handshake" => Ok(ProbeProtocol::TlsHandshake),
+        other => Err(format!("unsupported probe protocol: {other}")),
     }
 }
 

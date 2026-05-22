@@ -23,6 +23,32 @@ class DynetClashCompareTest(unittest.TestCase):
         )
         self.assertEqual(report["verdict"]["guardrailFailures"], ["work-direct"])
 
+    def test_limit_protocol_mismatch(self) -> None:
+        limits = compare.comparison_limits({
+            "items": [
+                {"sourceProbe": "tls-handshake", "dynetProtocol": "https-head"},
+                {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
+            ]
+        })
+
+        self.assertIn(
+            "some dynet tls-handshake source probes were not replayed as TLS-only probes",
+            limits,
+        )
+
+    def test_limit_protocol_alignment(self) -> None:
+        limits = compare.comparison_limits({
+            "items": [
+                {"sourceProbe": "tls-handshake", "dynetProtocol": "tls-handshake"},
+                {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
+            ]
+        })
+
+        self.assertNotIn(
+            "some dynet tls-handshake source probes were not replayed as TLS-only probes",
+            limits,
+        )
+
 
 def sample_args() -> argparse.Namespace:
     return argparse.Namespace(

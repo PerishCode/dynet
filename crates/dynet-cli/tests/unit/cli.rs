@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::cli::{
     help_text, parse_args, ApiCommand, ApiOptions, ApiServeOptions, CliCommand, InstallOptions,
-    LifecycleOptions, LogLevel, OutputFormat,
+    LifecycleOptions, LogLevel, OutputFormat, ProbeProtocol,
 };
 
 #[test]
@@ -126,6 +126,7 @@ fn parses_probe_options() {
         "--inbound=tun-in".into(),
         "--quality-state".into(),
         ".task/resources/quality.json".into(),
+        "--protocol=tls-handshake".into(),
         "--format=json".into(),
     ])
     .unwrap() else {
@@ -134,6 +135,7 @@ fn parses_probe_options() {
 
     assert_eq!(options.command.config, Some(PathBuf::from("proxy.json")));
     assert_eq!(options.command.format, OutputFormat::Json);
+    assert_eq!(options.protocol, ProbeProtocol::TlsHandshake);
     assert_eq!(options.url.as_deref(), Some("https://chatgpt.com/"));
     assert_eq!(options.inbound.as_deref(), Some("tun-in"));
     assert_eq!(

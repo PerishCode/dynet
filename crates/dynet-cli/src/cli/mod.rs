@@ -6,7 +6,10 @@ mod values;
 
 pub(crate) use help::help_text;
 pub(crate) use types::*;
-use values::{parse_format, parse_log_level, parse_u16, parse_u32, parse_u64, parse_usize};
+use values::{
+    parse_format, parse_log_level, parse_probe_protocol, parse_u16, parse_u32, parse_u64,
+    parse_usize,
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CommandMode {
@@ -56,6 +59,7 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     let mut probe_path = None;
     let mut probe_inbound = None;
     let mut probe_quality_state = None;
+    let mut probe_protocol = ProbeProtocol::HttpsHead;
     let mut run_max_dns_queries = None;
     let mut run_max_tun_packets = None;
     let mut run_max_tcp_sessions = None;
@@ -221,6 +225,12 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
                         "--quality-state requires a JSON path".to_string()
                     })?));
             }
+            "--protocol" if mode == CommandMode::Probe => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--protocol requires https-head or tls-handshake".to_string())?;
+                probe_protocol = parse_probe_protocol(&value)?;
+            }
             "--max-dns-queries" if mode == CommandMode::Run => {
                 let value = args
                     .next()
@@ -314,6 +324,9 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             other if mode == CommandMode::Probe && other.starts_with("--quality-state=") => {
                 probe_quality_state = Some(PathBuf::from(&other["--quality-state=".len()..]));
             }
+            other if mode == CommandMode::Probe && other.starts_with("--protocol=") => {
+                probe_protocol = parse_probe_protocol(&other["--protocol=".len()..])?;
+            }
             other if mode == CommandMode::Run && other.starts_with("--max-dns-queries=") => {
                 run_max_dns_queries = Some(parse_usize(
                     "--max-dns-queries",
@@ -387,6 +400,7 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
         }),
         CommandMode::Probe => CliCommand::Probe(ProbeOptions {
             command: options,
+            protocol: probe_protocol,
             url: probe_url,
             host: probe_host,
             port: probe_port,

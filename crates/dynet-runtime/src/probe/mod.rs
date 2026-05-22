@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::{
     event::EventBus,
     outbound::{self, TcpTarget},
-    probe::http::HttpHeadResponse,
+    probe::http::ProbeResponse,
     resolver::trace::{
         candidate_tags, classify_runtime_error, elapsed_ms, hop_kinds, hop_tags, json_field,
     },
@@ -34,12 +34,29 @@ pub struct ProbeSettings {
     pub policy: RuntimePolicy,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProbeProtocol {
+    HttpsHead,
+    TlsHandshake,
+}
+
+impl ProbeProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HttpsHead => "https-head",
+            Self::TlsHandshake => "tls-handshake",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeReport {
     pub schema: String,
     pub status: RuntimeStatus,
     pub reason: String,
+    pub protocol: ProbeProtocol,
     pub target: ProbeTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<String>,
@@ -49,19 +66,30 @@ pub struct ProbeReport {
 }
 
 pub fn probe_https_head(settings: ProbeSettings) -> Result<ProbeReport, String> {
+    probe_with_protocol(settings, ProbeProtocol::HttpsHead)
+}
+
+pub fn probe_tls_handshake(settings: ProbeSettings) -> Result<ProbeReport, String> {
+    probe_with_protocol(settings, ProbeProtocol::TlsHandshake)
+}
+
+fn probe_with_protocol(
+    settings: ProbeSettings,
+    protocol: ProbeProtocol,
+) -> Result<ProbeReport, String> {
     settings.target.validate()?;
     let ebus = EventBus::default();
     let started = Instant::now();
     emit(
         &ebus,
         RuntimeEvent::new(RuntimeEventKind::ProbeStarted)
-            .field("protocol", "https-head")
+            .field("protocol", protocol.as_str())
             .field("target", settings.target.address())
             .field("host", &settings.target.host)
             .field("port", settings.target.port)
             .field("path", &settings.target.path),
     )?;
-    let result = probe_inner(&settings, &ebus);
+    let result = probe_inner(&settings, &ebus, protocol);
     let (status, reason) = match result {
         Ok(reason) => (RuntimeStatus::Pass, reason),
         Err(error) => (RuntimeStatus::Deny, error),
@@ -69,7 +97,7 @@ pub fn probe_https_head(settings: ProbeSettings) -> Result<ProbeReport, String> 
     emit(
         &ebus,
         RuntimeEvent::new(RuntimeEventKind::ProbeCompleted)
-            .field("protocol", "https-head")
+            .field("protocol", protocol.as_str())
             .field("target", settings.target.address())
             .field(
                 "status",
@@ -87,6 +115,7 @@ pub fn probe_https_head(settings: ProbeSettings) -> Result<ProbeReport, String> 
         schema: "dynet-probe/v1alpha1".to_string(),
         status,
         reason,
+        protocol,
         target: settings.target,
         inbound: settings.inbound,
         route_decisions: count_kind(&events, RuntimeEventKind::RouteMatched)
@@ -96,7 +125,11 @@ pub fn probe_https_head(settings: ProbeSettings) -> Result<ProbeReport, String> 
     })
 }
 
-fn probe_inner(settings: &ProbeSettings, ebus: &EventBus) -> Result<String, String> {
+fn probe_inner(
+    settings: &ProbeSettings,
+    ebus: &EventBus,
+    protocol: ProbeProtocol,
+) -> Result<String, String> {
     let mut context = settings
         .inbound
         .as_ref()
@@ -128,7 +161,7 @@ fn probe_inner(settings: &ProbeSettings, ebus: &EventBus) -> Result<String, Stri
                 .field("target", settings.target.address())
                 .field("reason", "user hard rule matched before route plan"),
         )?;
-        return probe_selected_outbound(settings, ebus, &context, &decision.outbound);
+        return probe_selected_outbound(settings, ebus, &context, &decision.outbound, protocol);
     }
     let verdict = settings
         .policy
@@ -149,7 +182,7 @@ fn probe_inner(settings: &ProbeSettings, ebus: &EventBus) -> Result<String, Stri
     )?;
     match (&verdict.status, &verdict.action) {
         (VerdictStatus::Accept, PlanAction::UseOutbound { tag }) => {
-            probe_selected_outbound(settings, ebus, &context, tag)
+            probe_selected_outbound(settings, ebus, &context, tag, protocol)
         }
         (VerdictStatus::Deny, PlanAction::Reject) => Err(format!(
             "probe target rejected by rule {:?}: {}",
@@ -165,6 +198,7 @@ fn probe_selected_outbound(
     ebus: &EventBus,
     context: &InboundContext,
     tag: &str,
+    protocol: ProbeProtocol,
 ) -> Result<String, String> {
     let path = resolve_outbound_path(&settings.policy.state, context, tag)?;
     emit(
@@ -217,7 +251,7 @@ fn probe_selected_outbound(
             path.selected
         )
     })?;
-    probe_over_outbound(settings, ebus, context, outbound)
+    probe_over_outbound(settings, ebus, context, outbound, protocol)
 }
 
 fn probe_over_outbound(
@@ -225,6 +259,7 @@ fn probe_over_outbound(
     ebus: &EventBus,
     context: &InboundContext,
     outbound: &NetworkNode,
+    protocol: ProbeProtocol,
 ) -> Result<String, String> {
     let started = Instant::now();
     emit(
@@ -233,27 +268,16 @@ fn probe_over_outbound(
             .field("outbound", &outbound.tag)
             .field("kind", &outbound.kind)
             .field("transport", "tcp")
-            .field("protocol", "https-head")
+            .field("protocol", protocol.as_str())
             .field("target", settings.target.address()),
     )?;
-    match execute_https_head(settings, ebus, context, outbound) {
+    match execute_probe(settings, ebus, context, outbound, protocol) {
         Ok(response) => {
             emit(
                 ebus,
-                RuntimeEvent::new(RuntimeEventKind::OutboundAttemptFinished)
-                    .field("outbound", &outbound.tag)
-                    .field("kind", &outbound.kind)
-                    .field("transport", "tcp")
-                    .field("protocol", "https-head")
-                    .field("status", "success")
-                    .field("elapsedMs", elapsed_ms(started))
-                    .field("httpStatus", response.status_code)
-                    .field("responseBytes", response.bytes),
+                outbound_attempt_finished(outbound, protocol, "success", started, &response),
             )?;
-            Ok(format!(
-                "HTTPS HEAD completed with HTTP {}",
-                response.status_code
-            ))
+            Ok(success_reason(protocol, &response))
         }
         Err(error) => {
             emit(
@@ -262,7 +286,7 @@ fn probe_over_outbound(
                     .field("outbound", &outbound.tag)
                     .field("kind", &outbound.kind)
                     .field("transport", "tcp")
-                    .field("protocol", "https-head")
+                    .field("protocol", protocol.as_str())
                     .field("status", "failed")
                     .field("errorType", classify_runtime_error(&error))
                     .field("error", &error)
@@ -273,16 +297,17 @@ fn probe_over_outbound(
     }
 }
 
-fn execute_https_head(
+fn execute_probe(
     settings: &ProbeSettings,
     ebus: &EventBus,
     context: &InboundContext,
     outbound: &NetworkNode,
-) -> Result<HttpHeadResponse, String> {
+    protocol: ProbeProtocol,
+) -> Result<ProbeResponse, String> {
     if outbound.kind == "dialer" {
-        return execute_with_fallback(settings, ebus, context, outbound);
+        return execute_with_fallback(settings, ebus, context, outbound, protocol);
     }
-    execute_https_head_once(settings, ebus, context, outbound, None)
+    execute_probe_once(settings, ebus, context, outbound, None, protocol)
 }
 
 fn execute_with_fallback(
@@ -290,7 +315,8 @@ fn execute_with_fallback(
     ebus: &EventBus,
     context: &InboundContext,
     outbound: &NetworkNode,
-) -> Result<HttpHeadResponse, String> {
+    protocol: ProbeProtocol,
+) -> Result<ProbeResponse, String> {
     let candidates = outbound::dialer_bound_candidate_order(outbound, &settings.policy, context)?;
     let mut failures = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
@@ -304,21 +330,18 @@ fn execute_with_fallback(
                 .field("candidateCount", candidates.len())
                 .field("target", settings.target.address()),
         )?;
-        match execute_https_head_once(settings, ebus, context, outbound, Some(candidate)) {
+        match execute_probe_once(settings, ebus, context, outbound, Some(candidate), protocol) {
             Ok(response) => {
-                emit(
-                    ebus,
-                    RuntimeEvent::new(RuntimeEventKind::DialerCascadeAttemptFinished)
-                        .field("dialer", &outbound.tag)
-                        .field("boundSelected", candidate)
-                        .field("attempt", index + 1)
-                        .field("candidateCount", candidates.len())
-                        .field("target", settings.target.address())
-                        .field("status", "success")
-                        .field("elapsedMs", elapsed_ms(started))
-                        .field("httpStatus", response.status_code)
-                        .field("responseBytes", response.bytes),
-                )?;
+                let event = cascade_attempt_finished(
+                    outbound,
+                    candidate,
+                    index,
+                    candidates.len(),
+                    settings,
+                    started,
+                    &response,
+                );
+                emit(ebus, event)?;
                 return Ok(response);
             }
             Err(error) => {
@@ -347,13 +370,14 @@ fn execute_with_fallback(
     ))
 }
 
-fn execute_https_head_once(
+fn execute_probe_once(
     settings: &ProbeSettings,
     ebus: &EventBus,
     context: &InboundContext,
     outbound: &NetworkNode,
     dialer_bound_override: Option<&str>,
-) -> Result<HttpHeadResponse, String> {
+    protocol: ProbeProtocol,
+) -> Result<ProbeResponse, String> {
     let target = TcpTarget::Domain {
         host: settings.target.host.clone(),
         port: settings.target.port,
@@ -370,7 +394,62 @@ fn execute_https_head_once(
     );
     emit_events(ebus, events)?;
     let stream = stream?;
-    http::execute(ebus, outbound, &settings.target, stream)
+    http::execute_with_protocol(ebus, outbound, &settings.target, stream, protocol)
+}
+
+fn outbound_attempt_finished(
+    outbound: &NetworkNode,
+    protocol: ProbeProtocol,
+    status: &str,
+    started: Instant,
+    response: &ProbeResponse,
+) -> RuntimeEvent {
+    let mut event = RuntimeEvent::new(RuntimeEventKind::OutboundAttemptFinished)
+        .field("outbound", &outbound.tag)
+        .field("kind", &outbound.kind)
+        .field("transport", "tcp")
+        .field("protocol", protocol.as_str())
+        .field("status", status)
+        .field("elapsedMs", elapsed_ms(started))
+        .field("responseBytes", response.bytes);
+    if let Some(status_code) = response.status_code {
+        event = event.field("httpStatus", status_code);
+    }
+    event
+}
+
+fn cascade_attempt_finished(
+    outbound: &NetworkNode,
+    candidate: &str,
+    index: usize,
+    candidate_count: usize,
+    settings: &ProbeSettings,
+    started: Instant,
+    response: &ProbeResponse,
+) -> RuntimeEvent {
+    let mut event = RuntimeEvent::new(RuntimeEventKind::DialerCascadeAttemptFinished)
+        .field("dialer", &outbound.tag)
+        .field("boundSelected", candidate)
+        .field("attempt", index + 1)
+        .field("candidateCount", candidate_count)
+        .field("target", settings.target.address())
+        .field("status", "success")
+        .field("elapsedMs", elapsed_ms(started))
+        .field("responseBytes", response.bytes);
+    if let Some(status_code) = response.status_code {
+        event = event.field("httpStatus", status_code);
+    }
+    event
+}
+
+fn success_reason(protocol: ProbeProtocol, response: &ProbeResponse) -> String {
+    match (protocol, response.status_code) {
+        (ProbeProtocol::HttpsHead, Some(status_code)) => {
+            format!("HTTPS HEAD completed with HTTP {status_code}")
+        }
+        (ProbeProtocol::HttpsHead, None) => "HTTPS HEAD completed".to_string(),
+        (ProbeProtocol::TlsHandshake, _) => "TLS handshake completed".to_string(),
+    }
 }
 
 fn emit(ebus: &EventBus, event: RuntimeEvent) -> Result<(), String> {

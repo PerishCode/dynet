@@ -141,7 +141,9 @@ use serde::Serialize;
 
 pub use dns::dns_reverse_from_wire;
 pub use event::{RuntimeEvent, RuntimeEventKind};
-pub use probe::{probe_https_head, ProbeReport, ProbeSettings, ProbeTarget};
+pub use probe::{
+    probe_https_head, probe_tls_handshake, ProbeProtocol, ProbeReport, ProbeSettings, ProbeTarget,
+};
 pub use settings::{
     DnsRuntimeChain, RunLimits, RuntimePolicy, RuntimeSettings, TakeoverSettings,
     TcpForwardingSettings, UdpForwardingSettings,

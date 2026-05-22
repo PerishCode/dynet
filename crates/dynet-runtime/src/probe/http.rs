@@ -11,30 +11,37 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use crate::{
     event::EventBus,
     outbound::ProxiedTcpStream,
-    probe::ProbeTarget,
+    probe::{ProbeProtocol, ProbeTarget},
     resolver::trace::{classify_runtime_error, elapsed_ms},
     RuntimeEvent, RuntimeEventKind,
 };
 
 const HTTP_HEAD_LIMIT: usize = 64 * 1024;
 
-pub(crate) struct HttpHeadResponse {
-    pub(crate) status_code: u16,
+pub(crate) struct ProbeResponse {
+    pub(crate) status_code: Option<u16>,
     pub(crate) bytes: usize,
 }
 
-pub(crate) fn execute(
+pub(crate) fn execute_with_protocol(
     ebus: &EventBus,
     outbound: &NetworkNode,
     target: &ProbeTarget,
     stream: ProxiedTcpStream,
-) -> Result<HttpHeadResponse, String> {
+    protocol: ProbeProtocol,
+) -> Result<ProbeResponse, String> {
     let mut tls = observe_stage(ebus, outbound, "tls-handshake", || {
         tls_handshake(
-            ObservedProbeStream::new(stream, ebus.clone(), outbound, "https-head"),
+            ObservedProbeStream::new(stream, ebus.clone(), outbound, protocol.as_str()),
             &target.host,
         )
     })?;
+    if protocol == ProbeProtocol::TlsHandshake {
+        return Ok(ProbeResponse {
+            status_code: None,
+            bytes: 0,
+        });
+    }
     observe_stage(ebus, outbound, "http-head-write", || {
         let request = http_head_request(target);
         tls.write_all(&request)
@@ -131,7 +138,7 @@ fn http_head_request(target: &ProbeTarget) -> Vec<u8> {
 
 fn read_http_head(
     tls: &mut StreamOwned<ClientConnection, ObservedProbeStream>,
-) -> Result<HttpHeadResponse, String> {
+) -> Result<ProbeResponse, String> {
     let mut response = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
@@ -166,8 +173,8 @@ fn read_http_head(
         .ok_or_else(|| format!("HTTPS HEAD status line has no code: `{status_line}`"))?
         .parse::<u16>()
         .map_err(|error| format!("invalid HTTPS HEAD status line `{status_line}`: {error}"))?;
-    Ok(HttpHeadResponse {
-        status_code,
+    Ok(ProbeResponse {
+        status_code: Some(status_code),
         bytes: response.len(),
     })
 }

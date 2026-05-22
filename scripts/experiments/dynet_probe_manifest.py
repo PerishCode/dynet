@@ -11,6 +11,7 @@ from typing import Any
 SUMMARY_SCHEMA = "dynet-probe-manifest-run/v1alpha1"
 DEFAULT_OUTPUT_DIR = ".task/resources/dynet-probe-runs/latest"
 DEFAULT_PROBES = {"tls-handshake", "https-head", "https-get"}
+SOURCE_PROTOCOL = "source"
 
 
 def load_json(path: Path) -> Any:
@@ -58,6 +59,8 @@ def run_probe(args: argparse.Namespace, entry: dict[str, Any], output_dir: Path)
         args.config,
         "--url",
         f"https://{domain}/",
+        "--protocol",
+        dynet_protocol(args, entry),
         "--format",
         "json",
     ]
@@ -72,6 +75,7 @@ def run_probe(args: argparse.Namespace, entry: dict[str, Any], output_dir: Path)
         "groupId": entry.get("groupId"),
         "domain": domain,
         "sourceProbe": entry.get("probe"),
+        "dynetProtocol": dynet_protocol(args, entry),
         "scheduledOffsetMs": entry.get("scheduledOffsetMs"),
         "exitCode": completed.returncode,
         "status": report.get("status"),
@@ -109,6 +113,14 @@ def dynet_command(args: argparse.Namespace) -> list[str]:
     if args.sudo:
         return ["sudo", args.dynet_bin]
     return [args.dynet_bin]
+
+
+def dynet_protocol(args: argparse.Namespace, entry: dict[str, Any]) -> str:
+    if args.dynet_protocol != SOURCE_PROTOCOL:
+        return args.dynet_protocol
+    if entry.get("probe") == "tls-handshake":
+        return "tls-handshake"
+    return "https-head"
 
 
 def selected_outbound(report: dict[str, Any]) -> str | None:
@@ -251,7 +263,8 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
         lines.append(
             f"- `{item['id']}` {item['domain']} status=`{item['status']}` "
             f"behavior=`{item['behavior']}` sourceProbe=`{item['sourceProbe']}` "
-            f"outbound=`{item['selectedOutbound']}` failedStage=`{item['failedStage']}`"
+            f"dynetProtocol=`{item['dynetProtocol']}` outbound=`{item['selectedOutbound']}` "
+            f"failedStage=`{item['failedStage']}`"
         )
     path.write_text("\n".join(lines) + "\n")
 
@@ -289,6 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bucket", action="append")
     parser.add_argument("--domain", action="append")
     parser.add_argument("--probe-type", action="append")
+    parser.add_argument(
+        "--dynet-protocol",
+        choices=[SOURCE_PROTOCOL, "https-head", "tls-handshake"],
+        default=SOURCE_PROTOCOL,
+        help="dynet probe protocol to run; source maps manifest tls-handshake entries to TLS-only probes.",
+    )
     parser.set_defaults(handler=command_run)
     return parser
 

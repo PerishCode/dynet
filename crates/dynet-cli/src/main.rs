@@ -195,12 +195,16 @@ fn run_probe_command(options: cli::ProbeOptions) -> Result<i32, String> {
     } else {
         dynet_runtime::RuntimePolicy::from_config(resolved.config)
     };
-    let report = dynet_runtime::probe_https_head(dynet_runtime::ProbeSettings {
+    let settings = dynet_runtime::ProbeSettings {
         target,
         inbound: options.inbound,
         bypass_mark,
         policy,
-    })?;
+    };
+    let report = match options.protocol {
+        cli::ProbeProtocol::HttpsHead => dynet_runtime::probe_https_head(settings),
+        cli::ProbeProtocol::TlsHandshake => dynet_runtime::probe_tls_handshake(settings),
+    }?;
     print_probe_report(&report, options.command.format)?;
     Ok(if report.status == dynet_runtime::RuntimeStatus::Pass {
         0

@@ -67,12 +67,19 @@ pub(crate) struct RunOptions {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct ProbeOptions {
     pub(crate) command: CommandOptions,
+    pub(crate) protocol: ProbeProtocol,
     pub(crate) url: Option<String>,
     pub(crate) host: Option<String>,
     pub(crate) port: Option<u16>,
     pub(crate) path: Option<String>,
     pub(crate) inbound: Option<String>,
     pub(crate) quality_state: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ProbeProtocol {
+    HttpsHead,
+    TlsHandshake,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
