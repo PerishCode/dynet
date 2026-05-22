@@ -244,7 +244,7 @@ fn version_command_is_parsed() {
 fn help_text_describes_boundaries() {
     let help = help_text();
 
-    assert!(help.contains("Sing-box-like proxy CLI skeleton"));
+    assert!(help.contains("Sing-box-like experimental proxy/VPN CLI and runtime"));
     assert!(help.contains("check [--root <path>]"));
     assert!(help.contains("doctor [--root <path>]"));
     assert!(help.contains("install --check"));
@@ -255,4 +255,5 @@ fn help_text_describes_boundaries() {
     assert!(help.contains("run   [--root <path>]"));
     assert!(help.contains("runtime"));
     assert!(help.contains("TUN packet observation"));
+    assert!(help.contains("deny issue"));
 }

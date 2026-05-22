@@ -1,7 +1,7 @@
 pub(crate) fn help_text() -> &'static str {
     r#"dynet
 
-Sing-box-like proxy CLI skeleton.
+Sing-box-like experimental proxy/VPN CLI and runtime.
 
 Commands:
   api capabilities [--format text|json]
@@ -73,7 +73,7 @@ Runtime:
 Exit codes:
   0  report completed without deny-level issues.
   1  config read/parse/validation failure, lifecycle deny issue, or runtime
-     skeleton reached.
+     deny issue.
 
 Project:
   Source:  https://github.com/PerishCode/dynet

@@ -1,11 +1,14 @@
 # dynet
 
-Sing-box-like proxy CLI skeleton.
+Sing-box-like experimental proxy/VPN CLI and runtime.
 
 `dynet` currently establishes the installable CLI, workspace boundaries, config
-loading, reporting, release packaging, and harness conventions. Concrete proxy
-runtime, protocol, routing, and platform networking behavior will be added
-behind those boundaries later.
+loading, reporting, release packaging, platform ownership lifecycle, and a
+self-owned Linux runtime boundary. The runtime can observe TUN packets, hijack
+DNS into dynet DNS chains, preserve DNS reverse evidence, and run narrow
+experimental IPv4 TCP/UDP forwarding paths. Concrete production protocol
+adapters and the full forwarding plane are still evolving behind those
+boundaries.
 
 ## Usage
 
@@ -22,7 +25,7 @@ dynet repair
 dynet uninstall
 dynet api capabilities            # list local API surface
 dynet api serve --bind 127.0.0.1:9977
-dynet run --config dynet.json     # validates config; runtime is not implemented yet
+dynet run --config dynet.json     # starts the Linux TUN/DNS runtime boundary
 dynet version
 dynet help
 ```
@@ -41,8 +44,11 @@ status without mutating system network paths. `status`, `verify`, `repair`, and
 apply/cleanup is intentionally gated until the ownership invariants are proven.
 `dynet api serve` is a loopback-only HTTP skeleton with `/health` and
 `/v1/capabilities`.
-`dynet run` currently validates config and exits `1` after reporting that
-runtime execution has not been implemented.
+`dynet run` starts dynet's Linux runtime boundary: TUN packet observation, DNS
+hijack forwarding through configured dynet DNS chains, DNS reverse capture, and
+socket-mark loop avoidance. `--experimental-tcp-forward` and
+`--experimental-udp-forward` enable the current narrow IPv4 forwarding
+experiments for VM/runtime acceptance; unsupported paths fail closed.
 
 Platform takeover is drop-in only. The host must already expose an nftables
 drop-in directory included by `/etc/nftables.conf`; dynet only owns its
@@ -130,6 +136,9 @@ Discovery order:
 - `crates/dynet-cli`: installable binary, command parsing, config discovery,
   reports, and exit behavior.
 - `crates/dynet-core`: shared config/domain primitives and validation contracts.
+- `crates/dynet-runtime`: Linux runtime boundary for TUN, DNS hijack serving,
+  DNS chain execution, takeover apply/cleanup, socket marking, and experimental
+  forwarding adapters.
 
 Harness fixtures live with the crate that owns the boundary being tested. CLI
 tests should exercise command/config/output contracts, not private future
