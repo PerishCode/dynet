@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,12 @@ def selected_entries(args: argparse.Namespace) -> list[dict[str, Any]]:
     return rows
 
 
-def run_probe(args: argparse.Namespace, entry: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+def run_probe(
+    args: argparse.Namespace,
+    entry: dict[str, Any],
+    output_dir: Path,
+    actual_start_offset_ms: int | None = None,
+) -> dict[str, Any]:
     entry_id = str(entry.get("id") or len(list(output_dir.glob("*.json"))) + 1)
     domain = str(entry["domain"])
     command = dynet_command(args) + [
@@ -77,6 +83,7 @@ def run_probe(args: argparse.Namespace, entry: dict[str, Any], output_dir: Path)
         "sourceProbe": entry.get("probe"),
         "dynetProtocol": dynet_protocol(args, entry),
         "scheduledOffsetMs": entry.get("scheduledOffsetMs"),
+        "actualStartOffsetMs": actual_start_offset_ms,
         "exitCode": completed.returncode,
         "status": report.get("status"),
         "reason": report.get("reason"),
@@ -123,6 +130,35 @@ def dynet_protocol(args: argparse.Namespace, entry: dict[str, Any]) -> str:
     return "https-head"
 
 
+def schedule_base_offset(entries: list[dict[str, Any]]) -> int:
+    if not entries:
+        return 0
+    return scheduled_offset_ms(entries[0])
+
+
+def scheduled_offset_ms(entry: dict[str, Any]) -> int:
+    return int(entry.get("scheduledOffsetMs") or 0)
+
+
+def replay_target_ms(args: argparse.Namespace, entry: dict[str, Any], base_offset_ms: int) -> int:
+    delta = max(0, scheduled_offset_ms(entry) - base_offset_ms)
+    return round(delta * args.schedule_scale)
+
+
+def sleep_until(target_ms: int, started_monotonic: float) -> None:
+    elapsed_ms = round((time.monotonic() - started_monotonic) * 1000)
+    sleep_ms = target_ms - elapsed_ms
+    if sleep_ms > 0:
+        time.sleep(sleep_ms / 1000)
+
+
+def non_negative_float(value: str) -> float:
+    number = float(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return number
+
+
 def selected_outbound(report: dict[str, Any]) -> str | None:
     for event in report.get("events", []):
         if event.get("kind") == "outbound-graph-selected":
@@ -166,7 +202,11 @@ def safe_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in ".-" else "_" for char in value)[:80]
 
 
-def write_summary(output_dir: Path, items: list[dict[str, Any]]) -> dict[str, Any]:
+def write_summary(
+    output_dir: Path,
+    items: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
     summary = {
         "schema": SUMMARY_SCHEMA,
         "privacy": {
@@ -174,6 +214,10 @@ def write_summary(output_dir: Path, items: list[dict[str, Any]]) -> dict[str, An
             "cookiesSent": False,
             "authorizationSent": False,
             "responseBodiesStored": False,
+        },
+        "replay": {
+            "schedule": bool(args.replay_schedule),
+            "scheduleScale": args.schedule_scale,
         },
         "totals": {
             "attempted": len(items),
@@ -264,7 +308,8 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
             f"- `{item['id']}` {item['domain']} status=`{item['status']}` "
             f"behavior=`{item['behavior']}` sourceProbe=`{item['sourceProbe']}` "
             f"dynetProtocol=`{item['dynetProtocol']}` outbound=`{item['selectedOutbound']}` "
-            f"failedStage=`{item['failedStage']}`"
+            f"scheduledOffsetMs=`{item['scheduledOffsetMs']}` "
+            f"actualStartOffsetMs=`{item['actualStartOffsetMs']}` failedStage=`{item['failedStage']}`"
         )
     path.write_text("\n".join(lines) + "\n")
 
@@ -272,8 +317,18 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
 def command_run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    items = [run_probe(args, entry, output_dir) for entry in selected_entries(args)]
-    summary = write_summary(output_dir, items)
+    entries = selected_entries(args)
+    if args.replay_schedule:
+        entries = sorted(entries, key=scheduled_offset_ms)
+    items = []
+    started = time.monotonic()
+    base_offset_ms = schedule_base_offset(entries)
+    for entry in entries:
+        if args.replay_schedule:
+            sleep_until(replay_target_ms(args, entry, base_offset_ms), started)
+        actual_start_offset_ms = round((time.monotonic() - started) * 1000)
+        items.append(run_probe(args, entry, output_dir, actual_start_offset_ms))
+    summary = write_summary(output_dir, items, args)
     print(
         json.dumps(
             {
@@ -302,6 +357,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bucket", action="append")
     parser.add_argument("--domain", action="append")
     parser.add_argument("--probe-type", action="append")
+    parser.add_argument("--replay-schedule", action="store_true")
+    parser.add_argument("--schedule-scale", type=non_negative_float, default=1.0)
     parser.add_argument(
         "--dynet-protocol",
         choices=[SOURCE_PROTOCOL, "https-head", "tls-handshake"],

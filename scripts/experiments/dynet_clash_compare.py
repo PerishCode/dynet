@@ -176,10 +176,12 @@ def dynet_failures(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def comparison_limits(dynet: dict[str, Any]) -> list[str]:
-    limits = [
-        "dynet probe manifest is diagnostic and does not replay the original schedule",
-        "black-box Clash summary lacks selected-node and candidate-plan evidence",
-    ]
+    limits = ["black-box Clash summary lacks selected-node and candidate-plan evidence"]
+    if not dynet.get("replay", {}).get("schedule"):
+        limits.insert(
+            0,
+            "dynet probe manifest is diagnostic and does not replay the original schedule",
+        )
     mismatches = [
         item
         for item in dynet.get("items", [])

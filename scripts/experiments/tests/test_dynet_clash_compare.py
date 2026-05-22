@@ -38,6 +38,7 @@ class DynetClashCompareTest(unittest.TestCase):
 
     def test_limit_protocol_alignment(self) -> None:
         limits = compare.comparison_limits({
+            "replay": {"schedule": False},
             "items": [
                 {"sourceProbe": "tls-handshake", "dynetProtocol": "tls-handshake"},
                 {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
@@ -46,6 +47,17 @@ class DynetClashCompareTest(unittest.TestCase):
 
         self.assertNotIn(
             "some dynet tls-handshake source probes were not replayed as TLS-only probes",
+            limits,
+        )
+
+    def test_limit_schedule_replay(self) -> None:
+        limits = compare.comparison_limits({
+            "replay": {"schedule": True},
+            "items": [],
+        })
+
+        self.assertNotIn(
+            "dynet probe manifest is diagnostic and does not replay the original schedule",
             limits,
         )
 
