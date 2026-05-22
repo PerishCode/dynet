@@ -19,6 +19,12 @@ from dynet_trace.common import (
     load_json,
     write_json,
 )
+from dynet_trace.probe import (
+    DEFAULT_PROBE_ATTRIBUTION_JSON,
+    DEFAULT_PROBE_ATTRIBUTION_MD,
+    build_probe_attribution,
+    write_probe_attribution_report,
+)
 from dynet_trace.reports import write_batch_report, write_report
 from dynet_trace.summary import build_summary
 
@@ -202,6 +208,25 @@ def command_batch(args: argparse.Namespace) -> int:
     )
     return 1 if args.fail_on_gate and failed_gates else 0
 
+def command_probe_manifest(args: argparse.Namespace) -> int:
+    report = build_probe_attribution(Path(args.summary))
+    output_json = Path(args.output_json)
+    output_md = Path(args.output_md)
+    write_json(output_json, report)
+    write_probe_attribution_report(output_md, report)
+    print(
+        json.dumps(
+            {
+                "outputJson": str(output_json),
+                "outputMd": str(output_md),
+                "failed": report["totals"]["failed"],
+                "unknown": report["totals"]["unknown"],
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Summarize dynet runtime events for plan-vs-node attribution."
@@ -235,6 +260,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="return non-zero when any batch gate fails",
     )
     batch_parser.set_defaults(handler=command_batch)
+
+    probe_parser = subparsers.add_parser(
+        "probe-manifest",
+        help="summarize saved per-item dynet probe reports from a manifest run",
+    )
+    probe_parser.add_argument("--summary", required=True)
+    probe_parser.add_argument("--output-json", default=DEFAULT_PROBE_ATTRIBUTION_JSON)
+    probe_parser.add_argument("--output-md", default=DEFAULT_PROBE_ATTRIBUTION_MD)
+    probe_parser.set_defaults(handler=command_probe_manifest)
 
     return parser
 

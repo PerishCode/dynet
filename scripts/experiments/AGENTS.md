@@ -40,7 +40,8 @@ product research without becoming product runtime code.
   black-box probe failures, and aggregates repeated summaries into
   planner-safe batch evidence.
 - `dynet_trace/` owns helper modules for trace attribution event summaries,
-  workload correlation, batch gates, and report rendering. Keep
+  workload correlation, probe-manifest attribution, batch gates, and report
+  rendering. Keep
   `dynet_trace_attribution.py` as the CLI entrypoint.
 - `real_access/` owns helper modules for real-access manifest sampling,
   zero-identity probe execution, run aggregation, comparison, and report
