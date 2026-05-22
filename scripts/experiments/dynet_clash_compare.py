@@ -55,9 +55,10 @@ def build_comparison_from_summaries(
         "totals": compare_totals(clash, dynet),
         "byBucket": buckets,
         "byDomain": domains,
+        "clashController": clash_controller_summary(clash),
         "dynetFailures": dynet_failures(dynet),
         "verdict": verdict(buckets, args),
-        "limits": comparison_limits(dynet),
+        "limits": comparison_limits(clash, dynet),
     }
 
 
@@ -175,8 +176,34 @@ def dynet_failures(summary: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
-def comparison_limits(dynet: dict[str, Any]) -> list[str]:
-    limits = ["black-box Clash summary lacks selected-node and candidate-plan evidence"]
+def clash_controller_summary(clash: dict[str, Any]) -> dict[str, Any]:
+    controller = clash.get("controllerAttribution", {})
+    if not isinstance(controller, dict) or not controller.get("enabled"):
+        return {
+            "enabled": False,
+            "observed": 0,
+            "items": 0,
+            "rawNodeNamesStored": False,
+            "chainKeys": [],
+        }
+    return {
+        "enabled": True,
+        "observed": int(controller.get("observed", 0)),
+        "items": int(controller.get("items", 0)),
+        "missing": int(controller.get("missing", 0)),
+        "rawNodeNamesStored": bool(controller.get("rawNodeNamesStored", False)),
+        "chainKeys": controller.get("chainKeys", []),
+        "rules": controller.get("rules", []),
+    }
+
+
+def comparison_limits(clash: dict[str, Any], dynet: dict[str, Any]) -> list[str]:
+    limits = []
+    controller = clash_controller_summary(clash)
+    if not controller["enabled"]:
+        limits.append("black-box Clash summary lacks selected-node and candidate-plan evidence")
+    elif controller.get("missing"):
+        limits.append("some Clash probes lack controller selected-chain observations")
     if not dynet.get("replay", {}).get("schedule"):
         limits.insert(
             0,
@@ -245,6 +272,15 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     lines.extend(["", "## Domains", ""])
     for row in sorted(report["byDomain"], key=domain_sort_key)[:16]:
         lines.append(comparison_line(row))
+    if report["clashController"]["enabled"]:
+        lines.extend(["", "## Clash Controller", ""])
+        controller = report["clashController"]
+        lines.append(
+            f"- observed=`{controller['observed']}/{controller['items']}` "
+            f"missing=`{controller['missing']}` rawNodeNamesStored=`{controller['rawNodeNamesStored']}`"
+        )
+        for item in controller.get("chainKeys", [])[:8]:
+            lines.append(f"- chain `{item['key']}` count=`{item['count']}`")
     if report["dynetFailures"]:
         lines.extend(["", "## Dynet Failures", ""])
         for item in report["dynetFailures"]:

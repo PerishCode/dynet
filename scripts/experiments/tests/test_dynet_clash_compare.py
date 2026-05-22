@@ -24,12 +24,15 @@ class DynetClashCompareTest(unittest.TestCase):
         self.assertEqual(report["verdict"]["guardrailFailures"], ["work-direct"])
 
     def test_limit_protocol_mismatch(self) -> None:
-        limits = compare.comparison_limits({
-            "items": [
-                {"sourceProbe": "tls-handshake", "dynetProtocol": "https-head"},
-                {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
-            ]
-        })
+        limits = compare.comparison_limits(
+            sample_clash(),
+            {
+                "items": [
+                    {"sourceProbe": "tls-handshake", "dynetProtocol": "https-head"},
+                    {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
+                ]
+            },
+        )
 
         self.assertIn(
             "some dynet tls-handshake source probes were not replayed as TLS-only probes",
@@ -37,13 +40,16 @@ class DynetClashCompareTest(unittest.TestCase):
         )
 
     def test_limit_protocol_alignment(self) -> None:
-        limits = compare.comparison_limits({
-            "replay": {"schedule": False},
-            "items": [
-                {"sourceProbe": "tls-handshake", "dynetProtocol": "tls-handshake"},
-                {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
-            ]
-        })
+        limits = compare.comparison_limits(
+            sample_clash(),
+            {
+                "replay": {"schedule": False},
+                "items": [
+                    {"sourceProbe": "tls-handshake", "dynetProtocol": "tls-handshake"},
+                    {"sourceProbe": "https-head", "dynetProtocol": "https-head"},
+                ],
+            },
+        )
 
         self.assertNotIn(
             "some dynet tls-handshake source probes were not replayed as TLS-only probes",
@@ -51,13 +57,51 @@ class DynetClashCompareTest(unittest.TestCase):
         )
 
     def test_limit_schedule_replay(self) -> None:
-        limits = compare.comparison_limits({
-            "replay": {"schedule": True},
-            "items": [],
-        })
+        limits = compare.comparison_limits(
+            sample_clash(),
+            {
+                "replay": {"schedule": True},
+                "items": [],
+            },
+        )
 
         self.assertNotIn(
             "dynet probe manifest is diagnostic and does not replay the original schedule",
+            limits,
+        )
+
+    def test_controller_clean_limit(self) -> None:
+        limits = compare.comparison_limits(
+            sample_clash_controller(),
+            {
+                "replay": {"schedule": True},
+                "items": [],
+            },
+        )
+
+        self.assertNotIn(
+            "black-box Clash summary lacks selected-node and candidate-plan evidence",
+            limits,
+        )
+        self.assertNotIn(
+            "some Clash probes lack controller selected-chain observations",
+            limits,
+        )
+
+    def test_controller_missing_limit(self) -> None:
+        clash = sample_clash_controller()
+        clash["controllerAttribution"]["missing"] = 2
+
+        limits = compare.comparison_limits(
+            clash,
+            {
+                "replay": {"schedule": True},
+                "items": [],
+            },
+        )
+
+        self.assertIn(
+            "some Clash probes lack controller selected-chain observations",
             limits,
         )
 
@@ -82,6 +126,20 @@ def sample_clash() -> dict[str, object]:
         ],
         "byDomain": [],
     }
+
+
+def sample_clash_controller() -> dict[str, object]:
+    data = sample_clash()
+    data["controllerAttribution"] = {
+        "enabled": True,
+        "observed": 10,
+        "items": 10,
+        "missing": 0,
+        "rawNodeNamesStored": False,
+        "chainKeys": [{"key": "abcd1234", "count": 7}],
+        "rules": [{"key": "RuleSet", "count": 10}],
+    }
+    return data
 
 
 def sample_dynet() -> dict[str, object]:
