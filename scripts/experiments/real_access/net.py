@@ -18,22 +18,53 @@ def probe(
     entry: dict[str, Any],
     timeout_seconds: float,
     stages: list[dict[str, Any]],
+    on_resolved: Any | None = None,
 ) -> dict[str, Any]:
     probe_name = entry["probe"]
     if probe_name == "dns":
-        return probe_dns(entry["domain"], timeout_seconds, stages)
+        return probe_dns(entry["domain"], timeout_seconds, stages, on_resolved)
     if probe_name == "tcp-connect":
-        return probe_tcp(entry["domain"], int(entry["port"]), timeout_seconds, stages)
+        return probe_tcp(
+            entry["domain"],
+            int(entry["port"]),
+            timeout_seconds,
+            stages,
+            on_resolved,
+        )
     if probe_name == "tls-handshake":
-        return probe_tls(entry["domain"], int(entry["port"]), timeout_seconds, stages)
+        return probe_tls(
+            entry["domain"],
+            int(entry["port"]),
+            timeout_seconds,
+            stages,
+            on_resolved,
+        )
     if probe_name == "https-head":
-        return probe_https_head(entry["domain"], int(entry["port"]), timeout_seconds, stages)
+        return probe_https_head(
+            entry["domain"],
+            int(entry["port"]),
+            timeout_seconds,
+            stages,
+            on_resolved,
+        )
     if probe_name == "https-get":
-        return probe_https_get(entry["domain"], int(entry["port"]), timeout_seconds, stages)
+        return probe_https_get(
+            entry["domain"],
+            int(entry["port"]),
+            timeout_seconds,
+            stages,
+            on_resolved,
+        )
     raise ValueError(f"unsupported probe mode: {probe_name}")
 
-def probe_dns(domain: str, timeout_seconds: float, stages: list[dict[str, Any]]) -> dict[str, Any]:
+def probe_dns(
+    domain: str,
+    timeout_seconds: float,
+    stages: list[dict[str, Any]],
+    on_resolved: Any | None = None,
+) -> dict[str, Any]:
     records = resolve_addresses(domain, 443, timeout_seconds, stages)
+    notify_resolved(on_resolved, records)
     return dns_details(records)
 
 def probe_tcp(
@@ -41,8 +72,10 @@ def probe_tcp(
     port: int,
     timeout_seconds: float,
     stages: list[dict[str, Any]],
+    on_resolved: Any | None = None,
 ) -> dict[str, Any]:
     records = resolve_addresses(domain, port, timeout_seconds, stages)
+    notify_resolved(on_resolved, records)
     sock, connect_details = connect_resolved(records, timeout_seconds, stages)
     sock.close()
     return {**dns_details(records), **connect_details}
@@ -52,8 +85,10 @@ def probe_tls(
     port: int,
     timeout_seconds: float,
     stages: list[dict[str, Any]],
+    on_resolved: Any | None = None,
 ) -> dict[str, Any]:
     records = resolve_addresses(domain, port, timeout_seconds, stages)
+    notify_resolved(on_resolved, records)
     sock, connect_details = connect_resolved(records, timeout_seconds, stages)
     tls = wrap_tls(sock, domain, timeout_seconds, stages)
     tls_version = tls.version()
@@ -65,8 +100,10 @@ def probe_https_head(
     port: int,
     timeout_seconds: float,
     stages: list[dict[str, Any]],
+    on_resolved: Any | None = None,
 ) -> dict[str, Any]:
     records = resolve_addresses(domain, port, timeout_seconds, stages)
+    notify_resolved(on_resolved, records)
     sock, connect_details = connect_resolved(records, timeout_seconds, stages)
     tls = wrap_tls(sock, domain, timeout_seconds, stages)
     tls_version = tls.version()
@@ -81,8 +118,10 @@ def probe_https_get(
     port: int,
     timeout_seconds: float,
     stages: list[dict[str, Any]],
+    on_resolved: Any | None = None,
 ) -> dict[str, Any]:
     records = resolve_addresses(domain, port, timeout_seconds, stages)
+    notify_resolved(on_resolved, records)
     sock, connect_details = connect_resolved(records, timeout_seconds, stages)
     tls = wrap_tls(sock, domain, timeout_seconds, stages)
     tls_version = tls.version()
@@ -117,6 +156,10 @@ def resolve_addresses(
         socket.setdefaulttimeout(original_timeout)
         stage["elapsedMs"] = elapsed_ms(begin)
         stages.append(stage)
+
+def notify_resolved(on_resolved: Any | None, records: list[Any]) -> None:
+    if on_resolved is not None:
+        on_resolved(records)
 
 def dns_details(records: list[Any]) -> dict[str, Any]:
     families = Counter(family_name(record[0]) for record in records)

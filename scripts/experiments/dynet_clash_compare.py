@@ -194,6 +194,7 @@ def clash_controller_summary(clash: dict[str, Any]) -> dict[str, Any]:
         "rawNodeNamesStored": bool(controller.get("rawNodeNamesStored", False)),
         "chainKeys": controller.get("chainKeys", []),
         "rules": controller.get("rules", []),
+        "matchSources": controller.get("matchSources", []),
         "missReasons": controller.get("missReasons", []),
         "failureGroups": controller.get("failureGroups", []),
     }
@@ -275,27 +276,7 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     for row in sorted(report["byDomain"], key=domain_sort_key)[:16]:
         lines.append(comparison_line(row))
     if report["clashController"]["enabled"]:
-        lines.extend(["", "## Clash Controller", ""])
-        controller = report["clashController"]
-        lines.append(
-            f"- observed=`{controller['observed']}/{controller['items']}` "
-            f"missing=`{controller['missing']}` rawNodeNamesStored=`{controller['rawNodeNamesStored']}`"
-        )
-        for item in controller.get("chainKeys", [])[:8]:
-            lines.append(f"- chain `{item['key']}` count=`{item['count']}`")
-        for item in controller.get("missReasons", [])[:8]:
-            lines.append(f"- miss `{item['key']}` count=`{item['count']}`")
-        if controller.get("failureGroups"):
-            lines.append("- failure groups:")
-            for item in controller["failureGroups"][:10]:
-                miss = item.get("missReason") or "none"
-                lines.append(
-                    f"  - chain=`{item['chainKey']}` observed=`{item['observed']}` "
-                    f"missReason=`{miss}` domain=`{item['domain']}` "
-                    f"probe=`{item['probe']}` "
-                    f"stage=`{item['errorStage']}` error=`{item['errorType']}` "
-                    f"count=`{item['count']}`"
-                )
+        append_clash_controller(lines, report["clashController"])
     if report["dynetFailures"]:
         lines.extend(["", "## Dynet Failures", ""])
         for item in report["dynetFailures"]:
@@ -308,6 +289,38 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
     for item in report["limits"]:
         lines.append(f"- {item}")
     path.write_text("\n".join(lines) + "\n")
+
+
+def append_clash_controller(lines: list[str], controller: dict[str, Any]) -> None:
+    lines.extend(["", "## Clash Controller", ""])
+    lines.append(
+        f"- observed=`{controller['observed']}/{controller['items']}` "
+        f"missing=`{controller['missing']}` rawNodeNamesStored=`{controller['rawNodeNamesStored']}`"
+    )
+    for item in controller.get("chainKeys", [])[:8]:
+        lines.append(f"- chain `{item['key']}` count=`{item['count']}`")
+    for item in controller.get("matchSources", [])[:8]:
+        lines.append(f"- match `{item['key']}` count=`{item['count']}`")
+    for item in controller.get("missReasons", [])[:8]:
+        lines.append(f"- miss `{item['key']}` count=`{item['count']}`")
+    if controller.get("failureGroups"):
+        append_clash_failures(lines, controller["failureGroups"])
+
+
+def append_clash_failures(lines: list[str], groups: list[dict[str, Any]]) -> None:
+    lines.append("- failure groups:")
+    for item in groups[:10]:
+        miss = item.get("missReason") or "none"
+        sources = ",".join(
+            source["key"] for source in item.get("matchSources", [])
+        ) or "none"
+        lines.append(
+            f"  - chain=`{item['chainKey']}` observed=`{item['observed']}` "
+            f"missReason=`{miss}` domain=`{item['domain']}` "
+            f"probe=`{item['probe']}` "
+            f"stage=`{item['errorStage']}` error=`{item['errorType']}` "
+            f"count=`{item['count']}` matchSources=`{sources}`"
+        )
 
 
 def comparison_line(row: dict[str, Any]) -> str:

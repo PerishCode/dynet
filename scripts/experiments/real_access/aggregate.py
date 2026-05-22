@@ -280,6 +280,11 @@ def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         for row in observed
         for rule in row.get("clashController", {}).get("rules", [])
     )
+    match_sources = Counter(
+        source
+        for row in observed
+        for source in row.get("clashController", {}).get("matchSources", [])
+    )
     miss_reasons = Counter(
         str(row.get("clashController", {}).get("missReason") or "unknown")
         for row in enabled
@@ -292,6 +297,7 @@ def controller_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "missing": len(enabled) - len(observed),
         "chainKeys": top(chains),
         "rules": top(rules),
+        "matchSources": top(match_sources),
         "missReasons": top(miss_reasons),
         "failureGroups": controller_failure_groups(results),
         "rawNodeNamesStored": False,
@@ -331,6 +337,12 @@ def controller_failure_groups(results: list[dict[str, Any]]) -> list[dict[str, A
             for rule in row.get("clashController", {}).get("rules", [])
             if isinstance(rule, str)
         )
+        match_sources = Counter(
+            source
+            for row in rows
+            for source in row.get("clashController", {}).get("matchSources", [])
+            if isinstance(source, str)
+        )
         output.append(
             {
                 "chainKey": chain,
@@ -343,6 +355,7 @@ def controller_failure_groups(results: list[dict[str, Any]]) -> list[dict[str, A
                 "errorType": error_type,
                 "count": len(rows),
                 "rules": top(rules),
+                "matchSources": top(match_sources),
             }
         )
     return output

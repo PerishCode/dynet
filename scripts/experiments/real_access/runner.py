@@ -67,7 +67,12 @@ def run_probe(
     policy = target_policy(entry)
     capture = sampler.capture(entry) if sampler else None
     try:
-        details = probe(entry, timeout_seconds, stages)
+        details = probe(
+            entry,
+            timeout_seconds,
+            stages,
+            on_resolved=capture.add_target_records if capture else None,
+        )
         ok = True
         error = None
         error_stage = None

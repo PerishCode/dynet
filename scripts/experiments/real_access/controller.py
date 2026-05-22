@@ -36,11 +36,17 @@ class ControllerCapture:
         self.domain = domain
         self.stop_event = threading.Event()
         self.samples: list[dict[str, Any]] = []
+        self.target_ips: set[str] = set()
+        self.lock = threading.Lock()
         self.polls = 0
         self.fetch_errors = 0
         self.connections_seen = 0
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+
+    def add_target_records(self, records: list[Any]) -> None:
+        with self.lock:
+            self.target_ips.update(target_ips_from_records(records))
 
     def close(self) -> dict[str, Any]:
         if self.settings.tail_ms > 0:
@@ -52,27 +58,45 @@ class ControllerCapture:
             polls=self.polls,
             fetch_errors=self.fetch_errors,
             connections_seen=self.connections_seen,
+            target_ip_count=self.target_ip_count(),
         )
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
             try:
-                snapshot = fetch_connections(self.settings)
-                self.polls += 1
-                connections = [
-                    item
-                    for item in snapshot.get("connections", [])
-                    if isinstance(item, dict)
-                ]
-                self.connections_seen += len(connections)
-                self.samples.extend(
-                    sanitize_connection(item, self.domain, self.settings.hash_salt)
-                    for item in connections
-                    if connection_matches(item, self.domain)
-                )
+                self.capture_snapshot(fetch_connections(self.settings))
             except Exception:
                 self.fetch_errors += 1
             self.stop_event.wait(max(self.settings.poll_ms, 10) / 1000)
+
+    def capture_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.polls += 1
+        connections = [
+            item
+            for item in snapshot.get("connections", [])
+            if isinstance(item, dict)
+        ]
+        self.connections_seen += len(connections)
+        target_ips = self.target_ip_snapshot()
+        for item in connections:
+            match_source = connection_match_source(item, self.domain, target_ips)
+            if match_source:
+                self.samples.append(
+                    sanitize_connection(
+                        item,
+                        self.domain,
+                        self.settings.hash_salt,
+                        match_source,
+                    )
+                )
+
+    def target_ip_snapshot(self) -> set[str]:
+        with self.lock:
+            return set(self.target_ips)
+
+    def target_ip_count(self) -> int:
+        with self.lock:
+            return len(self.target_ips)
 
 
 def sampler_from_args(args: argparse.Namespace) -> ClashSampler | None:
@@ -168,26 +192,82 @@ def decode_chunked(body: bytes) -> bytes:
     return bytes(output)
 
 
-def connection_matches(item: dict[str, Any], domain: str) -> bool:
+def connection_matches(
+    item: dict[str, Any],
+    domain: str,
+    target_ips: set[str] | None = None,
+) -> bool:
+    return bool(connection_match_source(item, domain, target_ips or set()))
+
+
+def connection_match_source(
+    item: dict[str, Any],
+    domain: str,
+    target_ips: set[str],
+) -> str | None:
     metadata = item.get("metadata", {})
     if not isinstance(metadata, dict):
-        return False
-    host = str(metadata.get("host") or "").lower()
-    return host == domain
+        return None
+    if domain in metadata_hosts(metadata):
+        return "domain"
+    destination_ip = string_or_none(metadata.get("destinationIP"))
+    if destination_ip and destination_ip in target_ips:
+        return "destination-ip"
+    return None
 
 
-def sanitize_connection(item: dict[str, Any], domain: str, salt: str) -> dict[str, Any]:
+def metadata_hosts(metadata: dict[str, Any]) -> set[str]:
+    return {
+        host
+        for field in ("host", "sniffHost", "remoteDestination")
+        if (host := normalize_host(metadata.get(field)))
+    }
+
+
+def normalize_host(value: Any) -> str | None:
+    if value is None:
+        return None
+    host = str(value).lower().strip().strip(".")
+    if not host:
+        return None
+    if host.startswith("[") and "]" in host:
+        return host[1:host.index("]")]
+    if ":" in host:
+        name, port = host.rsplit(":", 1)
+        if port.isdigit():
+            return name.strip(".")
+    return host
+
+
+def sanitize_connection(
+    item: dict[str, Any],
+    domain: str,
+    salt: str,
+    match_source: str,
+) -> dict[str, Any]:
     chains = [str(value) for value in item.get("chains", []) if isinstance(value, str)]
     rule_payload = item.get("rulePayload")
     return {
         "domain": domain,
         "network": string_or_none(item.get("metadata", {}).get("network")),
         "type": string_or_none(item.get("metadata", {}).get("type")),
+        "matchSource": match_source,
         "rule": string_or_none(item.get("rule")),
         "rulePayloadHash": hash_value(rule_payload, salt) if rule_payload else None,
         "chainHashes": [hash_value(value, salt) for value in chains],
         "chainLength": len(chains),
     }
+
+
+def target_ips_from_records(records: list[Any]) -> set[str]:
+    output = set()
+    for record in records:
+        try:
+            sockaddr = record[4]
+            output.add(str(sockaddr[0]))
+        except (IndexError, TypeError):
+            continue
+    return output
 
 
 def string_or_none(value: Any) -> str | None:
@@ -207,6 +287,7 @@ def summarize_samples(
     polls: int = 0,
     fetch_errors: int = 0,
     connections_seen: int = 0,
+    target_ip_count: int = 0,
 ) -> dict[str, Any]:
     chain_keys = sorted(
         {
@@ -216,6 +297,13 @@ def summarize_samples(
         }
     )
     rules = sorted({sample.get("rule") for sample in samples if sample.get("rule")})
+    match_sources = sorted(
+        {
+            sample.get("matchSource")
+            for sample in samples
+            if sample.get("matchSource")
+        }
+    )
     observed = bool(samples)
     return {
         "enabled": True,
@@ -223,9 +311,11 @@ def summarize_samples(
         "observed": observed,
         "chainKeys": chain_keys,
         "rules": rules,
+        "matchSources": match_sources,
         "polls": polls,
         "fetchErrors": fetch_errors,
         "connectionsSeen": connections_seen,
+        "targetIpCount": target_ip_count,
         "missReason": miss_reason(observed, polls, fetch_errors, connections_seen),
     }
 

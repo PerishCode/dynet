@@ -19,6 +19,7 @@ class RealAccessAggregateTest(unittest.TestCase):
 
         self.assertEqual(summary["observed"], 2)
         self.assertEqual(summary["missing"], 1)
+        self.assertEqual(summary["matchSources"], [])
         self.assertEqual(summary["missReasons"], [{"key": "unknown", "count": 1}])
         self.assertEqual(
             summary["failureGroups"],
@@ -34,6 +35,7 @@ class RealAccessAggregateTest(unittest.TestCase):
                     "errorType": "tls.eof",
                     "count": 1,
                     "rules": [{"key": "RuleSet", "count": 1}],
+                    "matchSources": [],
                 },
                 {
                     "chainKey": "missing-observation",
@@ -46,6 +48,7 @@ class RealAccessAggregateTest(unittest.TestCase):
                     "errorType": "tls.eof",
                     "count": 1,
                     "rules": [],
+                    "matchSources": [],
                 },
             ],
         )

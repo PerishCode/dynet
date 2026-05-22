@@ -17,9 +17,10 @@ class RealAccessControllerTest(unittest.TestCase):
             "chains": ["proxy-group", "node-a"],
         }
 
-        result = controller.sanitize_connection(item, "api.github.com", "salt")
+        result = controller.sanitize_connection(item, "api.github.com", "salt", "domain")
 
         self.assertEqual(result["domain"], "api.github.com")
+        self.assertEqual(result["matchSource"], "domain")
         self.assertEqual(result["rule"], "DomainSuffix")
         self.assertEqual(result["chainLength"], 2)
         self.assertEqual(len(result["chainHashes"]), 2)
@@ -36,6 +37,29 @@ class RealAccessControllerTest(unittest.TestCase):
             controller.connection_matches(
                 {"metadata": {"host": "github.com"}},
                 "api.github.com",
+            )
+        )
+
+    def test_matches_sniff_host(self) -> None:
+        self.assertTrue(
+            controller.connection_matches(
+                {"metadata": {"sniffHost": "api.github.com"}},
+                "api.github.com",
+            )
+        )
+        self.assertTrue(
+            controller.connection_matches(
+                {"metadata": {"remoteDestination": "api.github.com:443"}},
+                "api.github.com",
+            )
+        )
+
+    def test_matches_destination_ip(self) -> None:
+        self.assertTrue(
+            controller.connection_matches(
+                {"metadata": {"destinationIP": "203.0.113.10"}},
+                "api.github.com",
+                {"203.0.113.10"},
             )
         )
 
