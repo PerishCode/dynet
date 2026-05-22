@@ -292,6 +292,8 @@ def command_hints(args: argparse.Namespace, primary_domains: list[dict[str, Any]
             "python3 scripts/experiments/real_access_blackbox.py plan "
             f"--profile {args.profile} --buckets work-direct "
             f"{focus} --focus-bucket github-proof --focus-weight 40 "
+            "--no-default-controls --control-domain www.cloudflare.com "
+            "--control-domain example.com --control-domain www.google.com "
             "--probe-modes tls-handshake,https-head "
             f"--count {args.manifest_count} --duration-seconds {args.manifest_duration_seconds} "
             f"--output {manifest}"

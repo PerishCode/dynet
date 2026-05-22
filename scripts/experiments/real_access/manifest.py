@@ -136,13 +136,22 @@ def manifest_entries(
     rng: random.Random,
 ) -> list[dict[str, Any]]:
     entries = []
-    history: list[str] = []
-    burst_domains: dict[str, str] = {}
+    history_by_pool: dict[str, list[str]] = {}
+    burst_domains: dict[tuple[str, str], str] = {}
     for index in range(args.count):
         pool = rng.choices(pools, weights=weights, k=1)[0]
+        pool_name = str(pool["name"])
+        history = history_by_pool.setdefault(pool_name, [])
         modes = manifest_modes(pool, requested_modes)
         behavior = rng.choice(behaviors)
-        domain, burst_id = select_manifest_domain(args, pool, behavior, history, burst_domains, rng)
+        domain, burst_id = select_manifest_domain(
+            args,
+            pool,
+            behavior,
+            history,
+            burst_domains,
+            rng,
+        )
         probe = rng.choice(modes)
         entries.append(manifest_entry(index, pool, domain, behavior, burst_id, probe, args))
         history.append(domain)
@@ -161,14 +170,15 @@ def select_manifest_domain(
     pool: dict[str, Any],
     behavior: str,
     history: list[str],
-    burst_domains: dict[str, str],
+    burst_domains: dict[tuple[str, str], str],
     rng: random.Random,
 ) -> tuple[str, str | None]:
     if behavior == "repeat" and history:
         return rng.choice(history), None
     if behavior == "burst":
         burst_id = f"burst-{rng.randrange(max(args.burst_groups, 1)) + 1:02d}"
-        return burst_domains.setdefault(burst_id, rng.choice(pool["domains"])), burst_id
+        cache_key = (str(pool["name"]), burst_id)
+        return burst_domains.setdefault(cache_key, rng.choice(pool["domains"])), burst_id
     return rng.choice(pool["domains"]), None
 
 def manifest_entry(
