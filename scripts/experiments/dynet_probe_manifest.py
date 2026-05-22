@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import subprocess
 import time
@@ -56,6 +57,7 @@ def run_probe(
     entry: dict[str, Any],
     output_dir: Path,
     actual_start_offset_ms: int | None = None,
+    target_start_offset_ms: int | None = None,
 ) -> dict[str, Any]:
     entry_id = str(entry.get("id") or len(list(output_dir.glob("*.json"))) + 1)
     domain = str(entry["domain"])
@@ -83,6 +85,7 @@ def run_probe(
         "sourceProbe": entry.get("probe"),
         "dynetProtocol": dynet_protocol(args, entry),
         "scheduledOffsetMs": entry.get("scheduledOffsetMs"),
+        "targetStartOffsetMs": target_start_offset_ms,
         "actualStartOffsetMs": actual_start_offset_ms,
         "exitCode": completed.returncode,
         "status": report.get("status"),
@@ -219,6 +222,7 @@ def write_summary(
             "schedule": bool(args.replay_schedule),
             "scheduleScale": args.schedule_scale,
         },
+        "scheduler": scheduler_summary(items, args),
         "totals": {
             "attempted": len(items),
             "passed": sum(1 for item in items if item["status"] == "pass"),
@@ -257,12 +261,19 @@ def aggregate(items: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
 
 
 def write_markdown(path: Path, summary: dict[str, Any]) -> None:
+    scheduler = summary.get("scheduler", {})
+    lag = scheduler.get("lagMs", {})
     lines = [
         "# Dynet Probe Manifest Run",
         "",
         f"- attempted: `{summary['totals']['attempted']}`",
         f"- passed: `{summary['totals']['passed']}`",
         f"- failed: `{summary['totals']['failed']}`",
+        f"- replay mode: `{scheduler.get('mode')}`",
+        f"- max concurrency: `{scheduler.get('maxConcurrency')}`",
+        f"- lag budget: `{scheduler.get('lagBudgetMs')}` ms",
+        f"- lag exceeded: `{scheduler.get('lagExceeded')}`",
+        f"- schedule lag p95: `{lag.get('p95')}` ms",
         "",
         "## By Behavior",
         "",
@@ -309,6 +320,7 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
             f"behavior=`{item['behavior']}` sourceProbe=`{item['sourceProbe']}` "
             f"dynetProtocol=`{item['dynetProtocol']}` outbound=`{item['selectedOutbound']}` "
             f"scheduledOffsetMs=`{item['scheduledOffsetMs']}` "
+            f"targetStartOffsetMs=`{item['targetStartOffsetMs']}` "
             f"actualStartOffsetMs=`{item['actualStartOffsetMs']}` failedStage=`{item['failedStage']}`"
         )
     path.write_text("\n".join(lines) + "\n")
@@ -320,14 +332,13 @@ def command_run(args: argparse.Namespace) -> int:
     entries = selected_entries(args)
     if args.replay_schedule:
         entries = sorted(entries, key=scheduled_offset_ms)
-    items = []
     started = time.monotonic()
     base_offset_ms = schedule_base_offset(entries)
-    for entry in entries:
-        if args.replay_schedule:
-            sleep_until(replay_target_ms(args, entry, base_offset_ms), started)
-        actual_start_offset_ms = round((time.monotonic() - started) * 1000)
-        items.append(run_probe(args, entry, output_dir, actual_start_offset_ms))
+    if args.replay_schedule and args.replay_mode == "open-loop":
+        items = run_open_loop(args, entries, output_dir, started, base_offset_ms)
+    else:
+        items = run_sequential(args, entries, output_dir, started, base_offset_ms)
+    items = sorted(items, key=lambda item: str(item.get("id")))
     summary = write_summary(output_dir, items, args)
     print(
         json.dumps(
@@ -341,6 +352,97 @@ def command_run(args: argparse.Namespace) -> int:
         )
     )
     return 0 if summary["totals"]["failed"] == 0 else 1
+
+
+def run_open_loop(
+    args: argparse.Namespace,
+    entries: list[dict[str, Any]],
+    output_dir: Path,
+    started: float,
+    base_offset_ms: int,
+) -> list[dict[str, Any]]:
+    items = []
+    with ThreadPoolExecutor(max_workers=max(args.max_concurrency, 1)) as executor:
+        futures = []
+        for entry in entries:
+            target_ms = replay_target_ms(args, entry, base_offset_ms)
+            sleep_until(target_ms, started)
+            futures.append(
+                executor.submit(
+                    run_probe_with_clock,
+                    args,
+                    entry,
+                    output_dir,
+                    started,
+                    target_ms,
+                )
+            )
+        for future in as_completed(futures):
+            items.append(future.result())
+    return items
+
+
+def run_probe_with_clock(
+    args: argparse.Namespace,
+    entry: dict[str, Any],
+    output_dir: Path,
+    started: float,
+    target_ms: int,
+) -> dict[str, Any]:
+    actual_ms = monotonic_offset_ms(started)
+    return run_probe(args, entry, output_dir, actual_ms, target_ms)
+
+
+def run_sequential(
+    args: argparse.Namespace,
+    entries: list[dict[str, Any]],
+    output_dir: Path,
+    started: float,
+    base_offset_ms: int,
+) -> list[dict[str, Any]]:
+    items = []
+    for entry in entries:
+        if args.replay_schedule:
+            target_ms = replay_target_ms(args, entry, base_offset_ms)
+            sleep_until(target_ms, started)
+        else:
+            target_ms = None
+        actual_start_offset_ms = monotonic_offset_ms(started)
+        items.append(run_probe(args, entry, output_dir, actual_start_offset_ms, target_ms))
+    return items
+
+
+def monotonic_offset_ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
+
+
+def scheduler_summary(items: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+    lags = []
+    for item in items:
+        scheduled = item.get("targetStartOffsetMs")
+        actual = item.get("actualStartOffsetMs")
+        if isinstance(scheduled, int) and isinstance(actual, int):
+            lags.append(max(0, actual - scheduled))
+    p95 = percentile(lags, 95)
+    return {
+        "mode": args.replay_mode if args.replay_schedule else "sequential",
+        "maxConcurrency": args.max_concurrency if args.replay_schedule else 1,
+        "lagBudgetMs": args.lag_budget_ms,
+        "lagExceeded": bool(p95 is not None and p95 > args.lag_budget_ms),
+        "lagMs": {
+            "p50": percentile(lags, 50),
+            "p95": p95,
+            "max": max(lags) if lags else None,
+        },
+    }
+
+
+def percentile(values: list[int], target: int) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = round((len(ordered) - 1) * (target / 100))
+    return ordered[index]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -359,6 +461,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--probe-type", action="append")
     parser.add_argument("--replay-schedule", action="store_true")
     parser.add_argument("--schedule-scale", type=non_negative_float, default=1.0)
+    parser.add_argument(
+        "--replay-mode",
+        choices=["open-loop", "sequential"],
+        default="open-loop",
+    )
+    parser.add_argument("--max-concurrency", type=int, default=16)
+    parser.add_argument("--lag-budget-ms", type=int, default=1000)
     parser.add_argument(
         "--dynet-protocol",
         choices=[SOURCE_PROTOCOL, "https-head", "tls-handshake"],

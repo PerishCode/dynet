@@ -18,13 +18,16 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         f"- Attribution: `{summary['attribution']['failureSignal']}`",
         f"- Workload duration: `{summary['workload'].get('durationSeconds', 0)}` seconds",
         f"- Schedule lag p95: `{summary['schedule']['lagMs']['p95']}` ms",
+    ]
+    append_scheduler(lines, summary.get("scheduler", {}))
+    lines.extend([
         "",
         "## Privacy",
         "",
         "- No dynet state/API/events were read.",
         "- No cookies, Authorization headers, browser profiles, or request bodies were used.",
         "- Response bodies, response headers, and resolved IP addresses were not stored.",
-    ]
+    ])
     append_report_groups(lines, summary)
     append_controller(lines, summary.get("controllerAttribution", {}))
     if summary["errors"]:
@@ -69,6 +72,18 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
         ]
     )
     path.write_text("\n".join(lines) + "\n")
+
+def append_scheduler(lines: list[str], scheduler: dict[str, Any]) -> None:
+    if not scheduler:
+        return
+    lag = scheduler.get("lagMs", {})
+    lines.extend([
+        f"- Replay mode: `{scheduler.get('mode')}`",
+        f"- Max concurrency: `{scheduler.get('maxConcurrency')}`",
+        f"- Lag budget: `{scheduler.get('lagBudgetMs')}` ms",
+        f"- Lag exceeded: `{scheduler.get('lagExceeded')}`",
+        f"- Scheduler lag p95: `{lag.get('p95')}` ms",
+    ])
 
 def append_controller(lines: list[str], controller: dict[str, Any]) -> None:
     if not controller.get("enabled"):

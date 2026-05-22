@@ -213,6 +213,8 @@ def comparison_limits(
         limits.append("some Clash probes lack controller selected-chain observations")
     limits.extend(clash_guardrail_limits(clash, args))
     limits.extend(dynet_guardrail_limits(dynet, args))
+    limits.extend(schedule_limits("Clash", clash))
+    limits.extend(schedule_limits("dynet", dynet))
     if not dynet.get("replay", {}).get("schedule"):
         limits.insert(
             0,
@@ -229,6 +231,25 @@ def comparison_limits(
             1,
             "some dynet tls-handshake source probes were not replayed as TLS-only probes",
         )
+    return limits
+
+
+def schedule_limits(name: str, summary: dict[str, Any]) -> list[str]:
+    scheduled = bool(
+        summary.get("schedule", {}).get("scheduled")
+        or summary.get("replay", {}).get("schedule")
+        or summary.get("workload", {}).get("durationSeconds")
+    )
+    if not scheduled:
+        return []
+    scheduler = summary.get("scheduler")
+    if not isinstance(scheduler, dict):
+        return [f"{name} summary lacks replay scheduler metadata"]
+    limits = []
+    if scheduler.get("mode") != "open-loop":
+        limits.append(f"{name} replay did not use open-loop scheduler")
+    if scheduler.get("lagExceeded"):
+        limits.append(f"{name} schedule lag exceeded configured budget")
     return limits
 
 

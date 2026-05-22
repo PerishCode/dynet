@@ -151,6 +151,34 @@ class DynetClashCompareTest(unittest.TestCase):
             limits,
         )
 
+    def test_schedule_lag_limit(self) -> None:
+        dynet = sample_dynet()
+        dynet["replay"] = {"schedule": True}
+        dynet["scheduler"] = {
+            "mode": "open-loop",
+            "lagExceeded": True,
+        }
+
+        limits = compare.comparison_limits(
+            sample_clash_controller(),
+            dynet,
+            sample_args(),
+        )
+
+        self.assertIn("dynet schedule lag exceeded configured budget", limits)
+
+    def test_scheduler_metadata_limit(self) -> None:
+        limits = compare.comparison_limits(
+            sample_clash_controller(),
+            {
+                "replay": {"schedule": True},
+                "items": [],
+            },
+            sample_args(),
+        )
+
+        self.assertIn("dynet summary lacks replay scheduler metadata", limits)
+
 
 def sample_args() -> argparse.Namespace:
     return argparse.Namespace(

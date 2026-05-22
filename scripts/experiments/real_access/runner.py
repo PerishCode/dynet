@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from real_access.common import (
     ATTRIBUTION_TRACE_FIELDS,
     TARGET_POLICY_VERSION,
     observer_model,
+    percentile,
     utc_now,
     write_json,
 )
@@ -22,23 +24,77 @@ from real_access.reports import write_report
 def run_manifest(manifest: dict[str, Any], args: argparse.Namespace, output_dir: Path) -> dict[str, Any]:
     started = utc_now()
     started_monotonic = time.perf_counter()
-    results = []
     sampler = sampler_from_args(args)
     jsonl = output_dir / "results.jsonl"
     jsonl.parent.mkdir(parents=True, exist_ok=True)
+    entries = list(manifest["entries"])
+    if args.respect_schedule and args.replay_mode == "open-loop":
+        results = run_open_loop(entries, args, started_monotonic, sampler)
+    else:
+        results = run_sequential(entries, args, started_monotonic, sampler)
+    results = sorted(results, key=lambda row: str(row.get("id")))
     with jsonl.open("w") as sink:
-        for entry in manifest["entries"]:
-            lag = sleep_until_entry(entry, args, started_monotonic)
-            result = run_probe(entry, args.timeout_seconds, lag, sampler)
-            results.append(result)
+        for result in results:
             sink.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
-            sink.flush()
-            if not args.respect_schedule and args.spacing_ms > 0:
-                time.sleep(args.spacing_ms / 1000)
     summary = summarize_run(manifest, results, started, utc_now())
+    summary["scheduler"] = scheduler_summary(results, args)
     write_json(output_dir / "summary.json", summary)
     write_report(output_dir / "report.md", summary)
     return summary
+
+def run_open_loop(
+    entries: list[dict[str, Any]],
+    args: argparse.Namespace,
+    started_monotonic: float,
+    sampler: ClashSampler | None,
+) -> list[dict[str, Any]]:
+    rows = sorted(entries, key=scheduled_offset_ms)
+    results = []
+    with ThreadPoolExecutor(max_workers=max(args.max_concurrency, 1)) as executor:
+        futures = []
+        for entry in rows:
+            target_ms = scheduled_offset_ms(entry)
+            sleep_until(target_ms, started_monotonic)
+            futures.append(
+                executor.submit(
+                    run_probe_with_clock,
+                    entry,
+                    args,
+                    sampler,
+                    started_monotonic,
+                    target_ms,
+                )
+            )
+        for future in as_completed(futures):
+            results.append(future.result())
+    return results
+
+def run_probe_with_clock(
+    entry: dict[str, Any],
+    args: argparse.Namespace,
+    sampler: ClashSampler | None,
+    started_monotonic: float,
+    target_ms: int,
+) -> dict[str, Any]:
+    actual_ms = monotonic_offset_ms(started_monotonic)
+    lag = max(0, actual_ms - target_ms)
+    return run_probe(entry, args.timeout_seconds, lag, sampler, actual_ms)
+
+def run_sequential(
+    entries: list[dict[str, Any]],
+    args: argparse.Namespace,
+    started_monotonic: float,
+    sampler: ClashSampler | None,
+) -> list[dict[str, Any]]:
+    results = []
+    for entry in entries:
+        lag = sleep_until_entry(entry, args, started_monotonic)
+        actual_ms = monotonic_offset_ms(started_monotonic)
+        result = run_probe(entry, args.timeout_seconds, lag, sampler, actual_ms)
+        results.append(result)
+        if not args.respect_schedule and args.spacing_ms > 0:
+            time.sleep(args.spacing_ms / 1000)
+    return results
 
 def sleep_until_entry(
     entry: dict[str, Any],
@@ -47,19 +103,51 @@ def sleep_until_entry(
 ) -> int | None:
     if not args.respect_schedule:
         return None
-    offset = int(entry.get("scheduledOffsetMs") or 0)
-    due = started_monotonic + offset / 1000
+    target_ms = scheduled_offset_ms(entry)
+    if sleep_until(target_ms, started_monotonic):
+        return 0
+    return max(0, monotonic_offset_ms(started_monotonic) - target_ms)
+
+def scheduled_offset_ms(entry: dict[str, Any]) -> int:
+    return int(entry.get("scheduledOffsetMs") or 0)
+
+def sleep_until(target_ms: int, started_monotonic: float) -> bool:
+    due = started_monotonic + target_ms / 1000
     now = time.perf_counter()
     if due > now:
         time.sleep(due - now)
-        return 0
-    return int((now - due) * 1000)
+        return True
+    return False
+
+def monotonic_offset_ms(started_monotonic: float) -> int:
+    return round((time.perf_counter() - started_monotonic) * 1000)
+
+def scheduler_summary(results: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+    lags = [
+        int(row["scheduleLagMs"])
+        for row in results
+        if isinstance(row.get("scheduleLagMs"), int)
+    ]
+    max_lag = max(lags) if lags else None
+    p95 = percentile(lags, 95)
+    return {
+        "mode": args.replay_mode if args.respect_schedule else "spacing",
+        "maxConcurrency": args.max_concurrency if args.respect_schedule else 1,
+        "lagBudgetMs": args.lag_budget_ms,
+        "lagExceeded": bool(p95 is not None and p95 > args.lag_budget_ms),
+        "lagMs": {
+            "p50": percentile(lags, 50),
+            "p95": p95,
+            "max": max_lag,
+        },
+    }
 
 def run_probe(
     entry: dict[str, Any],
     timeout_seconds: float,
     schedule_lag_ms: int | None,
     sampler: ClashSampler | None = None,
+    actual_start_offset_ms: int | None = None,
 ) -> dict[str, Any]:
     started = utc_now()
     begin = time.perf_counter()
@@ -98,6 +186,7 @@ def run_probe(
         "probe": entry["probe"],
         "port": entry.get("port"),
         "scheduledOffsetMs": entry.get("scheduledOffsetMs"),
+        "actualStartOffsetMs": actual_start_offset_ms,
         "scheduleLagMs": schedule_lag_ms,
         "ok": ok,
         "elapsedMs": elapsed,

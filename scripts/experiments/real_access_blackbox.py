@@ -154,6 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--label")
     add_controller_args(run_parser)
     run_parser.add_argument(
+        "--replay-mode",
+        choices=["open-loop", "sequential"],
+        default="open-loop",
+        help="schedule replay model when respecting scheduled offsets",
+    )
+    run_parser.add_argument("--max-concurrency", type=int, default=16)
+    run_parser.add_argument("--lag-budget-ms", type=int, default=1000)
+    run_parser.add_argument(
         "--no-respect-schedule",
         action="store_false",
         dest="respect_schedule",
