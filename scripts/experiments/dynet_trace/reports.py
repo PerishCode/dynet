@@ -63,6 +63,15 @@ def write_report(path: Path, summary: dict[str, Any]) -> None:
                 f"stage=`{item['stage']}` error=`{item['errorType']}` "
                 f"elapsed={item['elapsedMs']}ms"
             )
+    if summary.get("fallbackSignals"):
+        lines.extend(["", "## Fallback Signals", ""])
+        for item in summary["fallbackSignals"]:
+            lines.append(
+                f"- `{item['type']}` action=`{item['action']}` "
+                f"flow=`{item['flowId']}` replaySafe=`{item['replaySafe']}` "
+                f"failed=`{item.get('failedBound') or item.get('boundSelected')}` "
+                f"recovered=`{item.get('recoveredBound')}`"
+            )
     if summary["attributionReadiness"]["missing"]:
         lines.extend(["", "## Missing", ""])
         for item in summary["attributionReadiness"]["missing"]:
@@ -112,6 +121,8 @@ def write_batch_report(path: Path, batch: dict[str, Any]) -> None:
         f"- Items: `{batch['totals']['items']}` failures=`{batch['totals']['failures']}`",
         f"- Unknown: `{batch['totals']['unknown']}`",
         f"- Missing repeat correlation: `{batch['totals']['missingRepeatCorrelation']}`",
+        f"- Fallback signals: `{batch['totals'].get('fallbackSignals', 0)}` "
+        f"recovered=`{batch['totals'].get('recoveredFallbackSignals', 0)}`",
         "",
         "## Gates",
         "",
@@ -131,12 +142,19 @@ def write_batch_report(path: Path, batch: dict[str, Any]) -> None:
             f"confidence=`{item['confidence']}` failures={item['failures']}/{item['items']} "
             f"nodeSuspectRuns={item['nodeSuspectRuns']} "
             f"repeatedNodeSuspectItems={item['repeatedNodeSuspectItems']}"
-        )
+            )
     if batch["repeatedEvidence"]:
         lines.extend(["", "## Repeated Evidence", ""])
         for item in batch["repeatedEvidence"]:
             lines.append(
                 f"- key=`{' | '.join(item['key'])}` runs={','.join(item['runs'])} "
                 f"items={item['items']}"
+            )
+    if batch.get("fallbackSignals"):
+        lines.extend(["", "## Fallback Signals", ""])
+        for item in batch["fallbackSignals"]:
+            lines.append(
+                f"- `{item['type']}` action=`{item['plannerAction']}` "
+                f"run=`{item['runLabel']}` flow=`{item['flowId']}`"
             )
     path.write_text("\n".join(lines) + "\n")

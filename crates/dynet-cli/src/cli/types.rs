@@ -16,6 +16,27 @@ pub(crate) enum LogLevel {
     Trace,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum CommandMode {
+    Check,
+    Doctor,
+    Install,
+    Plan,
+    Probe,
+    Repair,
+    Run,
+    Status,
+    Uninstall,
+    Verify,
+    Api,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ApiMode {
+    Capabilities,
+    Serve,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct CommandOptions {
     pub(crate) root: PathBuf,
@@ -48,6 +69,7 @@ pub(crate) struct PlanOptions {
     pub(crate) dns_answers: Vec<String>,
     pub(crate) dns_now_secs: Option<u64>,
     pub(crate) dns_ttl_secs: u32,
+    pub(crate) quality_state: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -56,11 +78,17 @@ pub(crate) struct RunOptions {
     pub(crate) max_dns_queries: Option<usize>,
     pub(crate) max_tun_packets: Option<usize>,
     pub(crate) max_tcp_sessions: Option<usize>,
+    pub(crate) max_tcp_closed_sessions: Option<usize>,
+    pub(crate) max_tcp_terminal_sessions: Option<usize>,
     pub(crate) max_udp_sessions: Option<usize>,
+    pub(crate) max_udp_downstream_bytes: Option<usize>,
     pub(crate) timeout_secs: Option<u64>,
+    pub(crate) outbound_tcp_connect_timeout_ms: u64,
+    pub(crate) outbound_tcp_read_write_timeout_ms: u64,
     pub(crate) upstream_dns: Option<String>,
     pub(crate) quality_state: Option<PathBuf>,
     pub(crate) experimental_tcp_forward: bool,
+    pub(crate) experimental_tcp_listen_slots_per_port: usize,
     pub(crate) experimental_udp_forward: bool,
 }
 
@@ -74,10 +102,18 @@ pub(crate) struct ProbeOptions {
     pub(crate) path: Option<String>,
     pub(crate) inbound: Option<String>,
     pub(crate) quality_state: Option<PathBuf>,
+    pub(crate) retry_direct_tls_eof_attempts: usize,
+    pub(crate) retry_direct_tls_eof_sleep_ms: u64,
+    pub(crate) read_poll_timeout_ms: u64,
+    pub(crate) read_pending_budget_ms: u64,
+    pub(crate) read_pending_sleep_ms: u64,
+    pub(crate) outbound_tcp_connect_timeout_ms: u64,
+    pub(crate) outbound_tcp_read_write_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ProbeProtocol {
+    TcpConnect,
     HttpsHead,
     TlsHandshake,
 }

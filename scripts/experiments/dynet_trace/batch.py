@@ -15,10 +15,12 @@ def build_batch(
 ) -> dict[str, Any]:
     runs = []
     all_items = []
+    all_fallbacks = []
     for path in summary_paths:
         run, annotated = batch_run(path)
         runs.append(run)
         all_items.extend(annotated)
+        all_fallbacks.extend(run["fallbackSignals"])
 
     failures = [item for item in all_items if item.get("classification") != "healthy"]
     repeated_keys = repeated_evidence_keys(failures, min_repeat_runs)
@@ -74,6 +76,17 @@ def build_batch(
             "unknown": len(unknown_items),
             "missingRepeatCorrelation": len(missing_repeat),
             "nodeMissingRepeatCorrelation": len(node_missing_repeat),
+            "fallbackSignals": len(all_fallbacks),
+            "recoveredFallbackSignals": sum(
+                1
+                for signal in all_fallbacks
+                if signal.get("type") == "pre-replay-bound-failure-recovered"
+            ),
+            "nonRetrySafeFallbackSignals": sum(
+                1
+                for signal in all_fallbacks
+                if signal.get("type") == "not-retry-safe-cascade-failure"
+            ),
         },
         "runs": runs,
         "byClass": top(Counter(str(item.get("classification")) for item in all_items)),
@@ -84,6 +97,7 @@ def build_batch(
         )),
         "gates": gates,
         "candidateSignals": candidate_signals,
+        "fallbackSignals": all_fallbacks,
         "repeatedEvidence": repeated_evidence_rows(failures, repeated_keys),
     }
 
@@ -95,6 +109,11 @@ def batch_run(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     annotated = [
         {**item, "runLabel": run_label, "summaryPath": str(path)}
         for item in items
+        if isinstance(item, dict)
+    ]
+    fallback_signals = [
+        {**item, "runLabel": run_label, "summaryPath": str(path)}
+        for item in summary.get("fallbackSignals", [])
         if isinstance(item, dict)
     ]
     run = {
@@ -110,6 +129,7 @@ def batch_run(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         "dialerSelections": len(summary.get("dialers", [])),
         "items": len(annotated),
         "failures": sum(1 for item in annotated if item.get("classification") != "healthy"),
+        "fallbackSignals": fallback_signals,
         "classes": top(Counter(str(item.get("classification")) for item in annotated)),
     }
     return run, annotated

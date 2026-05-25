@@ -192,6 +192,59 @@ pub(crate) fn text_plan_report(report: &PlanReport) -> String {
             .expect("write string");
         }
     }
+    if let Some(path) = &report.outbound_path {
+        writeln!(
+            &mut text,
+            "outbound path: {} -> {}",
+            path.requested, path.selected
+        )
+        .expect("write string");
+    }
+    if let Some(path) = &report.dialer_bound_path {
+        writeln!(
+            &mut text,
+            "dialer bound path: {} -> {}",
+            path.requested, path.selected
+        )
+        .expect("write string");
+    }
+    if let Some(feedback) = &report.quality_feedback {
+        writeln!(
+            &mut text,
+            "quality feedback: mode={} penalties={} fallback signals={} recovered={} non-retry-safe={}",
+            feedback.mode.as_deref().unwrap_or("unknown"),
+            feedback.penalty_observations,
+            feedback.fallback_signals,
+            feedback.recovered_fallback_signals,
+            feedback.non_retry_safe_fallback_signals
+        )
+        .expect("write string");
+    }
+    if !report.quality_signals.is_empty() {
+        text.push_str("quality signals:\n");
+        for signal in &report.quality_signals {
+            if signal.fallback_type.is_some() {
+                writeln!(
+                    &mut text,
+                    "- {} action={} failed={} recovered={} replaySafe={}",
+                    signal.signal_type,
+                    signal.action.as_deref().unwrap_or("observe"),
+                    signal.failed_bound.as_deref().unwrap_or("*"),
+                    signal.recovered_bound.as_deref().unwrap_or("*"),
+                    signal.replay_safe.as_deref().unwrap_or("*")
+                )
+                .expect("write string");
+            } else {
+                writeln!(
+                    &mut text,
+                    "- {} action={}",
+                    signal.signal_type,
+                    signal.action.as_deref().unwrap_or("observe")
+                )
+                .expect("write string");
+            }
+        }
+    }
     if !report.diagnostics.is_empty() {
         text.push_str("\nconfig diagnostics:\n");
         for diagnostic in &report.diagnostics {

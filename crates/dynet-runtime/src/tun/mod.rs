@@ -21,6 +21,8 @@ mod ipv6_guard;
 #[cfg(target_os = "linux")]
 mod outbound_events;
 #[cfg(target_os = "linux")]
+mod tcp;
+#[cfg(target_os = "linux")]
 pub(crate) mod tcp_forward;
 #[cfg(target_os = "linux")]
 mod udp_downstream;

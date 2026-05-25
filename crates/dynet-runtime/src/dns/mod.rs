@@ -12,13 +12,14 @@ use std::{
 use tracing::{debug, warn};
 
 use crate::{
-    resolver, resolver::trace::classify_runtime_error, RuntimeCounters, RuntimeEvent,
-    RuntimeEventKind, RuntimeSettings,
+    resolver,
+    resolver::trace::{classify_runtime_error, classify_runtime_error_disposition},
+    RuntimeCounters, RuntimeEvent, RuntimeEventKind, RuntimeSettings,
 };
 
 mod wire;
-pub use wire::dns_reverse_from_wire;
 pub(crate) use wire::query_name_from_wire;
+pub use wire::{dns_reverse_from_wire, dns_servfail_from_wire};
 
 const DNS_BUFFER_LEN: usize = 4096;
 
@@ -110,14 +111,21 @@ fn handle_udp_query(
                 .map_err(|error| format!("failed to send UDP DNS response: {error}"))?;
         }
         Err(error) => {
+            let failure_response = dns_servfail_from_wire(query).ok();
             record_resolution_failure(
                 query_id,
                 query_name.as_deref(),
                 "udp",
                 &error,
                 started,
+                failure_response.as_ref().map(Vec::len),
                 counters,
             )?;
+            if let Some(response) = failure_response {
+                socket
+                    .send_to(&response, peer)
+                    .map_err(|error| format!("failed to send UDP DNS failure response: {error}"))?;
+            }
             warn!(%peer, error = %error.message, "dns.udp.forward_failed");
         }
     }
@@ -182,14 +190,19 @@ fn handle_tcp_query(
     ) {
         Ok(resolution) => resolution,
         Err(error) => {
+            let failure_response = dns_servfail_from_wire(&query).ok();
             record_resolution_failure(
                 query_id,
                 query_name.as_deref(),
                 "tcp",
                 &error,
                 started,
+                failure_response.as_ref().map(Vec::len),
                 counters,
             )?;
+            if let Some(response) = failure_response {
+                write_tcp_dns_response(&mut stream, &response)?;
+            }
             return Err(error.message);
         }
     };
@@ -209,12 +222,15 @@ fn handle_tcp_query(
         started,
         counters,
     )?;
-    let response = resolution.response;
+    write_tcp_dns_response(&mut stream, &resolution.response)
+}
+
+fn write_tcp_dns_response(stream: &mut TcpStream, response: &[u8]) -> Result<(), String> {
     let response_len = u16::try_from(response.len())
         .map_err(|_| format!("TCP DNS response too large: {}", response.len()))?;
     stream
         .write_all(&response_len.to_be_bytes())
-        .and_then(|_| stream.write_all(&response))
+        .and_then(|_| stream.write_all(response))
         .map_err(|error| format!("failed to write TCP DNS response: {error}"))
 }
 
@@ -285,6 +301,7 @@ fn record_resolution_failure(
     listener: &str,
     error: &resolver::ResolveError,
     started: Instant,
+    failure_response_bytes: Option<usize>,
     counters: &RuntimeCounters,
 ) -> Result<(), String> {
     for event in &error.events {
@@ -295,16 +312,24 @@ fn record_resolution_failure(
             listener,
         ))?;
     }
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::DnsResolveFailed)
-            .field("dnsQueryId", query_id)
-            .field("flowId", format!("dns-query-{query_id}"))
-            .field("listener", listener)
-            .field("query", query_name.unwrap_or("<unparsed>"))
-            .field("elapsedMs", started.elapsed().as_millis())
-            .field("errorType", classify_runtime_error(&error.message))
-            .field("error", &error.message),
-    )
+    let mut event = RuntimeEvent::new(RuntimeEventKind::DnsResolveFailed)
+        .field("dnsQueryId", query_id)
+        .field("flowId", format!("dns-query-{query_id}"))
+        .field("listener", listener)
+        .field("query", query_name.unwrap_or("<unparsed>"))
+        .field("elapsedMs", started.elapsed().as_millis())
+        .field("errorType", classify_runtime_error(&error.message))
+        .field(
+            "errorDisposition",
+            classify_runtime_error_disposition(&error.message),
+        )
+        .field("error", &error.message);
+    if let Some(bytes) = failure_response_bytes {
+        event = event
+            .field("failureResponseCode", "SERVFAIL")
+            .field("failureResponseBytes", bytes);
+    }
+    counters.emit(event)
 }
 
 fn capture_reverse_records(

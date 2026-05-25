@@ -1,6 +1,7 @@
 use std::{
-    io::{Read, Result as IoResult, Write},
+    io::{ErrorKind, Read, Result as IoResult, Write},
     sync::Arc,
+    thread::sleep,
     time::Instant,
 };
 
@@ -11,8 +12,8 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use crate::{
     event::EventBus,
     outbound::ProxiedTcpStream,
-    probe::{ProbeProtocol, ProbeTarget},
-    resolver::trace::{classify_runtime_error, elapsed_ms},
+    probe::{ProbeProtocol, ProbeReadPolicy, ProbeTarget},
+    resolver::trace::{classify_runtime_error, classify_runtime_error_disposition, elapsed_ms},
     RuntimeEvent, RuntimeEventKind,
 };
 
@@ -27,12 +28,33 @@ pub(crate) fn execute_with_protocol(
     ebus: &EventBus,
     outbound: &NetworkNode,
     target: &ProbeTarget,
-    stream: ProxiedTcpStream,
+    mut stream: ProxiedTcpStream,
     protocol: ProbeProtocol,
+    read_policy: ProbeReadPolicy,
 ) -> Result<ProbeResponse, String> {
+    if protocol == ProbeProtocol::TcpConnect {
+        return observe_stage(ebus, outbound, "stream-flush", || {
+            stream
+                .flush()
+                .map_err(|error| format!("failed to flush TCP probe stream: {error}"))?;
+            Ok(ProbeResponse {
+                status_code: None,
+                bytes: 0,
+            })
+        });
+    }
+    stream
+        .set_read_timeout(Some(read_policy.poll_timeout()))
+        .map_err(|error| format!("failed to set probe stream read timeout: {error}"))?;
     let mut tls = observe_stage(ebus, outbound, "tls-handshake", || {
         tls_handshake(
-            ObservedProbeStream::new(stream, ebus.clone(), outbound, protocol.as_str()),
+            ObservedProbeStream::new(
+                stream,
+                ebus.clone(),
+                outbound,
+                protocol.as_str(),
+                read_policy,
+            ),
             &target.host,
         )
     })?;
@@ -95,6 +117,10 @@ fn stage_event(
     if let Some(error) = error {
         event = event
             .field("errorType", classify_runtime_error(error))
+            .field(
+                "errorDisposition",
+                classify_runtime_error_disposition(error),
+            )
             .field("error", error);
     }
     event
@@ -196,6 +222,7 @@ struct ObservedProbeStream {
     outbound_tag: String,
     outbound_kind: String,
     protocol: &'static str,
+    read_policy: ProbeReadPolicy,
     first_write_seen: bool,
     first_read_seen: bool,
 }
@@ -206,6 +233,7 @@ impl ObservedProbeStream {
         ebus: EventBus,
         outbound: &NetworkNode,
         protocol: &'static str,
+        read_policy: ProbeReadPolicy,
     ) -> Self {
         Self {
             inner,
@@ -213,6 +241,7 @@ impl ObservedProbeStream {
             outbound_tag: outbound.tag.clone(),
             outbound_kind: outbound.kind.clone(),
             protocol,
+            read_policy,
             first_write_seen: false,
             first_read_seen: false,
         }
@@ -225,6 +254,7 @@ impl ObservedProbeStream {
         started: Instant,
         bytes: Option<usize>,
         error: Option<&std::io::Error>,
+        pending_retries: usize,
     ) -> IoResult<()> {
         let mut event = RuntimeEvent::new(RuntimeEventKind::OutboundStageFinished)
             .field("outbound", &self.outbound_tag)
@@ -233,14 +263,28 @@ impl ObservedProbeStream {
             .field("status", status)
             .field("protocol", self.protocol)
             .field("elapsedMs", elapsed_ms(started));
+        if pending_retries > 0 {
+            event = event
+                .field("pendingRetries", pending_retries)
+                .field("pendingBudgetMs", self.read_policy.pending_budget_ms)
+                .field("pendingSleepMs", self.read_policy.pending_sleep_ms);
+        }
         if let Some(bytes) = bytes {
             event = event.field("bytes", bytes);
         }
         if let Some(error) = error {
             let error = error.to_string();
+            let marker = protocol_read_marker(error.as_str());
             event = event
                 .field("errorType", classify_runtime_error(&error))
-                .field("error", error);
+                .field("error", &error);
+            if let Some(marker) = marker {
+                event = event
+                    .field("protocolReadMarker", marker.key)
+                    .field("protocolReadStage", marker.stage)
+                    .field("protocolReadContext", marker.context)
+                    .field("protocolReadDisposition", marker.disposition);
+            }
         }
         self.ebus.emit(event).map_err(std::io::Error::other)
     }
@@ -253,7 +297,20 @@ impl Read for ObservedProbeStream {
             self.first_read_seen = true;
         }
         let started = Instant::now();
-        let result = self.inner.read(output);
+        let mut pending_retries = 0;
+        let pending_budget = self.read_policy.pending_budget();
+        let pending_sleep = self.read_policy.pending_sleep();
+        let result = loop {
+            match self.inner.read(output) {
+                Err(error) if pending_read_error(&error) && started.elapsed() < pending_budget => {
+                    pending_retries += 1;
+                    if !pending_sleep.is_zero() {
+                        sleep(pending_sleep);
+                    }
+                }
+                result => break result,
+            }
+        };
         if observe {
             match &result {
                 Ok(bytes) => self.emit_stream_stage(
@@ -262,6 +319,7 @@ impl Read for ObservedProbeStream {
                     started,
                     Some(*bytes),
                     None,
+                    pending_retries,
                 )?,
                 Err(error) => self.emit_stream_stage(
                     "stream-first-read",
@@ -269,6 +327,7 @@ impl Read for ObservedProbeStream {
                     started,
                     None,
                     Some(error),
+                    pending_retries,
                 )?,
             }
         }
@@ -292,6 +351,7 @@ impl Write for ObservedProbeStream {
                     started,
                     Some(*bytes),
                     None,
+                    0,
                 )?,
                 Err(error) => self.emit_stream_stage(
                     "stream-first-write",
@@ -299,6 +359,7 @@ impl Write for ObservedProbeStream {
                     started,
                     None,
                     Some(error),
+                    0,
                 )?,
             }
         }
@@ -308,4 +369,56 @@ impl Write for ObservedProbeStream {
     fn flush(&mut self) -> IoResult<()> {
         self.inner.flush()
     }
+}
+
+fn pending_read_error(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+struct ProtocolReadMarker {
+    key: &'static str,
+    stage: &'static str,
+    context: &'static str,
+    disposition: &'static str,
+}
+
+fn protocol_read_marker(error: &str) -> Option<ProtocolReadMarker> {
+    if error.contains("VMess response header length is not ready") {
+        return Some(ProtocolReadMarker {
+            key: "vmess-response-header-length-pending",
+            stage: "vmess-response-header-length",
+            context: protocol_read_context(error),
+            disposition: "pending-budget-exhausted",
+        });
+    }
+    if error.contains("failed to read VMess response header length: unexpected EOF") {
+        return Some(ProtocolReadMarker {
+            key: "vmess-response-header-length-eof",
+            stage: "vmess-response-header-length",
+            context: protocol_read_context(error),
+            disposition: "remote-eof",
+        });
+    }
+    if error.contains("failed to read VMess response header length") {
+        return Some(ProtocolReadMarker {
+            key: "vmess-response-header-length-read",
+            stage: "vmess-response-header-length",
+            context: protocol_read_context(error),
+            disposition: "read-error",
+        });
+    }
+    None
+}
+
+fn protocol_read_context(error: &str) -> &'static str {
+    if error.contains("Shadowsocks response salt") {
+        return "shadowsocks-response-salt";
+    }
+    if error.contains("Shadowsocks chunk length") {
+        return "shadowsocks-chunk-length";
+    }
+    if error.contains("Shadowsocks chunk payload") {
+        return "shadowsocks-chunk-payload";
+    }
+    "vmess-response-header-length"
 }

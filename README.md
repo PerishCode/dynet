@@ -147,7 +147,7 @@ runtime details.
 ## Development
 
 ```bash
-python3 scripts/init.py
+uv --project scripts run python -m scripts.cli.init
 cargo fmt --all --check
 flavor check --root . --config flavor.json
 cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -160,7 +160,7 @@ cargo run --locked -p dynet-cli -- status
 cargo run --locked -p dynet-cli -- verify
 cargo run --locked -p dynet-cli -- api capabilities
 cargo zigbuild --locked --target x86_64-unknown-linux-gnu -p dynet-cli
-python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl dev --host fuisp guest dynet-smoke --user ubuntu
 ```
 
 ## VM Lab Tooling
@@ -170,27 +170,27 @@ the remote KVM host. The physical host remains control-plane only; tun, DNS,
 route, firewall, and failure-injection experiments belong inside guests.
 
 ```bash
-python3 scripts/vmctl.py image catalog
-python3 scripts/vmctl.py image --host fuisp list
-python3 scripts/vmctl.py image --host fuisp ensure ubuntu-24.04
-python3 scripts/vmctl.py image --host fuisp overlay ubuntu-24.04 dynet-smoke
-python3 scripts/vmctl.py net --host fuisp list
-python3 scripts/vmctl.py net --host fuisp start default
-python3 scripts/vmctl.py guest --host fuisp key-ensure
-python3 scripts/vmctl.py guest --host fuisp cloud-init dynet-smoke --image ubuntu-24.04
-python3 scripts/vmctl.py guest --host fuisp status
-python3 scripts/vmctl.py snapshot --host fuisp create dynet-smoke dynet-installed --force
-python3 scripts/vmctl.py snapshot --host fuisp revert dynet-smoke dynet-installed --yes
-python3 scripts/vmctl.py check --host fuisp guest dynet-smoke
-python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu
-python3 scripts/vmctl.py setup --host fuisp install-bin dynet-smoke target/x86_64-unknown-linux-gnu/debug/dynet --user ubuntu
-python3 scripts/vmctl.py smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
-python3 scripts/vmctl.py collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
-python3 scripts/vmctl.py capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
-python3 scripts/vmctl.py capture --host fuisp guest dynet-smoke --label probe --duration 4 --iface enp1s0 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
-python3 scripts/vmctl.py cleanup --host fuisp report
-python3 scripts/vmctl.py cleanup --host fuisp prune-remote pcap --older-than-days 7
-python3 scripts/vmctl.py cleanup prune-local pcap --older-than-days 7
+uv --project scripts run python -m scripts.cli.vmctl image catalog
+uv --project scripts run python -m scripts.cli.vmctl image --host fuisp list
+uv --project scripts run python -m scripts.cli.vmctl image --host fuisp ensure ubuntu-24.04
+uv --project scripts run python -m scripts.cli.vmctl image --host fuisp overlay ubuntu-24.04 dynet-smoke
+uv --project scripts run python -m scripts.cli.vmctl net --host fuisp list
+uv --project scripts run python -m scripts.cli.vmctl net --host fuisp start default
+uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp key-ensure
+uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp cloud-init dynet-smoke --image ubuntu-24.04
+uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp status
+uv --project scripts run python -m scripts.cli.vmctl snapshot --host fuisp create dynet-smoke dynet-installed --force
+uv --project scripts run python -m scripts.cli.vmctl snapshot --host fuisp revert dynet-smoke dynet-installed --yes
+uv --project scripts run python -m scripts.cli.vmctl check --host fuisp guest dynet-smoke
+uv --project scripts run python -m scripts.cli.vmctl dev --host fuisp guest dynet-smoke --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl setup --host fuisp install-bin dynet-smoke target/x86_64-unknown-linux-gnu/debug/dynet --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
+uv --project scripts run python -m scripts.cli.vmctl capture --host fuisp guest dynet-smoke --label probe --duration 4 --iface enp1s0 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
+uv --project scripts run python -m scripts.cli.vmctl cleanup --host fuisp report
+uv --project scripts run python -m scripts.cli.vmctl cleanup --host fuisp prune-remote pcap --older-than-days 7
+uv --project scripts run python -m scripts.cli.vmctl cleanup prune-local pcap --older-than-days 7
 ```
 
 `scripts/vm/image.py` owns image-layer operations. `scripts/vm/setup.py` owns

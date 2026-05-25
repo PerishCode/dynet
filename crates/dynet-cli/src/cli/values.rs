@@ -22,6 +22,7 @@ pub(super) fn parse_log_level(value: &str) -> Result<LogLevel, String> {
 
 pub(super) fn parse_probe_protocol(value: &str) -> Result<ProbeProtocol, String> {
     match value {
+        "tcp-connect" => Ok(ProbeProtocol::TcpConnect),
         "https-head" => Ok(ProbeProtocol::HttpsHead),
         "tls-handshake" => Ok(ProbeProtocol::TlsHandshake),
         other => Err(format!("unsupported probe protocol: {other}")),

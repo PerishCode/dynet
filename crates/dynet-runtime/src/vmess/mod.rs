@@ -6,6 +6,7 @@ use std::{
 
 mod crypto;
 mod target;
+mod transport;
 
 use rand::RngCore;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_128_GCM, CHACHA20_POLY1305, NONCE_LEN};
@@ -19,6 +20,7 @@ use crate::outbound::{
     self,
     buffered_read::{self, BufferedRead},
 };
+use crate::settings::OutboundTcpSettings;
 
 use self::crypto::{
     chacha_key, encrypted_auth_id, first_16, fnv1a32, instruction_key, kdf, open_aes_gcm,
@@ -26,6 +28,7 @@ use self::crypto::{
 };
 use self::target::write_destination;
 pub(crate) use self::target::VmessTarget;
+use self::transport::VmessTransport;
 
 const AEAD_TAG_LEN: usize = 16;
 const MAX_HEADER_LEN: usize = 316;
@@ -54,23 +57,6 @@ pub(crate) struct VmessTcpStream {
     eof: bool,
 }
 
-pub(crate) trait VmessTransport: Read + Write {
-    #[allow(dead_code)]
-    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
-}
-
-impl VmessTransport for std::net::TcpStream {
-    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        std::net::TcpStream::set_read_timeout(self, timeout)
-    }
-}
-
-impl VmessTransport for outbound::ProxiedTcpStream {
-    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.set_read_timeout(timeout)
-    }
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum DataCipher {
     Aes128Gcm,
@@ -83,7 +69,7 @@ struct FrameAead {
 }
 
 struct LengthMask {
-    reader: Box<dyn XofReader>,
+    reader: Box<dyn XofReader + Send>,
     buffer: [u8; 2],
 }
 
@@ -104,8 +90,9 @@ pub(crate) fn connect_tcp(
     spec: &VmessSpec,
     destination: VmessTarget,
     mark: u32,
+    settings: OutboundTcpSettings,
 ) -> Result<VmessTcpStream, String> {
-    let stream = outbound::connect_tcp_socket(&spec.server, spec.server_port, mark)?;
+    let stream = outbound::connect_tcp_socket(&spec.server, spec.server_port, mark, settings)?;
     connect_tcp_on_stream(spec, destination, Box::new(stream))
 }
 
@@ -192,17 +179,17 @@ impl VmessTcpStream {
     fn read_next_frame(&mut self) -> io::Result<()> {
         if self.response_header.is_some() {
             self.read_response_header()?;
-            if self.response_header.is_some() {
-                return Err(buffered_read::pending("VMess response header is not ready"));
-            }
         }
         let frame_len = match self.pending_frame_len {
             Some(frame_len) => frame_len,
             None => {
                 let length_bytes = match self.read_buffered(2, "VMess frame length")? {
                     BufferedRead::Ready(bytes) => bytes,
-                    BufferedRead::Pending => {
-                        return Err(buffered_read::pending("VMess frame length is not ready"));
+                    BufferedRead::Pending(detail) => {
+                        return Err(buffered_read::pending_context(
+                            "VMess frame length is not ready",
+                            detail,
+                        ));
                     }
                     BufferedRead::Eof => {
                         self.eof = true;
@@ -228,8 +215,11 @@ impl VmessTcpStream {
         }
         let mut frame = match self.read_buffered(frame_len, "VMess frame payload")? {
             BufferedRead::Ready(bytes) => bytes,
-            BufferedRead::Pending => {
-                return Err(buffered_read::pending("VMess frame payload is not ready"));
+            BufferedRead::Pending(detail) => {
+                return Err(buffered_read::pending_context(
+                    "VMess frame payload is not ready",
+                    detail,
+                ));
             }
             BufferedRead::Eof => {
                 return Err(io::Error::new(
@@ -258,8 +248,11 @@ impl VmessTcpStream {
         let mut encrypted_header =
             match self.read_buffered(content_len + AEAD_TAG_LEN, "VMess response header")? {
                 BufferedRead::Ready(bytes) => bytes,
-                BufferedRead::Pending => {
-                    return Err(buffered_read::pending("VMess response header is not ready"));
+                BufferedRead::Pending(detail) => {
+                    return Err(buffered_read::pending_context(
+                        "VMess response header is not ready",
+                        detail,
+                    ));
                 }
                 BufferedRead::Eof => {
                     return Err(io::Error::new(
@@ -298,9 +291,10 @@ impl VmessTcpStream {
         let mut encrypted_len =
             match self.read_buffered(2 + AEAD_TAG_LEN, "VMess response header length")? {
                 BufferedRead::Ready(bytes) => bytes,
-                BufferedRead::Pending => {
-                    return Err(buffered_read::pending(
+                BufferedRead::Pending(detail) => {
+                    return Err(buffered_read::pending_context(
                         "VMess response header length is not ready",
+                        detail,
                     ));
                 }
                 BufferedRead::Eof => {

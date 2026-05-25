@@ -141,7 +141,10 @@ fn run_runtime_command(options: cli::RunOptions) -> Result<i32, String> {
         max_dns_queries: options.max_dns_queries,
         max_tun_packets: options.max_tun_packets,
         max_tcp_sessions: options.max_tcp_sessions,
+        max_tcp_closed_sessions: options.max_tcp_closed_sessions,
+        max_tcp_terminal_sessions: options.max_tcp_terminal_sessions,
         max_udp_sessions: options.max_udp_sessions,
+        max_udp_downstream_bytes: options.max_udp_downstream_bytes,
         timeout: options.timeout_secs.map(Duration::from_secs),
     };
     let policy = if let Some(path) = &options.quality_state {
@@ -154,9 +157,14 @@ fn run_runtime_command(options: cli::RunOptions) -> Result<i32, String> {
     };
     let runtime_settings = takeover
         .runtime_settings(dns_chain)
+        .with_outbound_tcp(dynet_runtime::OutboundTcpSettings {
+            connect_timeout_ms: options.outbound_tcp_connect_timeout_ms,
+            read_write_timeout_ms: options.outbound_tcp_read_write_timeout_ms,
+        })
         .with_policy(policy)
         .with_tcp_forwarding(dynet_runtime::TcpForwardingSettings {
             enabled: options.experimental_tcp_forward,
+            listen_slots_per_port: options.experimental_tcp_listen_slots_per_port,
         })
         .with_udp_forwarding(dynet_runtime::UdpForwardingSettings {
             enabled: options.experimental_udp_forward,
@@ -200,8 +208,22 @@ fn run_probe_command(options: cli::ProbeOptions) -> Result<i32, String> {
         inbound: options.inbound,
         bypass_mark,
         policy,
+        outbound_tcp: dynet_runtime::OutboundTcpSettings {
+            connect_timeout_ms: options.outbound_tcp_connect_timeout_ms,
+            read_write_timeout_ms: options.outbound_tcp_read_write_timeout_ms,
+        },
+        read_policy: dynet_runtime::ProbeReadPolicy {
+            poll_timeout_ms: options.read_poll_timeout_ms,
+            pending_budget_ms: options.read_pending_budget_ms,
+            pending_sleep_ms: options.read_pending_sleep_ms,
+        },
+        retry_policy: dynet_runtime::ProbeRetryPolicy::direct_tls_eof(
+            options.retry_direct_tls_eof_attempts,
+            options.retry_direct_tls_eof_sleep_ms,
+        ),
     };
     let report = match options.protocol {
+        cli::ProbeProtocol::TcpConnect => dynet_runtime::probe_tcp_connect(settings),
         cli::ProbeProtocol::HttpsHead => dynet_runtime::probe_https_head(settings),
         cli::ProbeProtocol::TlsHandshake => dynet_runtime::probe_tls_handshake(settings),
     }?;
@@ -231,11 +253,17 @@ fn run_plan_command(options: cli::PlanOptions) -> Result<i32, String> {
         return Err("plan requires a config; pass --config or create dynet.json".to_string());
     }
     let evaluation = plan_evaluation_input(&options)?;
+    let quality = options
+        .quality_state
+        .as_deref()
+        .map(load_quality_state)
+        .transpose()?;
     let report = PlanReport::from_config(
         &resolved.root,
         &resolved.source,
         &resolved.config,
         evaluation,
+        quality,
     );
     debug!(
         schema = %report.plan.schema,

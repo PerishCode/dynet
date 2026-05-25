@@ -1,5 +1,6 @@
 mod outbound;
 mod outbound_trace;
+mod quality_explain;
 mod strategy;
 
 use serde::Serialize;
@@ -18,6 +19,7 @@ pub use outbound::{
     PlanEdge, PlanEdgeKind, PlanOutboundPayload, PlanSelection,
 };
 pub use outbound_trace::{OutboundCandidate, OutboundDecision, OutboundHop, OutboundPath};
+pub use quality_explain::{OutboundCandidateQuality, OutboundCandidateQualityMatch};
 pub use strategy::{
     OutboundSelector, OutboundStrategyCapability, OutboundStrategyConfig, OutboundStrategyRegistry,
     OutboundStrategyRegistryEntry, OutboundStrategyRegistryModel, OutboundStrategySnapshot,
@@ -288,7 +290,7 @@ fn rule_reason(route: &RouteRule, action: &PlanAction) -> String {
         ""
     };
     format!(
-        "explicit user rule matches {} and {}{}",
+        "explicit route matches {} and {}{}",
         parts.join(" plus "),
         action_reason(action),
         dns

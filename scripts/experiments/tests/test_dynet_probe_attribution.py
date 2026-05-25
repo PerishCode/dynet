@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -49,6 +50,124 @@ class DynetProbeAttributionTest(unittest.TestCase):
         self.assertEqual(report["totals"]["items"], 2)
         self.assertEqual(report["totals"]["failed"], 1)
         self.assertEqual(report["failures"][0]["classification"], "target-or-probe-suspect")
+        self.assertEqual(report["failures"][0]["failureScope"], "direct")
+        self.assertEqual(report["candidateQuality"]["candidateSets"], 0)
+
+    def test_rule_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            workdir = Path(raw_dir)
+            report_path = workdir / "0001-dialer.example.json"
+            report_path.write_text(rule_report_json())
+            summary_path = workdir / "summary.json"
+            summary_path.write_text(rule_summary_json())
+
+            report = attribution.build_probe_attribution(summary_path)
+
+        self.assertEqual(report["totals"]["withMissingEvidence"], 0)
+        self.assertEqual(
+            report["evidenceCompleteness"]["route-or-rule-matched"]["missing"],
+            0,
+        )
+
+    def test_candidate_details(self) -> None:
+        rows = attribution.candidate_sets([
+            {
+                "kind": "outbound-candidate-set",
+                "fields": {
+                    "plan": "auto",
+                    "selected": "b",
+                    "candidateCount": "2",
+                    "candidates": "a,b",
+                    "candidatesJson": (
+                        '[{"to":"a","quality":{"score":-4960}},'
+                        '{"to":"b","quality":{"score":4240}}]'
+                    ),
+                    "selectedEdgeType": "candidate",
+                },
+            }
+        ])
+
+        self.assertEqual(rows[0]["candidates"], ["a", "b"])
+        self.assertEqual(rows[0]["scope"], "plan-candidate")
+        self.assertEqual(rows[0]["candidateDetails"][1]["quality"]["score"], 4240)
+        self.assertEqual(rows[0]["quality"]["selectedScore"], 4240)
+        self.assertEqual(rows[0]["quality"]["scoreGap"], 0)
+
+    def test_quality_gap_plan(self) -> None:
+        row = {
+            "status": "deny",
+            "bucket": "github-proof",
+            "selectedOutbound": "a",
+            "planDecisionCount": 1,
+            "candidateSets": [
+                {
+                    "quality": {
+                        "selectedScore": -4960,
+                        "bestScore": 4240,
+                        "selectedStale": False,
+                        "scoreGap": 9200,
+                    }
+                }
+            ],
+            "graphSelected": "a",
+            "missingEvidence": [],
+        }
+
+        self.assertEqual(
+            attribution.classify(row, guardrails_clean=True),
+            "plan-suspect",
+        )
+
+    def test_quality_totals(self) -> None:
+        rows = [
+            {
+                "id": "0001",
+                "bucket": "github-proof",
+                "domain": "api.github.com",
+                "status": "deny",
+                "classification": "plan-suspect",
+                "candidateSets": [
+                    {
+                        "plan": "auto",
+                        "selected": "a",
+                        "quality": {
+                            "selectedScore": -10,
+                            "bestScore": 20,
+                            "selectedStale": False,
+                            "scoreGap": 30,
+                            "bestCandidates": ["b"],
+                            "selectedReason": "exact-quality",
+                        },
+                    }
+                ],
+            },
+            {
+                "id": "0002",
+                "status": "pass",
+                "classification": "healthy",
+                "candidateSets": [
+                    {
+                        "selected": "b",
+                        "quality": {
+                            "selectedScore": 20,
+                            "bestScore": 20,
+                            "selectedStale": False,
+                            "scoreGap": 0,
+                            "selectedReason": "exact-quality",
+                        },
+                    }
+                ],
+            },
+        ]
+
+        quality = attribution.candidate_quality_totals(rows)
+
+        self.assertEqual(quality["withQuality"], 2)
+        self.assertEqual(quality["selectedBest"], 1)
+        self.assertEqual(quality["selectedBehind"], 1)
+        self.assertEqual(quality["maxScoreGap"], 30)
+        self.assertEqual(quality["gaps"][0]["bestCandidates"], ["b"])
+        self.assertEqual(quality["gaps"][0]["scope"], "plan-candidate")
 
 
 def json_report() -> str:
@@ -84,6 +203,7 @@ def summary_json() -> str:
       "dynetProtocol": "tls-handshake",
       "status": "deny",
       "selectedOutbound": "direct",
+      "failureScope": "direct",
       "failedStage": "tls-handshake",
       "reason": "failed TLS handshake",
       "reportPath": "0001-api.github.com.json"
@@ -97,6 +217,39 @@ def summary_json() -> str:
       "status": "pass",
       "selectedOutbound": "direct",
       "reportPath": "missing.json"
+    }
+  ]
+}
+"""
+
+
+def rule_report_json() -> str:
+    return """
+{
+  "events": [
+    {"kind": "rule-matched", "fields": {"rule": "identity", "outbound": "dialer", "bypassesPlan": "true", "reason": "rule"}},
+    {"kind": "outbound-graph-selected", "fields": {"selected": "dialer", "hopTags": "dialer", "hopKinds": "dialer", "decisions": "0"}},
+    {"kind": "outbound-attempt-finished", "fields": {"outbound": "dialer", "protocol": "tcp-connect", "status": "success", "elapsedMs": "5"}},
+    {"kind": "outbound-stage-finished", "fields": {"outbound": "dialer", "stage": "stream-flush", "status": "success", "elapsedMs": "1"}}
+  ]
+}
+"""
+
+
+def rule_summary_json() -> str:
+    return """
+{
+  "items": [
+    {
+      "id": "0001",
+      "bucket": "non-direct-smoke",
+      "domain": "dialer.example",
+      "sourceProbe": "tcp-connect",
+      "dynetProtocol": "tcp-connect",
+      "status": "pass",
+      "selectedOutbound": "dialer",
+      "reason": "TCP connect completed",
+      "reportPath": "0001-dialer.example.json"
     }
   ]
 }

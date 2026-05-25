@@ -8,7 +8,9 @@ from dynet_trace.common import (
     count_kind,
     event_fields,
     event_kind,
+    fallback_signals,
     int_field,
+    json_list_field,
     latency_summary,
     split_csv,
     top,
@@ -42,6 +44,7 @@ def build_summary(
         "outbounds": outbound_summary(events),
         "stages": stage_summary(events),
         "failures": failure_summary(events),
+        "fallbackSignals": fallback_signals(events),
         "workloadAttribution": workload_attribution(events, workload_probe),
         "attributionReadiness": attribution_readiness(events),
     }
@@ -88,27 +91,29 @@ def plan_summary(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if event_kind(event) != "outbound-candidate-set":
             continue
         fields = event_fields(event)
-        rows.append(
-            {
-                "plan": fields.get("plan"),
-                "scope": fields.get("scope"),
-                "strategy": "/".join(
-                    item
-                    for item in [
-                        fields.get("strategySource"),
-                        fields.get("strategyKey"),
-                        fields.get("strategyVersion"),
-                    ]
-                    if item
-                ),
-                "selector": fields.get("selector"),
-                "candidateCount": int_field(fields, "candidateCount"),
-                "candidates": split_csv(fields.get("candidates")),
-                "selected": fields.get("selected"),
-                "selectedEdgeType": fields.get("selectedEdgeType"),
-            }
-        )
+        rows.append(plan_row(fields))
     return rows
+
+def plan_row(fields: dict[str, str]) -> dict[str, Any]:
+    return {
+        "plan": fields.get("plan"),
+        "scope": fields.get("scope"),
+        "strategy": "/".join(
+            item
+            for item in [
+                fields.get("strategySource"),
+                fields.get("strategyKey"),
+                fields.get("strategyVersion"),
+            ]
+            if item
+        ),
+        "selector": fields.get("selector"),
+        "candidateCount": int_field(fields, "candidateCount"),
+        "candidates": split_csv(fields.get("candidates")),
+        "candidateDetails": json_list_field(fields.get("candidatesJson")),
+        "selected": fields.get("selected"),
+        "selectedEdgeType": fields.get("selectedEdgeType"),
+    }
 
 def dialer_summary(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
@@ -194,12 +199,17 @@ def failure_summary(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for event in events:
         fields = event_fields(event)
-        failed = fields.get("status") == "failed" or event_kind(event) == "dns-resolve-failed"
+        kind = event_kind(event)
+        failed = (
+            fields.get("status") == "failed"
+            or kind.endswith("-failed")
+            or kind == "dns-resolve-failed"
+        )
         if not failed:
             continue
         rows.append(
             {
-                "kind": event_kind(event),
+                "kind": kind,
                 "sequence": event.get("sequence"),
                 "query": fields.get("query"),
                 "target": fields.get("target"),
@@ -254,7 +264,8 @@ def attribution_readiness(events: list[dict[str, Any]]) -> dict[str, Any]:
         "attempts": "outbound-attempt-finished" in kinds,
         "stages": "outbound-stage-finished" in kinds,
         "failures": any(
-            event_kind(event) == "dns-resolve-failed"
+            event_kind(event).endswith("-failed")
+            or event_kind(event) == "dns-resolve-failed"
             or event_fields(event).get("status") == "failed"
             for event in events
         ),

@@ -10,8 +10,56 @@ pub struct OutboundQualityState {
     pub ttl_secs: u64,
     pub window_secs: u64,
     pub expires_at_unix_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_feedback: Option<OutboundQualityPlannerFeedback>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<OutboundQualitySignal>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbounds: Vec<OutboundQualityEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboundQualityPlannerFeedback {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_mode: Option<String>,
+    #[serde(default)]
+    pub penalty_observations: u32,
+    #[serde(default)]
+    pub fallback_signals: u32,
+    #[serde(default)]
+    pub recovered_fallback_signals: u32,
+    #[serde(default)]
+    pub non_retry_safe_fallback_signals: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboundQualitySignal {
+    #[serde(rename = "type")]
+    pub signal_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_bound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_bound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_safe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -75,6 +123,8 @@ impl OutboundQualityState {
             ttl_secs: 0,
             window_secs: 0,
             expires_at_unix_ms: 0,
+            planner_feedback: None,
+            signals: Vec::new(),
             outbounds: Vec::new(),
         }
     }

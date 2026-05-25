@@ -18,6 +18,7 @@ use super::{
     buffered_read::{self, BufferedRead},
     connect_tcp_socket, ProxiedTcpStream, TcpTarget,
 };
+use crate::settings::OutboundTcpSettings;
 
 const TAG_LEN: usize = 16;
 const KEY_LEN_AES_128_GCM: usize = 16;
@@ -47,7 +48,7 @@ pub(crate) struct ShadowsocksTcpStream {
     eof: bool,
 }
 
-pub(super) trait ShadowsocksTransport: Read + Write {
+pub(super) trait ShadowsocksTransport: Read + Write + Send {
     #[allow(dead_code)]
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
 }
@@ -123,8 +124,9 @@ pub(super) fn connect_tcp(
     spec: &ShadowsocksSpec,
     destination: &TcpTarget,
     mark: u32,
+    settings: OutboundTcpSettings,
 ) -> Result<ShadowsocksTcpStream, String> {
-    let stream = connect_tcp_socket(&spec.server, spec.server_port, mark)?;
+    let stream = connect_tcp_socket(&spec.server, spec.server_port, mark, settings)?;
     connect_tcp_on_stream(spec, destination, Box::new(stream))
 }
 
@@ -264,9 +266,10 @@ impl ShadowsocksTcpStream {
         let mut encrypted_payload =
             match self.read_buffered(payload_len + TAG_LEN, "Shadowsocks chunk payload")? {
                 BufferedRead::Ready(bytes) => bytes,
-                BufferedRead::Pending => {
-                    return Err(buffered_read::pending(
+                BufferedRead::Pending(detail) => {
+                    return Err(buffered_read::pending_context(
                         "Shadowsocks chunk payload is not ready",
+                        detail,
                     ));
                 }
                 BufferedRead::Eof => {
@@ -290,9 +293,10 @@ impl ShadowsocksTcpStream {
     fn read_chunk_len(&mut self) -> io::Result<Option<usize>> {
         let mut encrypted_len = match self.read_buffered(2 + TAG_LEN, "Shadowsocks chunk length")? {
             BufferedRead::Ready(bytes) => bytes,
-            BufferedRead::Pending => {
-                return Err(buffered_read::pending(
+            BufferedRead::Pending(detail) => {
+                return Err(buffered_read::pending_context(
                     "Shadowsocks chunk length is not ready",
+                    detail,
                 ));
             }
             BufferedRead::Eof => {
@@ -323,9 +327,10 @@ impl ShadowsocksTcpStream {
         }
         let salt = match self.read_buffered(self.key_len, "Shadowsocks response salt")? {
             BufferedRead::Ready(bytes) => bytes,
-            BufferedRead::Pending => {
-                return Err(buffered_read::pending(
+            BufferedRead::Pending(detail) => {
+                return Err(buffered_read::pending_context(
                     "Shadowsocks response salt is not ready",
+                    detail,
                 ));
             }
             BufferedRead::Eof => {

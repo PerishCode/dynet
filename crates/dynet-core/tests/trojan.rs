@@ -14,6 +14,7 @@ fn validates_trojan_payloads() {
                         "port": 443,
                         "password": "secret",
                         "sni": "cdn.example.com",
+                        "interfaceName": "en0",
                         "skipCertVerify": true
                     }
                 }
@@ -42,6 +43,7 @@ fn denies_unsupported_trojan() {
                         "server": "node.example.com",
                         "password": "secret",
                         "network": "ws",
+                        "interfaceName": 7,
                         "skipCertVerify": "yes"
                     }
                 }
@@ -61,4 +63,7 @@ fn denies_unsupported_trojan() {
     assert!(diagnostics
         .iter()
         .any(|diagnostic| diagnostic.path == "outbounds[0].payload.skipCertVerify"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.path == "outbounds[0].payload.interfaceName"));
 }

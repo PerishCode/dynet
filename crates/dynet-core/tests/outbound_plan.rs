@@ -1,7 +1,7 @@
 use dynet_core::{
     build_plan, resolve_outbound_path, validate_config, AppState, DynetConfig, InboundContext,
     OutboundQualityEntry, OutboundQualityState, OutboundStrategyRegistry, PlanAction, PlanMode,
-    QualityConfidence, QualityVerdict, Severity, Transport, VerdictStatus,
+    QualityConfidence, QualityScope, QualityVerdict, Severity, Transport, VerdictStatus,
 };
 
 #[test]
@@ -114,30 +114,7 @@ fn default_strategy_skeleton() {
 
 #[test]
 fn cascade_quality_selects() {
-    let config: DynetConfig = serde_json::from_str(
-        r#"{
-            "outbounds": [
-                { "tag": "a", "type": "direct" },
-                { "tag": "b", "type": "direct" },
-                {
-                    "tag": "tunnel",
-                    "type": "plan",
-                    "capabilities": ["tcp"],
-                    "payload": {
-                        "strategy": { "source": "internal", "key": "cascade-quality", "version": "", "options": {} },
-                        "selection": {
-                            "edges": [
-                                { "type": "candidate", "to": "a" },
-                                { "type": "candidate", "to": "b" }
-                            ]
-                        }
-                    }
-                }
-            ],
-            "routes": [{ "outbound": "tunnel" }]
-        }"#,
-    )
-    .unwrap();
+    let config = cascade_quality_config();
     assert!(validate_config(&config).is_empty());
     let quality = quality_state(vec![
         quality_entry("a", Some("chatgpt.com"), QualityVerdict::Unhealthy, 3, 0),
@@ -147,7 +124,9 @@ fn cascade_quality_selects() {
 
     let path = resolve_outbound_path(
         &state,
-        &InboundContext::any().with_destination_domain("api.chatgpt.com"),
+        &InboundContext::any()
+            .with_destination_domain("api.chatgpt.com")
+            .with_quality_scope(QualityScope::DialerBound),
         "tunnel",
     )
     .unwrap();
@@ -158,34 +137,85 @@ fn cascade_quality_selects() {
         path.decisions[0].strategy.selector,
         dynet_core::OutboundSelector::CascadeQuality
     );
+
+    let candidates = &path.decisions[0].candidates;
+    let a_quality = candidates
+        .iter()
+        .find(|candidate| candidate.to == "a")
+        .and_then(|candidate| candidate.quality.as_ref())
+        .unwrap();
+    let b_quality = candidates
+        .iter()
+        .find(|candidate| candidate.to == "b")
+        .and_then(|candidate| candidate.quality.as_ref())
+        .unwrap();
+    assert_eq!(a_quality.target_family.as_deref(), Some("chatgpt.com"));
+    assert_eq!(b_quality.target_family.as_deref(), Some("chatgpt.com"));
+    assert_eq!(a_quality.reason, "exact-quality");
+    assert_eq!(b_quality.reason, "exact-quality");
+    assert_eq!(a_quality.matches[0].scope, "dialer-bound");
+    assert_eq!(b_quality.matches[0].scope, "dialer-bound");
+    assert_eq!(a_quality.matches[0].verdict, QualityVerdict::Unhealthy);
+    assert_eq!(b_quality.matches[0].verdict, QualityVerdict::Healthy);
+    assert_eq!(a_quality.matches[0].weight, 4);
+    assert_eq!(b_quality.matches[0].weight, 4);
+    assert!(b_quality.score > a_quality.score);
+}
+
+#[test]
+fn plan_scope_ignores_dialer() {
+    let config = cascade_quality_config();
+    let context = InboundContext::any().with_destination_domain("api.chatgpt.com");
+    let expected =
+        resolve_outbound_path(&AppState::from_config(config.clone()), &context, "tunnel")
+            .unwrap()
+            .selected;
+    let quality = quality_state(vec![
+        quality_entry("a", Some("chatgpt.com"), QualityVerdict::Unhealthy, 3, 0),
+        quality_entry("b", Some("chatgpt.com"), QualityVerdict::Healthy, 3, 3),
+    ]);
+    let state = AppState::from_config(config).with_quality(quality);
+
+    let path = resolve_outbound_path(&state, &context, "tunnel").unwrap();
+
+    assert_eq!(path.selected, expected);
+    assert!(path.decisions[0].candidates.iter().all(|candidate| {
+        candidate
+            .quality
+            .as_ref()
+            .is_some_and(|quality| quality.reason == "no-quality-evidence")
+    }));
+}
+
+#[test]
+fn plan_candidate_quality_selects() {
+    let config = cascade_quality_config();
+    let quality = quality_state(vec![
+        plan_quality_entry("a", Some("github.com"), QualityVerdict::Unhealthy, 3, 0),
+        plan_quality_entry("b", Some("github.com"), QualityVerdict::Healthy, 3, 3),
+    ]);
+    let state = AppState::from_config(config).with_quality(quality);
+
+    let path = resolve_outbound_path(
+        &state,
+        &InboundContext::any().with_destination_domain("api.github.com"),
+        "tunnel",
+    )
+    .unwrap();
+
+    assert_eq!(path.selected, "b");
+    let b_quality = path.decisions[0]
+        .candidates
+        .iter()
+        .find(|candidate| candidate.to == "b")
+        .and_then(|candidate| candidate.quality.as_ref())
+        .unwrap();
+    assert_eq!(b_quality.matches[0].scope, "plan-candidate");
 }
 
 #[test]
 fn ignores_unscoped_quality() {
-    let config: DynetConfig = serde_json::from_str(
-        r#"{
-            "outbounds": [
-                { "tag": "a", "type": "direct" },
-                { "tag": "b", "type": "direct" },
-                {
-                    "tag": "tunnel",
-                    "type": "plan",
-                    "capabilities": ["tcp"],
-                    "payload": {
-                        "strategy": { "source": "internal", "key": "cascade-quality", "version": "", "options": {} },
-                        "selection": {
-                            "edges": [
-                                { "type": "candidate", "to": "a" },
-                                { "type": "candidate", "to": "b" }
-                            ]
-                        }
-                    }
-                }
-            ],
-            "routes": [{ "outbound": "tunnel" }]
-        }"#,
-    )
-    .unwrap();
+    let config = cascade_quality_config();
     let context = InboundContext::any().with_destination_domain("api.chatgpt.com");
     let expected =
         resolve_outbound_path(&AppState::from_config(config.clone()), &context, "tunnel")
@@ -200,6 +230,37 @@ fn ignores_unscoped_quality() {
     let path = resolve_outbound_path(&state, &context, "tunnel").unwrap();
 
     assert_eq!(path.selected, expected);
+    assert!(path.decisions[0].candidates.iter().all(|candidate| {
+        candidate
+            .quality
+            .as_ref()
+            .is_some_and(|quality| quality.reason == "no-quality-evidence")
+    }));
+}
+
+#[test]
+fn stale_quality_falls_back() {
+    let config = cascade_quality_config();
+    let context = InboundContext::any().with_destination_domain("api.chatgpt.com");
+    let expected =
+        resolve_outbound_path(&AppState::from_config(config.clone()), &context, "tunnel")
+            .unwrap()
+            .selected;
+    let mut quality = quality_state(vec![
+        quality_entry("a", Some("chatgpt.com"), QualityVerdict::Unhealthy, 3, 0),
+        quality_entry("b", Some("chatgpt.com"), QualityVerdict::Healthy, 3, 3),
+    ]);
+    quality.expires_at_unix_ms = 1;
+    let state = AppState::from_config(config).with_quality(quality);
+
+    let path = resolve_outbound_path(&state, &context, "tunnel").unwrap();
+
+    assert_eq!(path.selected, expected);
+    assert!(path.decisions[0].candidates.iter().all(|candidate| {
+        candidate.quality.as_ref().is_some_and(|quality| {
+            quality.stale && quality.reason == "quality-state-stale" && quality.matches.is_empty()
+        })
+    }));
 }
 
 #[test]
@@ -339,6 +400,33 @@ fn outbound_plan_config() -> DynetConfig {
     serde_json::from_str(include_str!("../harness/configs/outbound-plan.json")).unwrap()
 }
 
+fn cascade_quality_config() -> DynetConfig {
+    serde_json::from_str(
+        r#"{
+            "outbounds": [
+                { "tag": "a", "type": "direct" },
+                { "tag": "b", "type": "direct" },
+                {
+                    "tag": "tunnel",
+                    "type": "plan",
+                    "capabilities": ["tcp"],
+                    "payload": {
+                        "strategy": { "source": "internal", "key": "cascade-quality", "version": "", "options": {} },
+                        "selection": {
+                            "edges": [
+                                { "type": "candidate", "to": "a" },
+                                { "type": "candidate", "to": "b" }
+                            ]
+                        }
+                    }
+                }
+            ],
+            "routes": [{ "outbound": "tunnel" }]
+        }"#,
+    )
+    .unwrap()
+}
+
 fn quality_state(entries: Vec<OutboundQualityEntry>) -> OutboundQualityState {
     OutboundQualityState {
         schema: "dynet-outbound-quality-state/v1alpha1".to_string(),
@@ -346,6 +434,8 @@ fn quality_state(entries: Vec<OutboundQualityEntry>) -> OutboundQualityState {
         ttl_secs: 3600,
         window_secs: 3600,
         expires_at_unix_ms: u128::MAX,
+        planner_feedback: None,
+        signals: Vec::new(),
         outbounds: entries,
     }
 }
@@ -384,6 +474,20 @@ fn unscoped_quality_entry(
 ) -> OutboundQualityEntry {
     let mut entry = quality_entry(outbound, family, verdict, attempts, successes);
     entry.scope = None;
+    entry.dialer = None;
+    entry.private = None;
+    entry
+}
+
+fn plan_quality_entry(
+    outbound: &str,
+    family: Option<&str>,
+    verdict: QualityVerdict,
+    attempts: u32,
+    successes: u32,
+) -> OutboundQualityEntry {
+    let mut entry = quality_entry(outbound, family, verdict, attempts, successes);
+    entry.scope = Some("plan-candidate".to_string());
     entry.dialer = None;
     entry.private = None;
     entry

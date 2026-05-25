@@ -8,18 +8,18 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    normalize_domain, AppState, InboundContext, OutboundQualityEntry, QualityVerdict, Transport,
-};
+use crate::{normalize_domain, AppState, InboundContext, QualityScope};
 
-use super::outbound::{PlanEdge, PlanEdgeKind};
+use super::{
+    outbound::{PlanEdge, PlanEdgeKind},
+    quality_explain::{cascade_score, explain_candidate_quality, OutboundCandidateQuality},
+};
 
 const INTERNAL_SOURCE: &str = "internal";
 const CURRENT_VERSION: &str = "v1alpha1";
 const DEFAULT_KEY: &str = "static";
 const STICKY_KEY: &str = "sticky";
 const CASCADE_QUALITY_KEY: &str = "cascade-quality";
-const CASCADE_QUALITY_SCOPE: &str = "dialer-bound";
 const CAPABILITIES_OPTION: &str = "capabilities";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -335,10 +335,11 @@ fn cascade_quality_select(
     }
     let key = sticky_key(context, state);
     let family = target_family(&key);
+    let scope = quality_scope(context);
     edges
         .iter()
         .max_by(|left, right| {
-            compare_cascade_candidate(state, family.as_deref(), &key, left, right)
+            compare_cascade_candidate(state, family.as_deref(), scope, &key, left, right)
         })
         .cloned()
 }
@@ -346,64 +347,42 @@ fn cascade_quality_select(
 fn compare_cascade_candidate(
     state: &AppState,
     family: Option<&str>,
+    scope: QualityScope,
     sticky: &str,
     left: &PlanEdge,
     right: &PlanEdge,
 ) -> Ordering {
-    let left_score = cascade_score(state, family, left.to.as_str());
-    let right_score = cascade_score(state, family, right.to.as_str());
+    let left_score = cascade_score(state, family, scope, left.to.as_str());
+    let right_score = cascade_score(state, family, scope, right.to.as_str());
     left_score
         .cmp(&right_score)
         .then_with(|| compare_sticky_candidate(sticky, left, right))
 }
 
-fn cascade_score(state: &AppState, family: Option<&str>, outbound: &str) -> i64 {
-    let exact = family
-        .and_then(|family| {
-            quality_entry(
-                state,
-                outbound,
-                CASCADE_QUALITY_SCOPE,
-                Some(family),
-                Some(Transport::Tcp),
-            )
-        })
-        .map(|entry| quality_score(entry) * 4);
-    let overall = quality_entry(
-        state,
-        outbound,
-        CASCADE_QUALITY_SCOPE,
-        None,
-        Some(Transport::Tcp),
-    )
-    .map(quality_score);
-    exact.unwrap_or(0) + overall.unwrap_or(0)
-}
-
-fn quality_entry<'a>(
-    state: &'a AppState,
+pub(super) fn candidate_quality(
+    state: &AppState,
+    context: &InboundContext,
+    selector: OutboundSelector,
     outbound: &str,
-    scope: &str,
-    family: Option<&str>,
-    transport: Option<Transport>,
-) -> Option<&'a OutboundQualityEntry> {
-    state.quality.outbounds.iter().find(|entry| {
-        entry.outbound == outbound
-            && entry.scope.as_deref() == Some(scope)
-            && entry.target_family.as_deref() == family
-            && entry.transport == transport
-    })
+) -> Option<OutboundCandidateQuality> {
+    if selector != OutboundSelector::CascadeQuality && state.quality.outbounds.is_empty() {
+        return None;
+    }
+
+    let key = sticky_key(context, state);
+    let family = target_family(&key);
+    let scope = quality_scope(context);
+    Some(explain_candidate_quality(
+        state,
+        family,
+        scope,
+        quality_is_stale(state),
+        outbound,
+    ))
 }
 
-fn quality_score(entry: &OutboundQualityEntry) -> i64 {
-    let base = match entry.verdict {
-        QualityVerdict::Healthy => 1_000,
-        QualityVerdict::Degraded => 100,
-        QualityVerdict::Unknown => 0,
-        QualityVerdict::Stale => -500,
-        QualityVerdict::Unhealthy => -1_000,
-    };
-    base + i64::from(entry.successes) * 20 - i64::from(entry.failures) * 80
+fn quality_scope(context: &InboundContext) -> QualityScope {
+    context.quality_scope.unwrap_or(QualityScope::PlanCandidate)
 }
 
 fn quality_is_stale(state: &AppState) -> bool {

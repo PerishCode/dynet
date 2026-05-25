@@ -40,15 +40,23 @@ fn parses_run_options() {
         "--max-tun-packets".into(),
         "1".into(),
         "--max-tcp-sessions=2".into(),
+        "--max-tcp-closed-sessions".into(),
+        "2".into(),
+        "--max-tcp-terminal-sessions=4".into(),
         "--max-udp-sessions".into(),
         "3".into(),
+        "--max-udp-downstream-bytes=24".into(),
         "--timeout".into(),
         "10".into(),
+        "--outbound-tcp-connect-timeout-ms=1500".into(),
+        "--outbound-tcp-read-write-timeout-ms".into(),
+        "2500".into(),
         "--upstream-dns".into(),
         "8.8.8.8:53".into(),
         "--quality-state".into(),
         ".task/resources/quality.json".into(),
         "--experimental-tcp-forward".into(),
+        "--experimental-tcp-listen-slots-per-port=12".into(),
         "--experimental-udp-forward".into(),
     ])
     .unwrap() else {
@@ -62,14 +70,20 @@ fn parses_run_options() {
     assert_eq!(options.max_dns_queries, Some(1));
     assert_eq!(options.max_tun_packets, Some(1));
     assert_eq!(options.max_tcp_sessions, Some(2));
+    assert_eq!(options.max_tcp_closed_sessions, Some(2));
+    assert_eq!(options.max_tcp_terminal_sessions, Some(4));
     assert_eq!(options.max_udp_sessions, Some(3));
+    assert_eq!(options.max_udp_downstream_bytes, Some(24));
     assert_eq!(options.timeout_secs, Some(10));
+    assert_eq!(options.outbound_tcp_connect_timeout_ms, 1500);
+    assert_eq!(options.outbound_tcp_read_write_timeout_ms, 2500);
     assert_eq!(options.upstream_dns.as_deref(), Some("8.8.8.8:53"));
     assert_eq!(
         options.quality_state,
         Some(PathBuf::from(".task/resources/quality.json"))
     );
     assert!(options.experimental_tcp_forward);
+    assert_eq!(options.experimental_tcp_listen_slots_per_port, 12);
     assert!(options.experimental_udp_forward);
 }
 
@@ -101,6 +115,8 @@ fn parses_plan_options() {
         "--dns-now=100".into(),
         "--dns-ttl".into(),
         "60".into(),
+        "--quality-state".into(),
+        ".task/resources/quality.json".into(),
     ])
     .unwrap() else {
         panic!("expected plan command");
@@ -114,6 +130,10 @@ fn parses_plan_options() {
     assert_eq!(options.dns_answers, ["example.com=93.184.216.34"]);
     assert_eq!(options.dns_now_secs, Some(100));
     assert_eq!(options.dns_ttl_secs, 60);
+    assert_eq!(
+        options.quality_state,
+        Some(PathBuf::from(".task/resources/quality.json"))
+    );
 }
 
 #[test]
@@ -127,6 +147,16 @@ fn parses_probe_options() {
         "--quality-state".into(),
         ".task/resources/quality.json".into(),
         "--protocol=tls-handshake".into(),
+        "--retry-direct-tls-eof-attempts=3".into(),
+        "--retry-direct-tls-eof-sleep-ms".into(),
+        "10".into(),
+        "--probe-read-poll-timeout-ms=125".into(),
+        "--probe-read-pending-budget-ms".into(),
+        "50".into(),
+        "--probe-read-pending-sleep-ms=2".into(),
+        "--outbound-tcp-connect-timeout-ms=150".into(),
+        "--outbound-tcp-read-write-timeout-ms".into(),
+        "250".into(),
         "--format=json".into(),
     ])
     .unwrap() else {
@@ -142,6 +172,35 @@ fn parses_probe_options() {
         options.quality_state,
         Some(PathBuf::from(".task/resources/quality.json"))
     );
+    assert_eq!(options.retry_direct_tls_eof_attempts, 3);
+    assert_eq!(options.retry_direct_tls_eof_sleep_ms, 10);
+    assert_eq!(options.read_poll_timeout_ms, 125);
+    assert_eq!(options.read_pending_budget_ms, 50);
+    assert_eq!(options.read_pending_sleep_ms, 2);
+    assert_eq!(options.outbound_tcp_connect_timeout_ms, 150);
+    assert_eq!(options.outbound_tcp_read_write_timeout_ms, 250);
+}
+
+#[test]
+fn parses_tcp_probe_protocol() {
+    let CliCommand::Probe(options) = parse_args(vec![
+        "probe".into(),
+        "-c=proxy.json".into(),
+        "--host".into(),
+        "example.com".into(),
+        "--protocol=tcp-connect".into(),
+    ])
+    .unwrap() else {
+        panic!("expected probe command");
+    };
+
+    assert_eq!(options.protocol, ProbeProtocol::TcpConnect);
+    assert_eq!(options.retry_direct_tls_eof_attempts, 1);
+    assert_eq!(options.read_poll_timeout_ms, 250);
+    assert_eq!(options.read_pending_budget_ms, 8_000);
+    assert_eq!(options.read_pending_sleep_ms, 10);
+    assert_eq!(options.outbound_tcp_connect_timeout_ms, 8_000);
+    assert_eq!(options.outbound_tcp_read_write_timeout_ms, 8_000);
 }
 
 #[test]

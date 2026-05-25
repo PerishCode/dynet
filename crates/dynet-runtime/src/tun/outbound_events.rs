@@ -11,15 +11,20 @@ pub(crate) fn emit_path_events(
     transport: &str,
     path: &OutboundPath,
 ) -> Result<(), String> {
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::OutboundAdmissionPassed)
-            .field("scope", scope)
-            .field("outbound", &path.requested)
-            .field("gate", "admission")
-            .field("transport", transport),
-    )?;
+    for event in path_events(scope, transport, path) {
+        counters.emit(event)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn path_events(scope: &str, transport: &str, path: &OutboundPath) -> Vec<RuntimeEvent> {
+    let mut events = vec![RuntimeEvent::new(RuntimeEventKind::OutboundAdmissionPassed)
+        .field("scope", scope)
+        .field("outbound", &path.requested)
+        .field("gate", "admission")
+        .field("transport", transport)];
     for decision in &path.decisions {
-        counters.emit(
+        events.push(
             RuntimeEvent::new(RuntimeEventKind::OutboundCandidateSet)
                 .field("scope", scope)
                 .field("plan", &decision.plan)
@@ -35,9 +40,9 @@ pub(crate) fn emit_path_events(
                 )
                 .field("candidates", candidate_tags(decision))
                 .field("candidatesJson", json_field(&decision.candidates)),
-        )?;
+        );
     }
-    counters.emit(
+    events.push(
         RuntimeEvent::new(RuntimeEventKind::OutboundGraphSelected)
             .field("scope", scope)
             .field("requested", &path.requested)
@@ -46,13 +51,14 @@ pub(crate) fn emit_path_events(
             .field("hopTags", hop_tags(path))
             .field("hopKinds", hop_kinds(path))
             .field("decisions", path.decisions.len()),
-    )?;
-    counters.emit(
+    );
+    events.push(
         RuntimeEvent::new(RuntimeEventKind::OutboundEgressPassed)
             .field("scope", scope)
             .field("gate", "egress")
             .field("requested", &path.requested)
             .field("selected", &path.selected)
             .field("transport", transport),
-    )
+    );
+    events
 }

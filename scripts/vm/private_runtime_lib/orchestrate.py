@@ -17,6 +17,7 @@ from common import (
     q,
     validate_name,
 )
+from lib.interface import resolve_trojan_interface
 from private_probe import (
     build_artifact,
     build_secret_config,
@@ -156,12 +157,18 @@ def run_guest_once(
 
     try:
         maybe_install_artifact(recorder, lab, guest, args)
+        recorder.run(
+            "resolve-trojan-interface",
+            lambda: resolve_trojan_interface(lab, guest, args),
+        )
         config_text, meta = build_runtime_config(recorder, args, output_dir)
         remote_paths = runtime_paths(label, args, workload_manifest)
         guest_files = runtime_guest_files(remote_paths)
         write_runtime_inputs(recorder, lab, guest, remote_paths, config_text, workload_manifest, args)
         version = collect_dynet_version(recorder, lab, guest, args)
-        command_result = run_acceptance(recorder, lab, guest, label, remote_paths, dns_names, args)
+        command_result = run_acceptance(
+            recorder, lab, guest, label, remote_paths, dns_names, workload_manifest, args
+        )
         (
             report,
             log_text,
@@ -367,10 +374,17 @@ def run_acceptance(
     label: str,
     paths: dict[str, str | None],
     dns_names: list[str],
+    workload_manifest: dict | None,
     args: argparse.Namespace,
 ) -> subprocess.CompletedProcess[str]:
     command = runtime_command(
-        label, str(paths["config"]), paths["quality"], paths["workload"], dns_names, args
+        label,
+        str(paths["config"]),
+        paths["quality"],
+        paths["workload"],
+        dns_names,
+        args,
+        workload_manifest,
     )
     logger.info("run private runtime acceptance")
     return recorder.run(

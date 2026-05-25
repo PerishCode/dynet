@@ -29,12 +29,19 @@ choices.
 - `.github/workflows/` contains CI and release workflows.
 - `.github/scripts/` contains workflow-only helper scripts. Keep workflow-only
   scripts there.
-- `scripts/init.py` is the idempotent post-clone initializer.
+- `scripts/pyproject.toml` and `scripts/uv.lock` own the local Python
+  toolchain for repository scripts.
+- `scripts/lib/` owns dependency-light Python helper atoms shared by script
+  entrypoints.
+- `scripts/cli/init.py` is the idempotent post-clone initializer.
+- `scripts/cli/` owns Python script entrypoints; invoke them from the repo root
+  with `uv --project scripts run python -m scripts.cli.<entry>`.
 - `scripts/experiments/` owns standalone experiment tooling for access-profile
   cleaning, black-box real-access probes, dynet-observed probe reruns,
   TTL/windowed quality summaries, and trace attribution summaries; read
   `scripts/experiments/AGENTS.md` before editing that subtree.
-- `scripts/vmctl.py` is the local aggregate entrypoint for VM lab operations.
+- `scripts/cli/vmctl.py` is the local aggregate entrypoint for VM lab
+  operations.
 - `scripts/vm/` owns VM lab lifecycle tooling; read `scripts/vm/AGENTS.md`
   before editing that subtree.
 - `install.sh` and `install.ps1` are the public installation entrypoints at the
@@ -108,7 +115,7 @@ When adding or removing a core subtree, update this file in the same change.
 ## Common Commands
 
 ```bash
-python3 scripts/init.py
+uv --project scripts run python -m scripts.cli.init
 cargo fmt --all --check
 flavor check --root . --config flavor.json
 cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -120,21 +127,21 @@ cargo run --locked -p dynet-cli -- install --check --config dynet.json
 cargo run --locked -p dynet-cli -- status
 cargo run --locked -p dynet-cli -- verify
 cargo run --locked -p dynet-cli -- api capabilities
-python3 scripts/vmctl.py --help
-python3 scripts/vmctl.py guest --host fuisp status
-python3 scripts/vmctl.py snapshot --host fuisp list dynet-smoke
-python3 scripts/vmctl.py check --host fuisp guest dynet-smoke
-python3 scripts/vmctl.py dev --host fuisp guest dynet-smoke --user ubuntu
-python3 scripts/vmctl.py smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
-python3 scripts/vmctl.py collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
-python3 scripts/vmctl.py capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
-python3 scripts/vmctl.py cleanup --host fuisp report
-python3 scripts/experiments/clash_verge_profile.py --help
-python3 scripts/experiments/real_access_blackbox.py --help
-python3 scripts/experiments/dynet_probe_manifest.py --help
-python3 scripts/experiments/dynet_clash_compare.py batch --help
-python3 scripts/experiments/dynet_probe_quality.py --help
-python3 scripts/experiments/dynet_trace_attribution.py --help
+uv --project scripts run python -m scripts.cli.vmctl --help
+uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp status
+uv --project scripts run python -m scripts.cli.vmctl snapshot --host fuisp list dynet-smoke
+uv --project scripts run python -m scripts.cli.vmctl check --host fuisp guest dynet-smoke
+uv --project scripts run python -m scripts.cli.vmctl dev --host fuisp guest dynet-smoke --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
+uv --project scripts run python -m scripts.cli.vmctl capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
+uv --project scripts run python -m scripts.cli.vmctl cleanup --host fuisp report
+uv --project scripts run python -m scripts.cli.clash_verge_profile --help
+uv --project scripts run python -m scripts.cli.real_access_blackbox --help
+uv --project scripts run python -m scripts.cli.dynet_probe_manifest --help
+uv --project scripts run python -m scripts.cli.dynet_clash_compare batch --help
+uv --project scripts run python -m scripts.cli.dynet_probe_quality --help
+uv --project scripts run python -m scripts.cli.dynet_trace_attribution --help
 ```
 
 ## Standard Workflow

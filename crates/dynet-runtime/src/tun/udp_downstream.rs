@@ -6,7 +6,7 @@ use crate::{
     resolver::trace::classify_runtime_error, RuntimeCounters, RuntimeEvent, RuntimeEventKind,
 };
 
-use super::{udp_forward::Session, udp_packet};
+use super::{tcp, udp_forward::Session, udp_packet};
 
 const BUFFER_BYTES: usize = 2048;
 
@@ -40,7 +40,7 @@ pub(crate) fn drain(
                     return Ok(());
                 }
             },
-            Err(error) if super::tcp_forward::transient_read_error(&error) => return Ok(()),
+            Err(error) if tcp::transient_read_error(&error) => return Ok(()),
             Err(error) => {
                 counters.udp_session_failures.fetch_add(1, Ordering::SeqCst);
                 counters.udp_dropped_packets.fetch_add(1, Ordering::SeqCst);

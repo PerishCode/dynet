@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import dynet_clash_contract as contract
+from scripts.cli import dynet_clash_contract as contract
 
 
 class DynetClashContractTest(unittest.TestCase):

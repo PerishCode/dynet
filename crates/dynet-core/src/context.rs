@@ -15,6 +15,8 @@ pub struct InboundContext {
     pub destination_ip: Option<IpAddr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_scope: Option<QualityScope>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
@@ -23,6 +25,22 @@ pub enum Transport {
     Tcp,
     Udp,
     Dns,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum QualityScope {
+    PlanCandidate,
+    DialerBound,
+}
+
+impl QualityScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PlanCandidate => "plan-candidate",
+            Self::DialerBound => "dialer-bound",
+        }
+    }
 }
 
 impl InboundContext {
@@ -37,6 +55,7 @@ impl InboundContext {
             destination_domain: None,
             destination_ip: None,
             destination_port: None,
+            quality_scope: None,
         }
     }
 
@@ -57,6 +76,11 @@ impl InboundContext {
 
     pub fn with_destination_port(mut self, port: u16) -> Self {
         self.destination_port = Some(port);
+        self
+    }
+
+    pub fn with_quality_scope(mut self, scope: QualityScope) -> Self {
+        self.quality_scope = Some(scope);
         self
     }
 }

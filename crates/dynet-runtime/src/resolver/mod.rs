@@ -183,12 +183,14 @@ fn resolve_selected_outbound(
         "outbound.graph.selected"
     );
     let mut events = vec![RuntimeEvent::new(RuntimeEventKind::OutboundAdmissionPassed)
+        .field("scope", "plan-candidate")
         .field("outbound", tag)
         .field("gate", "admission")
         .field("transport", "dns")];
     for decision in &path.decisions {
         events.push(
             RuntimeEvent::new(RuntimeEventKind::OutboundCandidateSet)
+                .field("scope", "plan-candidate")
                 .field("plan", &decision.plan)
                 .field("strategySource", &decision.strategy.source)
                 .field("strategyKey", &decision.strategy.key)
@@ -206,6 +208,7 @@ fn resolve_selected_outbound(
     }
     events.push(
         RuntimeEvent::new(RuntimeEventKind::OutboundGraphSelected)
+            .field("scope", "plan-candidate")
             .field("requested", &path.requested)
             .field("selected", &path.selected)
             .field("hops", path.hops.len())
@@ -215,6 +218,7 @@ fn resolve_selected_outbound(
     );
     events.push(
         RuntimeEvent::new(RuntimeEventKind::OutboundEgressPassed)
+            .field("scope", "plan-candidate")
             .field("gate", "egress")
             .field("requested", &path.requested)
             .field("selected", &path.selected)
