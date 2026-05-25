@@ -88,48 +88,64 @@ pub(crate) fn run(
                 break;
             }
             tcp_support::service_slots(
-                &mut tcp_slots,
-                &mut udp_slots,
-                &mut ipv6_guard_slot,
-                &mut udp_sessions,
+                tcp_support::ServiceSlots {
+                    tcp: &mut tcp_slots,
+                    udp: &mut udp_slots,
+                    ipv6_guard: &mut ipv6_guard_slot,
+                    udp_sessions: &mut udp_sessions,
+                },
                 &mut sockets,
-                &settings,
-                &counters,
-                &packet_tracker,
+                tcp_support::ServiceContext {
+                    settings: &settings,
+                    counters: &counters,
+                    packet_tracker: &packet_tracker,
+                },
             )?;
             tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
             tcp_support::service_slots(
-                &mut tcp_slots,
-                &mut udp_slots,
-                &mut ipv6_guard_slot,
-                &mut udp_sessions,
+                tcp_support::ServiceSlots {
+                    tcp: &mut tcp_slots,
+                    udp: &mut udp_slots,
+                    ipv6_guard: &mut ipv6_guard_slot,
+                    udp_sessions: &mut udp_sessions,
+                },
                 &mut sockets,
-                &settings,
-                &counters,
-                &packet_tracker,
+                tcp_support::ServiceContext {
+                    settings: &settings,
+                    counters: &counters,
+                    packet_tracker: &packet_tracker,
+                },
             )?;
             tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
         }
         tcp_support::service_slots(
-            &mut tcp_slots,
-            &mut udp_slots,
-            &mut ipv6_guard_slot,
-            &mut udp_sessions,
+            tcp_support::ServiceSlots {
+                tcp: &mut tcp_slots,
+                udp: &mut udp_slots,
+                ipv6_guard: &mut ipv6_guard_slot,
+                udp_sessions: &mut udp_sessions,
+            },
             &mut sockets,
-            &settings,
-            &counters,
-            &packet_tracker,
+            tcp_support::ServiceContext {
+                settings: &settings,
+                counters: &counters,
+                packet_tracker: &packet_tracker,
+            },
         )?;
         tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
         tcp_support::service_slots(
-            &mut tcp_slots,
-            &mut udp_slots,
-            &mut ipv6_guard_slot,
-            &mut udp_sessions,
+            tcp_support::ServiceSlots {
+                tcp: &mut tcp_slots,
+                udp: &mut udp_slots,
+                ipv6_guard: &mut ipv6_guard_slot,
+                udp_sessions: &mut udp_sessions,
+            },
             &mut sockets,
-            &settings,
-            &counters,
-            &packet_tracker,
+            tcp_support::ServiceContext {
+                settings: &settings,
+                counters: &counters,
+                packet_tracker: &packet_tracker,
+            },
         )?;
         tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
         let delay = iface
@@ -320,12 +336,12 @@ fn emit_session_start_failed(
         .field("failurePhase", "session-start")
         .field("cleanupAction", "socket-abort")
         .field("replaySafe", "pre-payload")
-        .field("errorType", classify_runtime_error(&failure.error))
+        .field("errorType", classify_runtime_error(failure.error.as_ref()))
         .field(
             "errorDisposition",
-            classify_runtime_error_disposition(&failure.error),
+            classify_runtime_error_disposition(failure.error.as_ref()),
         )
-        .field("error", &failure.error);
+        .field("error", failure.error.as_ref());
     if let Some(session) = failure.session {
         event = event.field("session", session);
     }
@@ -336,7 +352,7 @@ fn emit_session_start_failed(
         event = event.field("clientPort", client.port());
     }
     if let Some(outbound) = failure.outbound {
-        event = event.field("outbound", outbound);
+        event = event.field("outbound", outbound.as_ref());
     }
     if let Some(stage) = failure.stage {
         event = event

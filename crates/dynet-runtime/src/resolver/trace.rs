@@ -81,14 +81,7 @@ pub(crate) fn classify_runtime_error(error: &str) -> &'static str {
 
 pub(crate) fn classify_runtime_error_disposition(error: &str) -> &'static str {
     let text = error.to_ascii_lowercase();
-    if text.contains("resource temporarily unavailable")
-        || text.contains("operation would block")
-        || text.contains("would block")
-    {
-        "pending-timeout"
-    } else if text.contains("timed out") || text.contains("timeout") {
-        "timeout"
-    } else if text.contains("unexpected eof")
+    if text.contains("unexpected eof")
         || text.contains("eof")
         || text.contains("end of file")
         || text.contains("close_notify")
@@ -108,9 +101,23 @@ pub(crate) fn classify_runtime_error_disposition(error: &str) -> &'static str {
         "reset"
     } else if text.contains("certificate") {
         "certificate"
+    } else if has_pending_timeout_fields(&text)
+        || text.contains("resource temporarily unavailable")
+        || text.contains("operation would block")
+        || text.contains("would block")
+    {
+        "pending-timeout"
+    } else if text.contains("timed out") || text.contains("timeout") {
+        "timeout"
     } else {
         "unknown"
     }
+}
+
+fn has_pending_timeout_fields(text: &str) -> bool {
+    text.contains("pendingretries=")
+        || text.contains("pendingelapsedms=")
+        || text.contains("pendingwaitclass=")
 }
 
 fn numeric_error_field(error: &str, marker: &str) -> Option<u64> {

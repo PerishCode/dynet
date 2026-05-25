@@ -26,18 +26,38 @@ pub(in crate::tun) fn poll_egress(
     ) {}
 }
 
+pub(in crate::tun) struct ServiceSlots<'a> {
+    pub(in crate::tun) tcp: &'a mut [ForwardSlot],
+    pub(in crate::tun) udp: &'a mut [udp_forward::ForwardSlot],
+    pub(in crate::tun) ipv6_guard: &'a mut ipv6_guard::Slot,
+    pub(in crate::tun) udp_sessions: &'a mut udp_forward::Sessions,
+}
+
+pub(in crate::tun) struct ServiceContext<'a> {
+    pub(in crate::tun) settings: &'a RuntimeSettings,
+    pub(in crate::tun) counters: &'a Arc<RuntimeCounters>,
+    pub(in crate::tun) packet_tracker: &'a PacketTracker,
+}
+
 pub(in crate::tun) fn service_slots(
-    tcp_slots: &mut [ForwardSlot],
-    udp_slots: &mut [udp_forward::ForwardSlot],
-    ipv6_guard_slot: &mut ipv6_guard::Slot,
-    udp_sessions: &mut udp_forward::Sessions,
+    slots: ServiceSlots<'_>,
     sockets: &mut SocketSet<'_>,
-    settings: &RuntimeSettings,
-    counters: &Arc<RuntimeCounters>,
-    packet_tracker: &PacketTracker,
+    context: ServiceContext<'_>,
 ) -> Result<(), String> {
-    let listen_allowed = tcp_listen_allowed(tcp_slots, sockets);
-    for (slot, listen_allowed) in tcp_slots.iter_mut().zip(listen_allowed) {
+    let ServiceSlots {
+        tcp,
+        udp,
+        ipv6_guard,
+        udp_sessions,
+    } = slots;
+    let ServiceContext {
+        settings,
+        counters,
+        packet_tracker,
+    } = context;
+
+    let listen_allowed = tcp_listen_allowed(tcp, sockets);
+    for (slot, listen_allowed) in tcp.iter_mut().zip(listen_allowed) {
         tcp_forward::handle_slot(
             slot,
             sockets,
@@ -48,17 +68,17 @@ pub(in crate::tun) fn service_slots(
         )?;
     }
     observe(
-        tcp_slots.iter().map(ForwardSlot::slot_state),
+        tcp.iter().map(ForwardSlot::slot_state),
         settings,
-        tcp_slots.len(),
+        tcp.len(),
         counters.as_ref(),
     )?;
-    for slot in udp_slots.iter_mut() {
+    for slot in udp.iter_mut() {
         udp_forward::handle_slot(slot, sockets, settings, counters.as_ref(), udp_sessions)?;
     }
-    ipv6_guard::handle_slot(ipv6_guard_slot, sockets, counters.as_ref())?;
+    ipv6_guard::handle_slot(ipv6_guard, sockets, counters.as_ref())?;
     if settings.udp_forwarding.enabled {
-        udp_forward::poll_sessions(udp_slots, sockets, counters.as_ref(), udp_sessions)?;
+        udp_forward::poll_sessions(udp, sockets, counters.as_ref(), udp_sessions)?;
     }
     udp_forward::expire_sessions(udp_sessions, counters.as_ref())
 }

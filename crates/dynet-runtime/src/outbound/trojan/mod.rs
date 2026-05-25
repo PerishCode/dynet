@@ -38,6 +38,7 @@ pub(super) struct TrojanSpec {
 
 pub(crate) struct TrojanTcpStream {
     stream: StreamOwned<ClientConnection, Box<dyn TrojanTransport>>,
+    close_notify_sent: bool,
 }
 
 pub(super) fn tls_pending_budget_ms() -> u128 {
@@ -233,7 +234,10 @@ pub(super) fn write_request(
     stream
         .flush()
         .map_err(|error| format!("failed to flush Trojan request: {error}"))?;
-    Ok(TrojanTcpStream { stream })
+    Ok(TrojanTcpStream {
+        stream,
+        close_notify_sent: false,
+    })
 }
 
 pub(super) fn server_target(spec: &TrojanSpec) -> TcpTarget {
@@ -262,10 +266,24 @@ impl Write for TrojanTcpStream {
     }
 }
 
+impl Drop for TrojanTcpStream {
+    fn drop(&mut self) {
+        let _ = self.close_notify();
+    }
+}
+
 impl TrojanTcpStream {
     #[allow(dead_code)]
     pub(crate) fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.stream.sock.set_read_timeout(timeout)
+    }
+
+    pub(crate) fn close_notify(&mut self) -> io::Result<()> {
+        if !self.close_notify_sent {
+            self.stream.conn.send_close_notify();
+            self.close_notify_sent = true;
+        }
+        self.stream.flush()
     }
 }
 

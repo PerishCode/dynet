@@ -21,7 +21,7 @@ mod start_failure;
 pub(super) mod target_select;
 
 pub(super) use packet::{observed_device, packet_tracker, ObservedTunDevice, PacketTracker};
-pub(super) use poller::{poll_egress, service_slots};
+pub(super) use poller::{poll_egress, service_slots, ServiceContext, ServiceSlots};
 pub(super) use session::{
     close_session, emit_session_failed, first_payload_written, forward_session,
     start_session_async, ForwardSession, PendingSession,

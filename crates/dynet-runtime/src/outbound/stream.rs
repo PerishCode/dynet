@@ -15,6 +15,14 @@ impl ProxiedTcpStream {
             Self::Vmess(stream) => stream.set_read_timeout(timeout),
         }
     }
+
+    pub(crate) fn finish_probe_connect(&mut self) -> std::io::Result<()> {
+        self.flush()?;
+        if let Self::Trojan(stream) = self {
+            stream.close_notify()?;
+        }
+        Ok(())
+    }
 }
 
 impl Read for ProxiedTcpStream {

@@ -35,7 +35,7 @@ pub(crate) fn execute_with_protocol(
     if protocol == ProbeProtocol::TcpConnect {
         return observe_stage(ebus, outbound, "stream-flush", || {
             stream
-                .flush()
+                .finish_probe_connect()
                 .map_err(|error| format!("failed to flush TCP probe stream: {error}"))?;
             Ok(ProbeResponse {
                 status_code: None,
@@ -302,8 +302,11 @@ impl Read for ObservedProbeStream {
         let pending_sleep = self.read_policy.pending_sleep();
         let result = loop {
             match self.inner.read(output) {
-                Err(error) if pending_read_error(&error) && started.elapsed() < pending_budget => {
+                Err(error) if pending_read_error(&error) => {
                     pending_retries += 1;
+                    if started.elapsed() >= pending_budget {
+                        break Err(error);
+                    }
                     if !pending_sleep.is_zero() {
                         sleep(pending_sleep);
                     }
