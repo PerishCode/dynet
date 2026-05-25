@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
 mod help;
+mod probe_read;
+mod probe_retry;
+mod run_limits;
+mod run_tcp;
 mod types;
 mod values;
 
@@ -10,27 +14,6 @@ use values::{
     parse_format, parse_log_level, parse_probe_protocol, parse_u16, parse_u32, parse_u64,
     parse_usize,
 };
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum CommandMode {
-    Check,
-    Doctor,
-    Install,
-    Plan,
-    Probe,
-    Repair,
-    Run,
-    Status,
-    Uninstall,
-    Verify,
-    Api,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum ApiMode {
-    Capabilities,
-    Serve,
-}
 
 pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     if args.is_empty() {
@@ -53,6 +36,7 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     let mut plan_dns_answers = Vec::new();
     let mut plan_dns_now_secs = None;
     let mut plan_dns_ttl_secs = 300;
+    let mut plan_quality_state = None;
     let mut probe_url = None;
     let mut probe_host = None;
     let mut probe_port = None;
@@ -60,18 +44,56 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     let mut probe_inbound = None;
     let mut probe_quality_state = None;
     let mut probe_protocol = ProbeProtocol::HttpsHead;
-    let mut run_max_dns_queries = None;
-    let mut run_max_tun_packets = None;
-    let mut run_max_tcp_sessions = None;
-    let mut run_max_udp_sessions = None;
+    let default_probe_read_policy = dynet_runtime::ProbeReadPolicy::default();
+    let mut read_poll_ms = default_probe_read_policy.poll_timeout_ms;
+    let mut read_budget_ms = default_probe_read_policy.pending_budget_ms;
+    let mut read_sleep_ms = default_probe_read_policy.pending_sleep_ms;
+    let mut probe_retry_attempts = 1;
+    let mut probe_retry_sleep_ms = 250;
+    let mut run_limits = run_limits::RunLimitArgs::default();
     let mut run_timeout_secs = None;
+    let default_outbound_tcp = dynet_runtime::OutboundTcpSettings::default();
+    let mut tcp_connect_ms = default_outbound_tcp.connect_timeout_ms;
+    let mut tcp_rw_ms = default_outbound_tcp.read_write_timeout_ms;
     let mut run_upstream_dns = None;
     let mut run_quality_state = None;
     let mut run_experimental_tcp_forward = false;
+    let mut tcp_slot_capacity = dynet_runtime::TcpForwardingSettings::DEFAULT_LISTEN_SLOTS_PER_PORT;
     let mut run_experimental_udp_forward = false;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
+        if mode == CommandMode::Probe
+            && probe_retry::parse_arg(
+                arg.as_str(),
+                &mut args,
+                &mut probe_retry_attempts,
+                &mut probe_retry_sleep_ms,
+            )?
+        {
+            continue;
+        }
+        if mode == CommandMode::Probe
+            && probe_read::parse_arg(
+                arg.as_str(),
+                &mut args,
+                &mut read_poll_ms,
+                &mut read_budget_ms,
+                &mut read_sleep_ms,
+            )?
+        {
+            continue;
+        }
+        if mode == CommandMode::Run
+            && run_limits::parse_arg(arg.as_str(), &mut args, &mut run_limits)?
+        {
+            continue;
+        }
+        if matches!(mode, CommandMode::Run | CommandMode::Probe)
+            && run_tcp::parse_arg(arg.as_str(), &mut args, &mut tcp_connect_ms, &mut tcp_rw_ms)?
+        {
+            continue;
+        }
         match arg.as_str() {
             "api" if !command_seen => {
                 command_seen = true;
@@ -189,6 +211,12 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
                     .ok_or_else(|| "--dns-ttl requires an integer seconds value".to_string())?;
                 plan_dns_ttl_secs = parse_u32("--dns-ttl", &value)?;
             }
+            "--quality-state" if mode == CommandMode::Plan => {
+                plan_quality_state =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        "--quality-state requires a JSON path".to_string()
+                    })?));
+            }
             "--url" if mode == CommandMode::Probe => {
                 probe_url = Some(
                     args.next()
@@ -226,34 +254,10 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
                     })?));
             }
             "--protocol" if mode == CommandMode::Probe => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "--protocol requires https-head or tls-handshake".to_string())?;
+                let value = args.next().ok_or_else(|| {
+                    "--protocol requires tcp-connect, https-head, or tls-handshake".to_string()
+                })?;
                 probe_protocol = parse_probe_protocol(&value)?;
-            }
-            "--max-dns-queries" if mode == CommandMode::Run => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "--max-dns-queries requires a positive integer".to_string())?;
-                run_max_dns_queries = Some(parse_usize("--max-dns-queries", &value)?);
-            }
-            "--max-tun-packets" if mode == CommandMode::Run => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "--max-tun-packets requires a positive integer".to_string())?;
-                run_max_tun_packets = Some(parse_usize("--max-tun-packets", &value)?);
-            }
-            "--max-tcp-sessions" if mode == CommandMode::Run => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "--max-tcp-sessions requires a positive integer".to_string())?;
-                run_max_tcp_sessions = Some(parse_usize("--max-tcp-sessions", &value)?);
-            }
-            "--max-udp-sessions" if mode == CommandMode::Run => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| "--max-udp-sessions requires a positive integer".to_string())?;
-                run_max_udp_sessions = Some(parse_usize("--max-udp-sessions", &value)?);
             }
             "--timeout" if mode == CommandMode::Run => {
                 let value = args
@@ -275,6 +279,14 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             }
             "--experimental-tcp-forward" if mode == CommandMode::Run => {
                 run_experimental_tcp_forward = true;
+            }
+            "--experimental-tcp-listen-slots-per-port" if mode == CommandMode::Run => {
+                let value = args.next().ok_or_else(|| {
+                    "--experimental-tcp-listen-slots-per-port requires a positive integer"
+                        .to_string()
+                })?;
+                tcp_slot_capacity =
+                    parse_usize("--experimental-tcp-listen-slots-per-port", &value)?;
             }
             "--experimental-udp-forward" if mode == CommandMode::Run => {
                 run_experimental_udp_forward = true;
@@ -306,6 +318,9 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             other if mode == CommandMode::Plan && other.starts_with("--dns-ttl=") => {
                 plan_dns_ttl_secs = parse_u32("--dns-ttl", &other["--dns-ttl=".len()..])?;
             }
+            other if mode == CommandMode::Plan && other.starts_with("--quality-state=") => {
+                plan_quality_state = Some(PathBuf::from(&other["--quality-state=".len()..]));
+            }
             other if mode == CommandMode::Probe && other.starts_with("--url=") => {
                 probe_url = Some(other["--url=".len()..].to_string());
             }
@@ -327,29 +342,14 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             other if mode == CommandMode::Probe && other.starts_with("--protocol=") => {
                 probe_protocol = parse_probe_protocol(&other["--protocol=".len()..])?;
             }
-            other if mode == CommandMode::Run && other.starts_with("--max-dns-queries=") => {
-                run_max_dns_queries = Some(parse_usize(
-                    "--max-dns-queries",
-                    &other["--max-dns-queries=".len()..],
-                )?);
-            }
-            other if mode == CommandMode::Run && other.starts_with("--max-tun-packets=") => {
-                run_max_tun_packets = Some(parse_usize(
-                    "--max-tun-packets",
-                    &other["--max-tun-packets=".len()..],
-                )?);
-            }
-            other if mode == CommandMode::Run && other.starts_with("--max-tcp-sessions=") => {
-                run_max_tcp_sessions = Some(parse_usize(
-                    "--max-tcp-sessions",
-                    &other["--max-tcp-sessions=".len()..],
-                )?);
-            }
-            other if mode == CommandMode::Run && other.starts_with("--max-udp-sessions=") => {
-                run_max_udp_sessions = Some(parse_usize(
-                    "--max-udp-sessions",
-                    &other["--max-udp-sessions=".len()..],
-                )?);
+            other
+                if mode == CommandMode::Run
+                    && other.starts_with("--experimental-tcp-listen-slots-per-port=") =>
+            {
+                tcp_slot_capacity = parse_usize(
+                    "--experimental-tcp-listen-slots-per-port",
+                    &other["--experimental-tcp-listen-slots-per-port=".len()..],
+                )?;
             }
             other if mode == CommandMode::Run && other.starts_with("--timeout=") => {
                 run_timeout_secs = Some(parse_u64("--timeout", &other["--timeout=".len()..])?);
@@ -397,6 +397,7 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             dns_answers: plan_dns_answers,
             dns_now_secs: plan_dns_now_secs,
             dns_ttl_secs: plan_dns_ttl_secs,
+            quality_state: plan_quality_state,
         }),
         CommandMode::Probe => CliCommand::Probe(ProbeOptions {
             command: options,
@@ -407,18 +408,31 @@ pub(crate) fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             path: probe_path,
             inbound: probe_inbound,
             quality_state: probe_quality_state,
+            retry_direct_tls_eof_attempts: probe_retry_attempts,
+            retry_direct_tls_eof_sleep_ms: probe_retry_sleep_ms,
+            read_poll_timeout_ms: read_poll_ms,
+            read_pending_budget_ms: read_budget_ms,
+            read_pending_sleep_ms: read_sleep_ms,
+            outbound_tcp_connect_timeout_ms: tcp_connect_ms,
+            outbound_tcp_read_write_timeout_ms: tcp_rw_ms,
         }),
         CommandMode::Repair => CliCommand::Repair(lifecycle),
         CommandMode::Run => CliCommand::Run(RunOptions {
             command: options,
-            max_dns_queries: run_max_dns_queries,
-            max_tun_packets: run_max_tun_packets,
-            max_tcp_sessions: run_max_tcp_sessions,
-            max_udp_sessions: run_max_udp_sessions,
+            max_dns_queries: run_limits.max_dns_queries,
+            max_tun_packets: run_limits.max_tun_packets,
+            max_tcp_sessions: run_limits.max_tcp_sessions,
+            max_tcp_closed_sessions: run_limits.max_tcp_closed_sessions,
+            max_tcp_terminal_sessions: run_limits.max_tcp_terminal_sessions,
+            max_udp_sessions: run_limits.max_udp_sessions,
+            max_udp_downstream_bytes: run_limits.max_udp_downstream_bytes,
             timeout_secs: run_timeout_secs,
+            outbound_tcp_connect_timeout_ms: tcp_connect_ms,
+            outbound_tcp_read_write_timeout_ms: tcp_rw_ms,
             upstream_dns: run_upstream_dns,
             quality_state: run_quality_state,
             experimental_tcp_forward: run_experimental_tcp_forward,
+            experimental_tcp_listen_slots_per_port: tcp_slot_capacity,
             experimental_udp_forward: run_experimental_udp_forward,
         }),
         CommandMode::Status => CliCommand::Status(lifecycle),

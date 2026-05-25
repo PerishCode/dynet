@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import sys
 
 from common import (
     DEFAULT_VM_USER,
@@ -17,6 +16,7 @@ from common import (
     logger,
     q,
     validate_name,
+    vmctl_command,
 )
 
 
@@ -394,10 +394,9 @@ def guest(lab: Lab, args: argparse.Namespace) -> None:
 
 
 def run_local(lab: Lab, args: list[str]) -> None:
-    script = ROOT / "scripts" / "vmctl.py"
-    command = [sys.executable, str(script), *args]
+    command = vmctl_command(*args)
     logger.info("run vmctl: %s", join(command))
-    subprocess.run(command, check=True)
+    subprocess.run(command, cwd=ROOT, check=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

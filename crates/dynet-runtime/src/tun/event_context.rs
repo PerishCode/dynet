@@ -72,7 +72,7 @@ fn attach_base(event: &mut RuntimeEvent, context: &SessionEventContext) {
     field_if_missing(event, "sessionTransport", context.transport);
     field_if_missing(event, "session", context.session);
     field_if_missing(event, "target", context.target);
-    field_if_missing(event, "client", context.client);
+    field_if_missing(event, "clientPort", context.client.port());
 }
 
 fn attach_attempt(event: &mut RuntimeEvent, context: &SessionEventContext, attempt: usize) {

@@ -1,4 +1,4 @@
-use dynet_runtime::dns_reverse_from_wire;
+use dynet_runtime::{dns_reverse_from_wire, dns_servfail_from_wire};
 
 #[test]
 fn extracts_real_a_answer() {
@@ -8,6 +8,23 @@ fn extracts_real_a_answer() {
     assert_eq!(reverse.records[0].query, "www.google.com");
     assert_eq!(reverse.records[0].address.to_string(), "142.250.72.4");
     assert_eq!(reverse.records[0].ttl_secs, 60);
+}
+
+#[test]
+fn servfail_preserves_question() {
+    let query = dns_query();
+    let response = dns_servfail_from_wire(&query).unwrap();
+
+    assert_eq!(&response[0..2], &query[0..2]);
+    assert_eq!(response[2] & 0x80, 0x80);
+    assert_eq!(response[3] & 0x0f, 2);
+    assert_eq!(&response[4..6], &query[4..6]);
+    assert_eq!(&response[6..12], &[0, 0, 0, 0, 0, 0]);
+    assert_eq!(&response[12..], &query[12..]);
+    assert!(dns_reverse_from_wire(&query, &response, 100)
+        .unwrap()
+        .records
+        .is_empty());
 }
 
 fn dns_query() -> Vec<u8> {

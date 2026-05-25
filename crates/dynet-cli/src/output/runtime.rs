@@ -22,11 +22,22 @@ pub(crate) fn text_runtime_report(report: &dynet_runtime::RuntimeReport) -> Stri
     .expect("write string");
     writeln!(
         &mut text,
-        "tcp forwarding: {} session(s), {} failure(s), {} upstream byte(s), {} downstream byte(s)",
+        "tcp forwarding: {} session(s), {} closed session(s), {} failure(s), {} upstream byte(s), {} downstream byte(s)",
         report.tcp_sessions,
+        report.tcp_closed_sessions,
         report.tcp_session_failures,
         report.tcp_upstream_bytes,
         report.tcp_downstream_bytes
+    )
+    .expect("write string");
+    writeln!(
+        &mut text,
+        "tcp listen capacity: ports={:?}, slots/port={}, capacity={}, active max={}, pressure event(s)={}",
+        report.tcp_listen_ports,
+        report.tcp_listen_slots_per_port,
+        report.tcp_listen_capacity,
+        report.tcp_active_slots_max,
+        report.tcp_slot_pressure_events
     )
     .expect("write string");
     writeln!(
@@ -63,6 +74,9 @@ pub(crate) fn text_probe_report(report: &dynet_runtime::ProbeReport) -> String {
     writeln!(&mut text, "dynet probe {status}: {}", report.reason).expect("write string");
     writeln!(&mut text, "probe model: {}", report.schema).expect("write string");
     writeln!(&mut text, "protocol: {}", report.protocol.as_str()).expect("write string");
+    if let Some(scope) = report.failure_scope {
+        writeln!(&mut text, "failure scope: {}", scope.as_str()).expect("write string");
+    }
     writeln!(
         &mut text,
         "target: https://{}:{}{}",
@@ -77,6 +91,26 @@ pub(crate) fn text_probe_report(report: &dynet_runtime::ProbeReport) -> String {
         report.events.len()
     )
     .expect("write string");
+    if !report.read_policy.is_default() {
+        writeln!(
+            &mut text,
+            "read policy: pollTimeoutMs={} pendingBudgetMs={} pendingSleepMs={}",
+            report.read_policy.poll_timeout_ms,
+            report.read_policy.pending_budget_ms,
+            report.read_policy.pending_sleep_ms
+        )
+        .expect("write string");
+    }
+    if report.retry.enabled {
+        writeln!(
+            &mut text,
+            "retry: attempts={} recoveredAfterRetry={} unresolvedDirectTlsEof={}",
+            report.retry.attempts_used,
+            report.retry.recovered_after_retry,
+            report.retry.unresolved_direct_tls_eof,
+        )
+        .expect("write string");
+    }
     write_events(&mut text, &report.events);
     text
 }

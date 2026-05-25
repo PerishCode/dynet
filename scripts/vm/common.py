@@ -72,6 +72,10 @@ def configure_logging(level: str | None = None, *, verbose: bool = False) -> Non
     _install_logger(log_level)
 
 
+def vmctl_command(*args: str) -> list[str]:
+    return [sys.executable, "-m", "scripts.cli.vmctl", *args]
+
+
 @dataclass(frozen=True)
 class CloudImage:
     name: str

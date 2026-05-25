@@ -82,7 +82,13 @@ fn text_plan_lists_rules() {
         }"#,
     )
     .unwrap();
-    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config, None);
+    let report = PlanReport::from_config(
+        PathBuf::from("."),
+        &ConfigSource::BuiltIn,
+        &config,
+        None,
+        None,
+    );
 
     let text = text_plan_report(&report);
 
@@ -99,7 +105,13 @@ fn text_plan_route_matchers() {
         "../../../dynet-core/harness/configs/personal-static.json"
     ))
     .unwrap();
-    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config, None);
+    let report = PlanReport::from_config(
+        PathBuf::from("."),
+        &ConfigSource::BuiltIn,
+        &config,
+        None,
+        None,
+    );
 
     let text = text_plan_report(&report);
 
@@ -118,7 +130,13 @@ fn text_plan_outbound() {
         "../../../dynet-core/harness/configs/outbound-plan.json"
     ))
     .unwrap();
-    let report = PlanReport::from_config(PathBuf::from("."), &ConfigSource::BuiltIn, &config, None);
+    let report = PlanReport::from_config(
+        PathBuf::from("."),
+        &ConfigSource::BuiltIn,
+        &config,
+        None,
+        None,
+    );
 
     let text = text_plan_report(&report);
 
@@ -329,8 +347,14 @@ fn runtime_report_is_rendered() {
         ipv6_packets_denied: 0,
         tcp_sessions: 1,
         tcp_session_failures: 0,
+        tcp_closed_sessions: 1,
         tcp_upstream_bytes: 32,
         tcp_downstream_bytes: 64,
+        tcp_listen_ports: vec![443, 80],
+        tcp_listen_slots_per_port: 8,
+        tcp_listen_capacity: 16,
+        tcp_active_slots_max: 1,
+        tcp_slot_pressure_events: 0,
         udp_sessions: 1,
         udp_session_failures: 0,
         udp_upstream_bytes: 16,
@@ -346,6 +370,7 @@ fn runtime_report_is_rendered() {
     assert!(text.contains("1 route decision"));
     assert!(text.contains("1 proxied dns query"));
     assert!(text.contains("1 session"));
+    assert!(text.contains("tcp listen capacity"));
     print_runtime_report(&report, OutputFormat::Json).unwrap();
 }
 
@@ -362,8 +387,11 @@ fn probe_report_is_rendered() {
             path: "/".to_string(),
         },
         inbound: Some("tun-in".to_string()),
+        failure_scope: None,
         route_decisions: 1,
         outbound_attempts: 1,
+        read_policy: dynet_runtime::ProbeReadPolicy::default(),
+        retry: dynet_runtime::ProbeRetryReport::default(),
         events: vec![dynet_runtime::RuntimeEvent {
             schema: "dynet-runtime-event/v1alpha1".to_string(),
             sequence: Some(1),

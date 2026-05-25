@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import clash_verge_profile as cvp
+from scripts.cli import clash_verge_profile as cvp
 
 
 class ClashVergeProfileTest(unittest.TestCase):

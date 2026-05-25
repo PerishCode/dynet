@@ -1,37 +1,27 @@
 use std::{
-    io::{Read, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     os::fd::AsRawFd,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
 
-use dynet_core::Transport;
 use smoltcp::{
-    iface::{Config, Interface, SocketHandle, SocketSet},
+    iface::{Config, Interface, PollIngressSingleResult, SocketHandle, SocketSet},
     phy::{wait as phy_wait, Medium, TunTapInterface},
     socket::tcp,
     time::{Duration as SmolDuration, Instant as SmolInstant},
-    wire::{HardwareAddress, IpAddress, IpEndpoint},
+    wire::HardwareAddress,
 };
-use tracing::debug;
 
 use crate::{
-    outbound::{self, ProxiedTcpStream, TcpTarget},
-    resolver::trace::classify_runtime_error,
+    resolver::trace::{classify_runtime_error, classify_runtime_error_disposition},
     RuntimeCounters, RuntimeEvent, RuntimeEventKind, RuntimeSettings,
 };
 
-use super::{event_context, ipv6_guard, udp_forward, user_rule, TunDevice};
+use super::{ipv6_guard, tcp as tcp_support, udp_forward, TunDevice};
 
 const MTU: usize = 1500;
-const TCP_BUFFER_BYTES: usize = 65_535;
-const FORWARD_BUFFER_BYTES: usize = 8192;
-const FORWARD_READ_TIMEOUT: StdDuration = StdDuration::from_millis(20);
-const LISTEN_PORTS: [u16; 2] = [443, 80];
 
 pub(crate) fn run(
     tun: TunDevice,
@@ -43,38 +33,46 @@ pub(crate) fn run(
         return Err("experimental TUN forwarding requires a runtime policy".to_string());
     }
     let raw_fd = tun.into_raw_fd();
-    let mut device = TunTapInterface::from_fd(raw_fd, Medium::Ip, MTU)
+    let device = TunTapInterface::from_fd(raw_fd, Medium::Ip, MTU)
         .map_err(|error| format!("failed to attach smoltcp to TUN fd: {error}"))?;
+    let packet_tracker = tcp_support::packet_tracker();
+    let mut device = tcp_support::observed_device(
+        device,
+        counters.clone(),
+        packet_tracker.clone(),
+        settings.tcp_forwarding.listen_ports(),
+    );
     let fd = device.as_raw_fd();
     let mut config = Config::new(HardwareAddress::Ip);
-    config.random_seed = random_seed();
+    config.random_seed = tcp_support::random_seed();
     let mut iface = Interface::new(config, &mut device, SmolInstant::now());
     iface.set_any_ip(true);
 
     let mut sockets = SocketSet::new(Vec::new());
-    let mut tcp_slots = if settings.tcp_forwarding.enabled {
-        LISTEN_PORTS
-            .into_iter()
-            .map(|port| ForwardSlot {
-                port,
-                handle: sockets.add(tcp_socket()),
-                session: None,
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut udp_slots = if settings.udp_forwarding.enabled {
-        udp_forward::LISTEN_PORTS
-            .into_iter()
-            .map(|port| udp_forward::ForwardSlot {
+    let mut tcp_slots = Vec::new();
+    if settings.tcp_forwarding.enabled {
+        for port in settings.tcp_forwarding.listen_ports() {
+            for _ in 0..settings.tcp_forwarding.listen_slots_per_port {
+                tcp_slots.push(ForwardSlot {
+                    port,
+                    handle: sockets.add(tcp_support::socket()),
+                    session: None,
+                    pending: None,
+                    preflow_reported: false,
+                });
+            }
+        }
+        tcp_support::emit_capacity(&settings, tcp_slots.len(), &counters)?;
+    }
+    let mut udp_slots = Vec::new();
+    if settings.udp_forwarding.enabled {
+        for port in udp_forward::LISTEN_PORTS {
+            udp_slots.push(udp_forward::ForwardSlot {
                 port,
                 handle: sockets.add(udp_forward::socket()),
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+            });
+        }
+    }
     let mut ipv6_guard_slot = ipv6_guard::Slot {
         handle: sockets.add(ipv6_guard::socket()),
     };
@@ -82,18 +80,58 @@ pub(crate) fn run(
 
     while !stop.load(Ordering::SeqCst) {
         let timestamp = SmolInstant::now();
-        iface.poll(timestamp, &mut device, &mut sockets);
-        for slot in &mut tcp_slots {
-            handle_slot(slot, &mut sockets, &settings, &counters)?;
+        iface.poll_maintenance(timestamp);
+        tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
+        loop {
+            let result = iface.poll_ingress_single(timestamp, &mut device, &mut sockets);
+            if matches!(result, PollIngressSingleResult::None) {
+                break;
+            }
+            tcp_support::service_slots(
+                &mut tcp_slots,
+                &mut udp_slots,
+                &mut ipv6_guard_slot,
+                &mut udp_sessions,
+                &mut sockets,
+                &settings,
+                &counters,
+                &packet_tracker,
+            )?;
+            tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
+            tcp_support::service_slots(
+                &mut tcp_slots,
+                &mut udp_slots,
+                &mut ipv6_guard_slot,
+                &mut udp_sessions,
+                &mut sockets,
+                &settings,
+                &counters,
+                &packet_tracker,
+            )?;
+            tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
         }
-        for slot in &mut udp_slots {
-            udp_forward::handle_slot(slot, &mut sockets, &settings, &counters, &mut udp_sessions)?;
-        }
-        ipv6_guard::handle_slot(&mut ipv6_guard_slot, &mut sockets, &counters)?;
-        if settings.udp_forwarding.enabled {
-            udp_forward::poll_sessions(&mut udp_slots, &mut sockets, &counters, &mut udp_sessions)?;
-        }
-        udp_forward::expire_sessions(&mut udp_sessions, &counters)?;
+        tcp_support::service_slots(
+            &mut tcp_slots,
+            &mut udp_slots,
+            &mut ipv6_guard_slot,
+            &mut udp_sessions,
+            &mut sockets,
+            &settings,
+            &counters,
+            &packet_tracker,
+        )?;
+        tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
+        tcp_support::service_slots(
+            &mut tcp_slots,
+            &mut udp_slots,
+            &mut ipv6_guard_slot,
+            &mut udp_sessions,
+            &mut sockets,
+            &settings,
+            &counters,
+            &packet_tracker,
+        )?;
+        tcp_support::poll_egress(&mut iface, timestamp, &mut device, &mut sockets);
         let delay = iface
             .poll_delay(timestamp, &sockets)
             .map(|delay| {
@@ -109,375 +147,236 @@ pub(crate) fn run(
     Ok(())
 }
 
-struct ForwardSlot {
+pub(super) struct ForwardSlot {
     port: u16,
     handle: SocketHandle,
-    session: Option<ForwardSession>,
+    session: Option<tcp_support::ForwardSession>,
+    pending: Option<tcp_support::PendingSession>,
+    preflow_reported: bool,
 }
 
-struct ForwardSession {
-    id: usize,
-    target: SocketAddr,
-    client: SocketAddr,
-    outbound: String,
-    stream: ProxiedTcpStream,
-    first_payload_written: bool,
-    closed: bool,
+impl ForwardSlot {
+    pub(super) fn slot_state(&self) -> tcp_support::SlotState {
+        tcp_support::SlotState {
+            port: self.port,
+            active: self.session.is_some() || self.pending.is_some(),
+        }
+    }
+
+    pub(super) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(super) fn occupies_accept_order(&self, sockets: &SocketSet<'_>) -> bool {
+        if self.session.is_some() || self.pending.is_some() {
+            return true;
+        }
+        let socket = sockets.get::<tcp::Socket>(self.handle);
+        socket.remote_endpoint().is_some()
+    }
 }
 
-fn tcp_socket() -> tcp::Socket<'static> {
-    let rx = tcp::SocketBuffer::new(vec![0; TCP_BUFFER_BYTES]);
-    let tx = tcp::SocketBuffer::new(vec![0; TCP_BUFFER_BYTES]);
-    let mut socket = tcp::Socket::new(rx, tx);
-    socket.set_keep_alive(Some(SmolDuration::from_millis(10_000)));
-    socket.set_timeout(Some(SmolDuration::from_millis(30_000)));
-    socket
-}
-
-fn handle_slot(
+pub(super) fn handle_slot(
     slot: &mut ForwardSlot,
     sockets: &mut SocketSet<'_>,
     settings: &RuntimeSettings,
-    counters: &RuntimeCounters,
+    counters: &Arc<RuntimeCounters>,
+    packet_tracker: &tcp_support::PacketTracker,
+    listen_allowed: bool,
 ) -> Result<(), String> {
     let socket = sockets.get_mut::<tcp::Socket>(slot.handle);
-    if !socket.is_open() {
-        socket.listen(slot.port).map_err(|error| {
-            format!("failed to listen on TUN TCP port {}: {error:?}", slot.port)
-        })?;
+
+    if let Some(result) = poll_pending(slot) {
+        match result {
+            Ok(session) => {
+                if socket.is_active() {
+                    slot.session = Some(session);
+                } else {
+                    socket.abort();
+                    tcp_support::close_session(
+                        session,
+                        "tun-closed-before-payload",
+                        counters.as_ref(),
+                    )?;
+                    slot.preflow_reported = false;
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                socket.abort();
+                emit_session_start_failed(slot.port, error, counters.as_ref())?;
+                slot.preflow_reported = false;
+                return Ok(());
+            }
+        }
+    }
+
+    if socket.is_listening() && !listen_allowed {
+        socket.close();
+        slot.preflow_reported = false;
         return Ok(());
     }
 
-    if socket.is_active() && slot.session.is_none() {
-        match start_session(socket, settings, counters) {
-            Ok(session) => slot.session = Some(session),
+    if !socket.is_open() {
+        if slot.pending.is_some() {
+            return Ok(());
+        }
+        if !slot.preflow_reported {
+            emit_missed_preflow(slot.port, socket, counters, packet_tracker)?;
+        }
+        if listen_allowed {
+            tcp_support::listen_on_port(socket, slot.port)?;
+        }
+        slot.preflow_reported = false;
+        return Ok(());
+    }
+
+    if slot.session.is_none() && socket.remote_endpoint().is_some() && !slot.preflow_reported {
+        tcp_support::emit_preflow(slot.port, socket, counters.as_ref())?;
+        if let Some(remote) = socket.remote_endpoint() {
+            packet_tracker.promote(slot.port, remote.port);
+        }
+        slot.preflow_reported = true;
+    }
+
+    if socket.is_active() && slot.session.is_none() && slot.pending.is_none() {
+        match tcp_support::start_session_async(socket, settings, Arc::clone(counters)) {
+            Ok(pending) => slot.pending = Some(pending),
             Err(error) => {
                 socket.abort();
-                counters.tcp_session_failures.fetch_add(1, Ordering::SeqCst);
-                counters.emit(
-                    RuntimeEvent::new(RuntimeEventKind::TcpSessionFailed)
-                        .field("port", slot.port)
-                        .field("flowId", "<unattributed>")
-                        .field("errorType", classify_runtime_error(&error))
-                        .field("error", error),
+                emit_session_start_failed(
+                    slot.port,
+                    tcp_support::SessionStartFailure::unattributed(error),
+                    counters.as_ref(),
                 )?;
+                slot.preflow_reported = false;
+                return Ok(());
             }
         }
+    }
+
+    if slot.pending.is_some() {
+        return Ok(());
     }
 
     let Some(session) = slot.session.as_mut() else {
         return Ok(());
     };
     if !socket.is_active() {
-        close_session(
+        tcp_support::close_session(
             slot.session.take().expect("session exists"),
             "tun-closed",
-            counters,
+            counters.as_ref(),
         )?;
+        if !socket.is_open() {
+            if listen_allowed {
+                tcp_support::listen_on_port(socket, slot.port)?;
+            }
+            slot.preflow_reported = false;
+        }
         return Ok(());
     }
-    if let Err(error) = forward_session(socket, session, counters) {
+    if let Err(error) = tcp_support::forward_session(socket, session, counters.as_ref()) {
         let session = slot.session.take().expect("session exists");
         socket.abort();
-        counters.tcp_session_failures.fetch_add(1, Ordering::SeqCst);
-        counters.emit(
-            RuntimeEvent::new(RuntimeEventKind::TcpSessionFailed)
-                .field("session", session.id)
-                .field("flowId", format!("tcp-session-{}", session.id))
-                .field("target", session.target)
-                .field("client", session.client)
-                .field("outbound", session.outbound)
-                .field("errorType", classify_runtime_error(&error))
-                .field("error", error),
-        )?;
+        tcp_support::emit_session_failed(session, error, counters.as_ref())?;
+        slot.preflow_reported = false;
+        return Ok(());
+    }
+    if !tcp_support::first_payload_written(session)
+        && matches!(socket.state(), tcp::State::CloseWait)
+    {
+        let session = slot.session.take().expect("session exists");
+        socket.abort();
+        tcp_support::close_session(session, "tun-closed-before-payload", counters.as_ref())?;
+        slot.preflow_reported = false;
     }
     Ok(())
 }
 
-fn start_session(
-    socket: &mut tcp::Socket<'_>,
-    settings: &RuntimeSettings,
+fn poll_pending(
+    slot: &mut ForwardSlot,
+) -> Option<Result<tcp_support::ForwardSession, tcp_support::SessionStartFailure>> {
+    let result = slot.pending.as_mut()?.poll()?;
+    slot.pending = None;
+    Some(result)
+}
+
+fn emit_session_start_failed(
+    port: u16,
+    failure: tcp_support::SessionStartFailure,
     counters: &RuntimeCounters,
-) -> Result<ForwardSession, String> {
-    let local_endpoint = socket
-        .local_endpoint()
-        .ok_or_else(|| "TUN TCP socket has no local endpoint".to_string())?;
-    let remote_endpoint = socket
-        .remote_endpoint()
-        .ok_or_else(|| "TUN TCP socket has no remote endpoint".to_string())?;
-    deny_ipv6_endpoint("tcp", local_endpoint, remote_endpoint, counters)?;
-    let target = endpoint_to_socket(local_endpoint)?;
-    let client = endpoint_to_socket(remote_endpoint)?;
-    counters.tun_packets.fetch_add(1, Ordering::SeqCst);
-    let id = counters.tcp_sessions.fetch_add(1, Ordering::SeqCst) + 1;
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::TcpSessionStarted)
-            .field("session", id)
-            .field("flowId", format!("tcp-session-{id}"))
-            .field("client", client)
-            .field("target", target)
-            .field("transport", "tcp"),
-    )?;
-
-    let policy = settings
-        .policy
-        .as_ref()
-        .ok_or_else(|| "experimental TUN forwarding requires a runtime policy".to_string())?;
-    let domains = counters
-        .dns_reverse
-        .lock()
-        .map_err(|_| "dns reverse index lock poisoned".to_string())?
-        .domains_for_ip(target.ip());
-    let (context, decision_domain, decision) =
-        user_rule::select(policy, Transport::Tcp, target, &domains).ok_or_else(|| {
-            format!("TUN TCP target {target} has no matching top-level identity rule; fail closed")
-        })?;
-    counters.route_decisions.fetch_add(1, Ordering::SeqCst);
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::RuleMatched)
-            .field("rule", &decision.tag)
-            .field("order", decision.order)
-            .field("transport", "tcp")
-            .field("session", id)
-            .field("flowId", format!("tcp-session-{id}"))
-            .field("target", target)
-            .field("domain", decision_domain.as_deref().unwrap_or("<none>"))
-            .field("outbound", &decision.outbound)
-            .field("bypassesPlan", decision.bypasses_plan)
-            .field("reason", &decision.reason),
-    )?;
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::PlanBypassed)
-            .field("rule", &decision.tag)
-            .field("session", id)
-            .field("flowId", format!("tcp-session-{id}"))
-            .field("outbound", &decision.outbound)
-            .field("target", target)
-            .field("reason", "user hard rule matched before route plan"),
-    )?;
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::TcpSessionAttributed)
-            .field("session", id)
-            .field("flowId", format!("tcp-session-{id}"))
-            .field("target", target)
-            .field("domain", decision_domain.as_deref().unwrap_or("<none>"))
-            .field("reverseDomains", domains.join(","))
-            .field("rule", &decision.tag)
-            .field("outbound", &decision.outbound),
-    )?;
-
-    let outbound = policy.outbound(&decision.outbound).ok_or_else(|| {
-        format!(
-            "user rule selected missing outbound `{}`",
-            decision.outbound
+) -> Result<(), String> {
+    counters.tcp_session_failures.fetch_add(1, Ordering::SeqCst);
+    let mut event = RuntimeEvent::new(RuntimeEventKind::TcpSessionFailed)
+        .field("port", port)
+        .field(
+            "flowId",
+            failure
+                .session
+                .map(|session| format!("tcp-session-{session}"))
+                .unwrap_or_else(|| "<unattributed>".to_string()),
         )
-    })?;
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::TcpSessionOutboundConnecting)
-            .field("session", id)
-            .field("flowId", format!("tcp-session-{id}"))
-            .field("target", target)
-            .field("outbound", &outbound.tag)
-            .field("kind", &outbound.kind)
-            .field("replaySafe", "pre-payload"),
-    )?;
-    let mut events = Vec::new();
-    let stream = outbound::connect_tcp_policy(
-        &TcpTarget::Socket(target),
-        outbound,
-        policy,
-        &context,
-        settings.bypass_mark,
-        &mut events,
-    );
-    event_context::emit_session_events(
-        counters,
-        &event_context::SessionEventContext::tcp(id, target, client),
-        events,
-    )?;
-    let stream = stream?;
-    stream
-        .set_read_timeout(Some(FORWARD_READ_TIMEOUT))
-        .map_err(|error| format!("failed to set TCP forwarder read timeout: {error}"))?;
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::TcpSessionEstablished)
-            .field("session", id)
-            .field("flowId", format!("tcp-session-{id}"))
-            .field("target", target)
-            .field("outbound", &decision.outbound)
-            .field("candidateLocked", "true"),
-    )?;
-    Ok(ForwardSession {
-        id,
-        target,
-        client,
-        outbound: decision.outbound,
-        stream,
-        first_payload_written: false,
-        closed: false,
-    })
+        .field("failurePhase", "session-start")
+        .field("cleanupAction", "socket-abort")
+        .field("replaySafe", "pre-payload")
+        .field("errorType", classify_runtime_error(&failure.error))
+        .field(
+            "errorDisposition",
+            classify_runtime_error_disposition(&failure.error),
+        )
+        .field("error", &failure.error);
+    if let Some(session) = failure.session {
+        event = event.field("session", session);
+    }
+    if let Some(target) = failure.target {
+        event = event.field("target", target);
+    }
+    if let Some(client) = failure.client {
+        event = event.field("clientPort", client.port());
+    }
+    if let Some(outbound) = failure.outbound {
+        event = event.field("outbound", outbound);
+    }
+    if let Some(stage) = failure.stage {
+        event = event
+            .field("failureStage", stage.stage)
+            .field("failureStageOutbound", stage.outbound)
+            .field("failureStageKind", stage.kind)
+            .field("failureStageErrorType", stage.error_type)
+            .field("failureStageDisposition", stage.error_disposition);
+    }
+    counters.emit(event)
 }
 
-fn forward_session(
-    socket: &mut tcp::Socket<'_>,
-    session: &mut ForwardSession,
+fn emit_missed_preflow(
+    port: u16,
+    socket: &tcp::Socket<'_>,
     counters: &RuntimeCounters,
+    packet_tracker: &tcp_support::PacketTracker,
 ) -> Result<(), String> {
-    if socket.can_recv() {
-        let payload = socket
-            .recv(|buffer| {
-                let count = buffer.len().min(FORWARD_BUFFER_BYTES);
-                (count, buffer[..count].to_vec())
-            })
-            .map_err(|error| format!("failed to read TUN TCP payload: {error:?}"))?;
-        if !payload.is_empty() {
-            session
-                .stream
-                .write_all(&payload)
-                .and_then(|_| session.stream.flush())
-                .map_err(|error| format!("failed to write proxied TCP payload: {error}"))?;
-            counters
-                .tcp_upstream_bytes
-                .fetch_add(payload.len(), Ordering::SeqCst);
-            if !session.first_payload_written {
-                session.first_payload_written = true;
-                counters.emit(
-                    RuntimeEvent::new(RuntimeEventKind::TcpSessionPayloadFirstWrite)
-                        .field("session", session.id)
-                        .field("flowId", format!("tcp-session-{}", session.id))
-                        .field("target", session.target)
-                        .field("outbound", &session.outbound)
-                        .field("bytes", payload.len())
-                        .field("candidateRetryAllowed", "false"),
-                )?;
-            }
-            debug!(
-                session = session.id,
-                target = %session.target,
-                bytes = payload.len(),
-                "tcp.forward.upstream"
-            );
-        }
-    }
-
-    if session.first_payload_written && socket.can_send() {
-        let mut buffer = [0_u8; FORWARD_BUFFER_BYTES];
-        match session.stream.read(&mut buffer) {
-            Ok(0) => {
-                socket.close();
-                session.closed = true;
-                counters.emit(
-                    RuntimeEvent::new(RuntimeEventKind::TcpSessionClosed)
-                        .field("session", session.id)
-                        .field("flowId", format!("tcp-session-{}", session.id))
-                        .field("target", session.target)
-                        .field("client", session.client)
-                        .field("outbound", &session.outbound)
-                        .field("reason", "outbound-eof"),
-                )?;
-            }
-            Ok(size) => {
-                let sent = socket
-                    .send_slice(&buffer[..size])
-                    .map_err(|error| format!("failed to write TUN TCP payload: {error:?}"))?;
-                counters
-                    .tcp_downstream_bytes
-                    .fetch_add(sent, Ordering::SeqCst);
-                counters.emit(
-                    RuntimeEvent::new(RuntimeEventKind::TcpSessionPayloadReceived)
-                        .field("session", session.id)
-                        .field("flowId", format!("tcp-session-{}", session.id))
-                        .field("target", session.target)
-                        .field("outbound", &session.outbound)
-                        .field("bytes", sent),
-                )?;
-                debug!(
-                    session = session.id,
-                    target = %session.target,
-                    bytes = sent,
-                    "tcp.forward.downstream"
-                );
-            }
-            Err(error) if transient_read_error(&error) => {}
-            Err(error) => return Err(format!("failed to read proxied TCP payload: {error}")),
-        }
-    }
-    Ok(())
-}
-
-fn close_session(
-    session: ForwardSession,
-    reason: &str,
-    counters: &RuntimeCounters,
-) -> Result<(), String> {
-    if session.closed {
+    let Some(terminal) = packet_tracker.take_unpromoted_terminal(port) else {
         return Ok(());
-    }
+    };
     counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::TcpSessionClosed)
-            .field("session", session.id)
-            .field("flowId", format!("tcp-session-{}", session.id))
-            .field("target", session.target)
-            .field("client", session.client)
-            .field("outbound", session.outbound)
-            .field("reason", reason),
+        RuntimeEvent::new(RuntimeEventKind::TcpForwarderPreflowMissed)
+            .field("port", port)
+            .field("clientPort", terminal.client_port)
+            .field("transport", "tcp")
+            .field("reason", "socket-closed-before-preflow-service")
+            .field("socketState", format!("{:?}", socket.state()))
+            .field("terminalReason", "closed-before-preflow")
+            .field("packetHandshakeComplete", terminal.handshake_complete)
+            .field("promotedToRuntimeSession", terminal.promoted)
+            .field("ingressControlPackets", terminal.ingress_control)
+            .field("ingressSynPackets", terminal.ingress_syn)
+            .field("egressControlPackets", terminal.egress_control)
+            .field("egressSynAckPackets", terminal.egress_syn_ack)
+            .field("ingressPayloadPackets", terminal.ingress_payload_packets)
+            .field("ingressPayloadBytes", terminal.ingress_payload_bytes)
+            .field("egressPayloadPackets", terminal.egress_payload_packets)
+            .field("egressPayloadBytes", terminal.egress_payload_bytes)
+            .field("finPackets", terminal.fin)
+            .field("rstPackets", terminal.rst),
     )
-}
-
-fn deny_ipv6_endpoint(
-    protocol: &str,
-    local_endpoint: IpEndpoint,
-    remote_endpoint: IpEndpoint,
-    counters: &RuntimeCounters,
-) -> Result<(), String> {
-    if !endpoint_is_ipv6(local_endpoint) && !endpoint_is_ipv6(remote_endpoint) {
-        return Ok(());
-    }
-    counters.ipv6_packets_denied.fetch_add(1, Ordering::SeqCst);
-    counters.emit(
-        RuntimeEvent::new(RuntimeEventKind::IpPacketDenied)
-            .field("ipVersion", 6)
-            .field("protocol", protocol)
-            .field("source", remote_endpoint)
-            .field("destination", local_endpoint)
-            .field("destinationPort", local_endpoint.port)
-            .field("reason", "ipv6 forwarding is not implemented; fail closed"),
-    )?;
-    Err(format!(
-        "experimental {protocol} forwarding currently supports IPv4 only, got {remote_endpoint}->{local_endpoint}"
-    ))
-}
-
-fn endpoint_to_socket(endpoint: IpEndpoint) -> Result<SocketAddr, String> {
-    match endpoint.addr {
-        IpAddress::Ipv4(address) => Ok(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::from(address.octets())),
-            endpoint.port,
-        )),
-        #[allow(unreachable_patterns)]
-        other => Err(format!(
-            "experimental TUN forwarding currently supports IPv4 socket endpoints only, got {other:?}"
-        )),
-    }
-}
-
-fn endpoint_is_ipv6(endpoint: IpEndpoint) -> bool {
-    matches!(endpoint.addr, IpAddress::Ipv6(_))
-}
-
-pub(super) fn transient_read_error(error: &std::io::Error) -> bool {
-    let message = error.to_string();
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    ) || message.contains("timed out")
-        || message.contains("Resource temporarily unavailable")
-        || message.contains("operation would block")
-}
-
-fn random_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }

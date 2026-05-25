@@ -17,3 +17,5 @@ mod cli_cases;
 mod config_cases;
 #[path = "unit/output.rs"]
 mod output_cases;
+#[path = "unit/plan.rs"]
+mod plan_cases;

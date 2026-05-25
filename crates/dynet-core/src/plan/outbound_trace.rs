@@ -4,7 +4,8 @@ use crate::AppState;
 
 use super::{
     outbound::{PlanEdge, PlanEdgeKind},
-    strategy::OutboundStrategySnapshot,
+    quality_explain::OutboundCandidateQuality,
+    strategy::{candidate_quality, OutboundSelector, OutboundStrategySnapshot},
 };
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -44,9 +45,16 @@ pub struct OutboundCandidate {
     #[serde(rename = "type")]
     pub target_kind: String,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<OutboundCandidateQuality>,
 }
 
-pub(super) fn outbound_candidates(state: &AppState, edges: &[PlanEdge]) -> Vec<OutboundCandidate> {
+pub(super) fn outbound_candidates(
+    state: &AppState,
+    context: &crate::InboundContext,
+    selector: OutboundSelector,
+    edges: &[PlanEdge],
+) -> Vec<OutboundCandidate> {
     edges
         .iter()
         .map(|edge| {
@@ -64,6 +72,7 @@ pub(super) fn outbound_candidates(state: &AppState, edges: &[PlanEdge]) -> Vec<O
                 capabilities: target
                     .map(|node| node.capabilities.clone())
                     .unwrap_or_default(),
+                quality: candidate_quality(state, context, selector, &edge.to),
             }
         })
         .collect()

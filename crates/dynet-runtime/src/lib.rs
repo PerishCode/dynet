@@ -38,6 +38,8 @@ mod event {
         DnsResolveCompleted,
         DnsResolveFailed,
         ProbeStarted,
+        ProbeAttemptStarted,
+        ProbeAttemptFinished,
         ProbeCompleted,
         RuleMatched,
         PlanBypassed,
@@ -64,6 +66,13 @@ mod event {
         TcpSessionPayloadReceived,
         TcpSessionClosed,
         TcpSessionFailed,
+        TcpForwarderCapacity,
+        TcpForwarderPacket,
+        TcpForwarderPacketTerminal,
+        TcpForwarderPreflowCandidate,
+        TcpForwarderPreflowMissed,
+        TcpForwarderPreflow,
+        TcpForwarderPressure,
         UdpSessionStarted,
         UdpSessionAttributed,
         UdpSessionDenied,
@@ -139,14 +148,16 @@ use std::{
 use dynet_core::DnsReverseIndex;
 use serde::Serialize;
 
-pub use dns::dns_reverse_from_wire;
+pub use dns::{dns_reverse_from_wire, dns_servfail_from_wire};
 pub use event::{RuntimeEvent, RuntimeEventKind};
 pub use probe::{
-    probe_https_head, probe_tls_handshake, ProbeProtocol, ProbeReport, ProbeSettings, ProbeTarget,
+    probe_https_head, probe_tcp_connect, probe_tls_handshake, ProbeAttemptReport,
+    ProbeFailureScope, ProbeProtocol, ProbeReadPolicy, ProbeReport, ProbeRetryPolicy,
+    ProbeRetryReport, ProbeSettings, ProbeTarget,
 };
 pub use settings::{
-    DnsRuntimeChain, RunLimits, RuntimePolicy, RuntimeSettings, TakeoverSettings,
-    TcpForwardingSettings, UdpForwardingSettings,
+    DnsRuntimeChain, OutboundTcpSettings, RunLimits, RuntimePolicy, RuntimeSettings,
+    TakeoverSettings, TcpForwardingSettings, UdpForwardingSettings,
 };
 pub use takeover::{
     apply_takeover, uninstall_takeover, TakeoverAction, TakeoverApplyReport, TakeoverStatus,
@@ -167,8 +178,14 @@ pub struct RuntimeReport {
     pub ipv6_packets_denied: usize,
     pub tcp_sessions: usize,
     pub tcp_session_failures: usize,
+    pub tcp_closed_sessions: usize,
     pub tcp_upstream_bytes: usize,
     pub tcp_downstream_bytes: usize,
+    pub tcp_listen_ports: Vec<u16>,
+    pub tcp_listen_slots_per_port: usize,
+    pub tcp_listen_capacity: usize,
+    pub tcp_active_slots_max: usize,
+    pub tcp_slot_pressure_events: usize,
     pub udp_sessions: usize,
     pub udp_session_failures: usize,
     pub udp_upstream_bytes: usize,
@@ -193,8 +210,11 @@ struct RuntimeCounters {
     ipv6_packets_denied: AtomicUsize,
     tcp_sessions: AtomicUsize,
     tcp_session_failures: AtomicUsize,
+    tcp_closed_sessions: AtomicUsize,
     tcp_upstream_bytes: AtomicUsize,
     tcp_downstream_bytes: AtomicUsize,
+    tcp_active_slots_max: AtomicUsize,
+    tcp_slot_pressure_events: AtomicUsize,
     udp_sessions: AtomicUsize,
     udp_session_failures: AtomicUsize,
     udp_upstream_bytes: AtomicUsize,
@@ -214,8 +234,11 @@ impl RuntimeCounters {
             ipv6_packets_denied: AtomicUsize::new(0),
             tcp_sessions: AtomicUsize::new(0),
             tcp_session_failures: AtomicUsize::new(0),
+            tcp_closed_sessions: AtomicUsize::new(0),
             tcp_upstream_bytes: AtomicUsize::new(0),
             tcp_downstream_bytes: AtomicUsize::new(0),
+            tcp_active_slots_max: AtomicUsize::new(0),
+            tcp_slot_pressure_events: AtomicUsize::new(0),
             udp_sessions: AtomicUsize::new(0),
             udp_session_failures: AtomicUsize::new(0),
             udp_upstream_bytes: AtomicUsize::new(0),
@@ -272,8 +295,14 @@ pub fn run(settings: RuntimeSettings, limits: RunLimits) -> Result<RuntimeReport
         ipv6_packets_denied: counters.ipv6_packets_denied.load(Ordering::SeqCst),
         tcp_sessions: counters.tcp_sessions.load(Ordering::SeqCst),
         tcp_session_failures: counters.tcp_session_failures.load(Ordering::SeqCst),
+        tcp_closed_sessions: counters.tcp_closed_sessions.load(Ordering::SeqCst),
         tcp_upstream_bytes: counters.tcp_upstream_bytes.load(Ordering::SeqCst),
         tcp_downstream_bytes: counters.tcp_downstream_bytes.load(Ordering::SeqCst),
+        tcp_listen_ports: settings.tcp_forwarding.listen_ports(),
+        tcp_listen_slots_per_port: settings.tcp_forwarding.listen_slots_per_port,
+        tcp_listen_capacity: settings.tcp_forwarding.listen_capacity(),
+        tcp_active_slots_max: counters.tcp_active_slots_max.load(Ordering::SeqCst),
+        tcp_slot_pressure_events: counters.tcp_slot_pressure_events.load(Ordering::SeqCst),
         udp_sessions: counters.udp_sessions.load(Ordering::SeqCst),
         udp_session_failures: counters.udp_session_failures.load(Ordering::SeqCst),
         udp_upstream_bytes: counters.udp_upstream_bytes.load(Ordering::SeqCst),
@@ -345,7 +374,10 @@ fn runtime_limits_reached(limits: &RunLimits, counters: &RuntimeCounters) -> boo
     let any_limit = limits.max_dns_queries.is_some()
         || limits.max_tun_packets.is_some()
         || limits.max_tcp_sessions.is_some()
-        || limits.max_udp_sessions.is_some();
+        || limits.max_tcp_closed_sessions.is_some()
+        || limits.max_tcp_terminal_sessions.is_some()
+        || limits.max_udp_sessions.is_some()
+        || limits.max_udp_downstream_bytes.is_some();
     any_limit
         && limits
             .max_dns_queries
@@ -357,8 +389,19 @@ fn runtime_limits_reached(limits: &RunLimits, counters: &RuntimeCounters) -> boo
             .max_tcp_sessions
             .is_none_or(|max| counters.tcp_sessions.load(Ordering::SeqCst) >= max)
         && limits
+            .max_tcp_closed_sessions
+            .is_none_or(|max| counters.tcp_closed_sessions.load(Ordering::SeqCst) >= max)
+        && limits.max_tcp_terminal_sessions.is_none_or(|max| {
+            counters.tcp_closed_sessions.load(Ordering::SeqCst)
+                + counters.tcp_session_failures.load(Ordering::SeqCst)
+                >= max
+        })
+        && limits
             .max_udp_sessions
             .is_none_or(|max| counters.udp_sessions.load(Ordering::SeqCst) >= max)
+        && limits
+            .max_udp_downstream_bytes
+            .is_none_or(|max| counters.udp_downstream_bytes.load(Ordering::SeqCst) >= max)
 }
 
 fn join_runtime_thread(

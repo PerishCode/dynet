@@ -67,6 +67,31 @@ pub(crate) fn query_name_from_wire(packet: &[u8]) -> Result<String, String> {
     parse_name(packet, 12).map(|(name, _)| name)
 }
 
+pub fn dns_servfail_from_wire(query: &[u8]) -> Result<Vec<u8>, String> {
+    if query.len() < 12 {
+        return Err("DNS query is shorter than header".to_string());
+    }
+    let questions = u16::from_be_bytes([query[4], query[5]]);
+    if questions == 0 {
+        return Err("DNS query has no question".to_string());
+    }
+    let mut offset = 12;
+    for _ in 0..questions {
+        let (_, next) = parse_name(query, offset)?;
+        offset = checked_advance(query, next, 4)?;
+    }
+    let mut response = query[..offset].to_vec();
+    response[2] = 0x80 | (query[2] & 0x78);
+    response[3] = (query[3] & 0x01) | 0x02;
+    response[6] = 0;
+    response[7] = 0;
+    response[8] = 0;
+    response[9] = 0;
+    response[10] = 0;
+    response[11] = 0;
+    Ok(response)
+}
+
 fn parse_answer_records(packet: &[u8]) -> Result<Vec<AnswerRecord>, String> {
     if packet.len() < 12 {
         return Err("DNS response is shorter than header".to_string());

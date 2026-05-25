@@ -127,7 +127,8 @@ fn resolve_path_inner(
     stack.push(tag.to_string());
     let payload = plan_payload(node)?;
     let strategy = OutboundStrategyRegistry::default().resolve(&payload.strategy)?;
-    let candidates = outbound_candidates(state, &payload.selection.edges);
+    let candidates =
+        outbound_candidates(state, context, strategy.selector, &payload.selection.edges);
     let edge = strategy
         .selector
         .select(&payload.selection.edges, context, state)

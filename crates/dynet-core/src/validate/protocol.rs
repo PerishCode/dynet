@@ -129,6 +129,7 @@ fn validate_trojan_outbound(
     require_string_field(section, index, node, "password", diagnostics);
     optional_string_field(section, index, node, "serverIp", diagnostics);
     optional_string_field(section, index, node, "sni", diagnostics);
+    optional_string_field(section, index, node, "interfaceName", diagnostics);
     optional_bool_field(section, index, node, "skipCertVerify", diagnostics);
     if let Some(server_ip) = node.payload.get("serverIp") {
         match server_ip

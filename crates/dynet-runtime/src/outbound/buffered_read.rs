@@ -5,7 +5,7 @@ use std::{
 
 pub(crate) enum BufferedRead {
     Ready(Vec<u8>),
-    Pending,
+    Pending(String),
     Eof,
 }
 
@@ -28,7 +28,11 @@ pub(crate) fn read_exact(
             }
             Ok(size) => buffered.extend(buffer.into_iter().take(size)),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) if pending_kind(error.kind()) => return Ok(BufferedRead::Pending),
+            Err(error) if pending_kind(error.kind()) => {
+                return Ok(BufferedRead::Pending(format!(
+                    "failed to read {label}: {error}"
+                )));
+            }
             Err(error) => {
                 return Err(io::Error::new(
                     error.kind(),
@@ -40,8 +44,12 @@ pub(crate) fn read_exact(
     Ok(BufferedRead::Ready(buffered.drain(..len).collect()))
 }
 
-pub(crate) fn pending(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::WouldBlock, message)
+pub(crate) fn pending(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::WouldBlock, message.into())
+}
+
+pub(crate) fn pending_context(message: &str, detail: String) -> io::Error {
+    pending(format!("{message}: {detail}"))
 }
 
 pub(crate) fn invalid_data(error: impl ToString) -> io::Error {

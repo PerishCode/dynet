@@ -8,22 +8,33 @@ import re
 import socket
 import urllib.parse
 import urllib.request
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from tunnel_private.config.shape import (
+    CONFIG_SCHEMA,
+    dynet_proxy,
+    dynet_trojan,
+    metadata,
+    safe_proxy,
+    with_trojan_interface_name,
+)
 
 try:
     import yaml
 except ImportError:  # pragma: no cover
     yaml = None
 
-
-CONFIG_SCHEMA = "dynet-tunnel-private-config/v1alpha1"
 CLASH_DIR = Path.home() / "Library/Application Support/io.github.clash-verge-rev.clash-verge-rev"
 MERGED_CONFIG = CLASH_DIR / "clash-verge.yaml"
 PROVIDER_DIR = CLASH_DIR / "proxy-providers"
-
+DEFAULT_DOH_CHAIN = {
+    "tag": "alidns-doh",
+    "type": "doh",
+    "endpoint": "https://dns.alidns.com/dns-query",
+    "bootstrapIps": ["223.5.5.5", "223.6.6.6"],
+}
 
 @dataclass
 class ConfigInputs:
@@ -38,7 +49,7 @@ class ConfigInputs:
 
 def load_yaml(path: Path) -> dict[str, Any]:
     if yaml is None:
-        raise SystemExit("PyYAML is required: python3 -m pip install pyyaml")
+        raise SystemExit("PyYAML is required: uv --project scripts sync")
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
         raise SystemExit(f"YAML root must be an object: {path}")
@@ -50,6 +61,10 @@ def write_json(path: Path, data: Any, secret: bool = False) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
     if secret:
         os.chmod(path, 0o600)
+
+
+def candidate_tag_offset(args: argparse.Namespace) -> int:
+    return int(getattr(args, "candidate_offset", 0) or 0)
 
 
 def tunnel_group(config: dict[str, Any], name: str) -> dict[str, Any]:
@@ -110,6 +125,7 @@ def private_proxy(args: argparse.Namespace) -> dict[str, Any]:
         selected["server-ip"] = args.private_server_ip
     elif args.resolve_private_server:
         selected["server-ip"] = resolve_host(str(selected["server"]))
+    selected = with_trojan_interface_name(selected, getattr(args, "trojan_interface_name", None))
     return selected
 
 
@@ -196,75 +212,6 @@ def supported_tunnel(proxy: dict[str, Any], supported: set[str]) -> bool:
     return kind in supported and network in {"", "tcp"}
 
 
-def dynet_vmess(proxy: dict[str, Any], tag: str) -> dict[str, Any]:
-    payload = {
-        "server": str(proxy["server"]),
-        "port": int(proxy["port"]),
-        "uuid": str(proxy["uuid"]),
-        "alterId": int(proxy.get("alterId", proxy.get("alter-id", 0)) or 0),
-        "cipher": str(proxy.get("cipher") or "auto"),
-    }
-    add_if_present(payload, "serverIp", proxy.get("server-ip") or proxy.get("serverIp"))
-    return {
-        "tag": tag,
-        "type": "vmess",
-        "capabilities": ["tcp", "domain-target", "ip-target", "probeable"],
-        "payload": payload,
-    }
-
-
-def dynet_ss(proxy: dict[str, Any], tag: str) -> dict[str, Any]:
-    payload = {
-        "server": str(proxy["server"]),
-        "port": int(proxy["port"]),
-        "cipher": str(proxy["cipher"]),
-        "password": str(proxy["password"]),
-    }
-    add_if_present(payload, "serverIp", proxy.get("server-ip") or proxy.get("serverIp"))
-    return {
-        "tag": tag,
-        "type": "ss",
-        "capabilities": ["tcp", "domain-target", "ip-target", "probeable"],
-        "payload": payload,
-    }
-
-
-def dynet_trojan(proxy: dict[str, Any], tag: str) -> dict[str, Any]:
-    payload = {
-        "server": str(proxy["server"]),
-        "port": int(proxy["port"]),
-        "password": str(proxy["password"]),
-    }
-    add_if_present(payload, "serverIp", proxy.get("server-ip") or proxy.get("serverIp"))
-    add_if_present(payload, "sni", proxy.get("sni") or proxy.get("servername"))
-    if "skip-cert-verify" in proxy:
-        payload["skipCertVerify"] = bool(proxy["skip-cert-verify"])
-    if "skipCertVerify" in proxy:
-        payload["skipCertVerify"] = bool(proxy["skipCertVerify"])
-    return {
-        "tag": tag,
-        "type": "trojan",
-        "capabilities": ["tcp", "domain-target", "ip-target", "probeable"],
-        "payload": payload,
-    }
-
-
-def dynet_proxy(proxy: dict[str, Any], tag: str) -> dict[str, Any]:
-    kind = str(proxy.get("type", "")).lower()
-    if kind == "vmess":
-        return dynet_vmess(proxy, tag)
-    if kind == "ss":
-        return dynet_ss(proxy, tag)
-    if kind == "trojan":
-        return dynet_trojan(proxy, tag)
-    raise SystemExit(f"unsupported dynet proxy type `{kind}`")
-
-
-def add_if_present(target: dict[str, Any], key: str, value: Any) -> None:
-    if value is not None and str(value):
-        target[key] = str(value)
-
-
 def build_config(
     args: argparse.Namespace,
     candidates: list[dict[str, Any]],
@@ -307,9 +254,14 @@ def build_config(
                 },
             ]
         )
-        rules = user_rules(args.domain_suffix, args.domain, "private-via-tunnel")
-        routes = [{"outbound": "direct"}]
+        if getattr(args, "tcp_route_plan_private", False):
+            routes = tcp_private_routes(args.domain_suffix, args.domain, "private-via-tunnel")
+            routes.append({"outbound": "direct"})
+        else:
+            rules = user_rules(args.domain_suffix, args.domain, "private-via-tunnel")
+            routes = [{"outbound": "direct"}]
     return {
+        "dns": default_dns_config(),
         "inbounds": [{"tag": "tun-in", "type": "tun"}],
         "outbounds": outbounds,
         "rules": rules,
@@ -317,86 +269,48 @@ def build_config(
     }
 
 
+def build_private_config(private: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dns": default_dns_config(),
+        "inbounds": [{"tag": "tun-in", "type": "tun"}],
+        "outbounds": [dynet_proxy(private, "private")],
+        "routes": [{"outbound": "private"}],
+    }
+
+
+def default_dns_config() -> dict[str, Any]:
+    return {"chains": [dict(DEFAULT_DOH_CHAIN)]}
+
+
 def user_rules(suffixes: list[str], domains: list[str], outbound: str) -> list[dict[str, Any]]:
     rules = []
     for index, value in enumerate(domains, start=1):
         rules.append({"tag": f"identity-domain-{index}", "domain": value, "outbound": outbound})
     for index, value in enumerate(suffixes, start=1):
-        rules.append(
-            {"tag": f"identity-suffix-{index}", "domainSuffix": value, "outbound": outbound}
-        )
+        rules.append({"tag": f"identity-suffix-{index}", "domainSuffix": value, "outbound": outbound})
     return rules
 
-
-def metadata(
-    group: dict[str, Any],
-    all_candidates: list[dict[str, Any]],
-    supported_candidates: list[dict[str, Any]],
-    selected_candidates: list[dict[str, Any]],
-    candidates: list[dict[str, Any]],
-    private: dict[str, Any],
-    resolution: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "schema": CONFIG_SCHEMA,
-        "tunnel": {
-            "name": group.get("name"),
-            "type": group.get("type"),
-            "filter": group.get("filter"),
-            "providers": group.get("use", []),
-        },
-        "counts": {
-            "matched": len(all_candidates),
-            "supported": len(supported_candidates),
-            "selected": len(selected_candidates),
-            "usable": len(candidates),
-            "skipped": int(resolution.get("skipped", 0)),
-            "matchedByType": dict(
-                Counter(str(item.get("type", "<missing>")) for item in all_candidates)
-            ),
-        },
-        "resolution": resolution,
-        "private": safe_proxy(private),
-        "candidates": [safe_proxy(proxy, f"tunnel-{index:03d}") for index, proxy in enumerate(candidates, start=1)],
-        "privacy": {
-            "rawSecretsStored": False,
-            "identityInformationSent": False,
-            "cookiesSent": False,
-            "authorizationSent": False,
-        },
-    }
-
-
-def safe_proxy(proxy: dict[str, Any], tag: str | None = None) -> dict[str, Any]:
-    row = {
-        "name": proxy.get("name"),
-        "type": proxy.get("type"),
-        "network": proxy.get("network"),
-        "serverLength": len(str(proxy.get("server", ""))),
-        "port": proxy.get("port"),
-    }
-    if tag:
-        row["tag"] = tag
-    if proxy.get("uuid") is not None:
-        row["uuidLength"] = len(str(proxy.get("uuid", "")))
-    if proxy.get("password") is not None:
-        row["passwordLength"] = len(str(proxy.get("password", "")))
-    if proxy.get("server-ip") is not None or proxy.get("serverIp") is not None:
-        row["serverIpPresent"] = True
-    return {key: value for key, value in row.items() if value is not None}
-
+def tcp_private_routes(suffixes: list[str], domains: list[str], outbound: str) -> list[dict[str, Any]]:
+    def route(key: str, value: str) -> dict[str, Any]:
+        return {"inbound": "tun-in", "transport": "tcp", key: value, "outbound": outbound}
+    return [route("domain", value) for value in domains] + [route("domainSuffix", value) for value in suffixes]
 
 def config_inputs(args: argparse.Namespace) -> ConfigInputs:
     group, all_candidates = selected_tunnel_proxies(args)
-    supported = set(args.supported_type)
+    supported = set(args.supported_type or ["vmess", "trojan"])
+    offset = int(getattr(args, "candidate_offset", 0) or 0)
     supported_candidates = [item for item in all_candidates if supported_tunnel(item, supported)]
-    selected_candidates = list(supported_candidates)
+    selected_candidates = list(supported_candidates[offset:])
     if args.limit:
         selected_candidates = selected_candidates[: args.limit]
     candidates = selected_candidates
     skipped: list[dict[str, Any]] = []
     if args.resolve_tunnel_server:
         candidates, skipped = resolve_tunnel_candidates(selected_candidates)
+    candidates = [
+        with_trojan_interface_name(candidate, getattr(args, "trojan_interface_name", None))
+        for candidate in candidates
+    ]
     if not candidates:
         if args.resolve_tunnel_server and skipped:
             raise SystemExit(
@@ -411,11 +325,21 @@ def config_inputs(args: argparse.Namespace) -> ConfigInputs:
         selected_candidates=selected_candidates,
         candidates=candidates,
         private=private_proxy(args),
-        resolution=resolution_metadata(args.resolve_tunnel_server, selected_candidates, candidates, skipped),
+        resolution=resolution_metadata(
+            args.resolve_tunnel_server,
+            supported_candidates,
+            selected_candidates,
+            candidates,
+            skipped,
+            offset,
+            args.limit,
+        ),
     )
 
 
-def resolve_tunnel_candidates(candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def resolve_tunnel_candidates(
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     resolved = []
     skipped = []
     for index, proxy in enumerate(candidates, start=1):
@@ -430,9 +354,12 @@ def resolve_tunnel_candidates(candidates: list[dict[str, Any]]) -> tuple[list[di
 
 def resolution_metadata(
     enabled: bool,
+    supported: list[dict[str, Any]],
     selected: list[dict[str, Any]],
     usable: list[dict[str, Any]],
     skipped: list[dict[str, Any]],
+    offset: int,
+    limit: int | None,
 ) -> dict[str, Any]:
     return {
         "enabled": bool(enabled),
@@ -441,6 +368,12 @@ def resolution_metadata(
         "input": len(selected),
         "usable": len(usable),
         "skipped": len(skipped),
+        "selection": {
+            "candidateOffset": offset,
+            "candidateLimit": limit,
+            "supportedBeforeOffset": len(supported),
+            "selectedBeforeResolution": len(selected),
+        },
         "skippedCandidates": skipped,
     }
 

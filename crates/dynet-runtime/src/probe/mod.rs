@@ -1,6 +1,11 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+mod fallback;
 mod http;
+mod outcome;
+mod retry;
+mod scope;
+mod target;
 
 use dynet_core::{
     evaluate_rules, resolve_outbound_path, InboundContext, NetworkNode, PlanAction, Transport,
@@ -13,18 +18,16 @@ use crate::{
     outbound::{self, TcpTarget},
     probe::http::ProbeResponse,
     resolver::trace::{
-        candidate_tags, classify_runtime_error, elapsed_ms, hop_kinds, hop_tags, json_field,
+        annotate_runtime_error_fields, candidate_tags, classify_runtime_error,
+        classify_runtime_error_disposition, elapsed_ms, hop_kinds, hop_tags, json_field,
     },
     RuntimeEvent, RuntimeEventKind, RuntimePolicy, RuntimeStatus,
 };
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProbeTarget {
-    pub host: String,
-    pub port: u16,
-    pub path: String,
-}
+pub use retry::{ProbeAttemptReport, ProbeRetryPolicy, ProbeRetryReport};
+use scope::probe_failure_scope;
+pub use scope::ProbeFailureScope;
+pub use target::ProbeTarget;
 
 #[derive(Debug)]
 pub struct ProbeSettings {
@@ -32,11 +35,51 @@ pub struct ProbeSettings {
     pub inbound: Option<String>,
     pub bypass_mark: u32,
     pub policy: RuntimePolicy,
+    pub outbound_tcp: crate::OutboundTcpSettings,
+    pub read_policy: ProbeReadPolicy,
+    pub retry_policy: ProbeRetryPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeReadPolicy {
+    pub poll_timeout_ms: u64,
+    pub pending_budget_ms: u64,
+    pub pending_sleep_ms: u64,
+}
+
+impl Default for ProbeReadPolicy {
+    fn default() -> Self {
+        Self {
+            poll_timeout_ms: 250,
+            pending_budget_ms: 8_000,
+            pending_sleep_ms: 10,
+        }
+    }
+}
+
+impl ProbeReadPolicy {
+    pub(crate) fn poll_timeout(self) -> Duration {
+        Duration::from_millis(self.poll_timeout_ms.max(1))
+    }
+
+    pub(crate) fn pending_budget(self) -> Duration {
+        Duration::from_millis(self.pending_budget_ms)
+    }
+
+    pub(crate) fn pending_sleep(self) -> Duration {
+        Duration::from_millis(self.pending_sleep_ms)
+    }
+
+    pub fn is_default(self) -> bool {
+        self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProbeProtocol {
+    TcpConnect,
     HttpsHead,
     TlsHandshake,
 }
@@ -44,6 +87,7 @@ pub enum ProbeProtocol {
 impl ProbeProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::TcpConnect => "tcp-connect",
             Self::HttpsHead => "https-head",
             Self::TlsHandshake => "tls-handshake",
         }
@@ -60,13 +104,22 @@ pub struct ProbeReport {
     pub target: ProbeTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_scope: Option<ProbeFailureScope>,
     pub route_decisions: usize,
     pub outbound_attempts: usize,
+    pub read_policy: ProbeReadPolicy,
+    #[serde(default, skip_serializing_if = "ProbeRetryReport::is_default")]
+    pub retry: ProbeRetryReport,
     pub events: Vec<RuntimeEvent>,
 }
 
 pub fn probe_https_head(settings: ProbeSettings) -> Result<ProbeReport, String> {
     probe_with_protocol(settings, ProbeProtocol::HttpsHead)
+}
+
+pub fn probe_tcp_connect(settings: ProbeSettings) -> Result<ProbeReport, String> {
+    probe_with_protocol(settings, ProbeProtocol::TcpConnect)
 }
 
 pub fn probe_tls_handshake(settings: ProbeSettings) -> Result<ProbeReport, String> {
@@ -78,6 +131,7 @@ fn probe_with_protocol(
     protocol: ProbeProtocol,
 ) -> Result<ProbeReport, String> {
     settings.target.validate()?;
+    let retry_policy = settings.retry_policy;
     let ebus = EventBus::default();
     let started = Instant::now();
     emit(
@@ -87,13 +141,24 @@ fn probe_with_protocol(
             .field("target", settings.target.address())
             .field("host", &settings.target.host)
             .field("port", settings.target.port)
-            .field("path", &settings.target.path),
+            .field("path", &settings.target.path)
+            .field("readPollTimeoutMs", settings.read_policy.poll_timeout_ms)
+            .field(
+                "readPendingBudgetMs",
+                settings.read_policy.pending_budget_ms,
+            )
+            .field("readPendingSleepMs", settings.read_policy.pending_sleep_ms),
     )?;
-    let result = probe_inner(&settings, &ebus, protocol);
+    let (result, attempts) = retry::run_attempts(&settings, &ebus, protocol)?;
     let (status, reason) = match result {
         Ok(reason) => (RuntimeStatus::Pass, reason),
         Err(error) => (RuntimeStatus::Deny, error),
     };
+    let recovered_after_retry = status == RuntimeStatus::Pass
+        && attempts
+            .first()
+            .is_some_and(|attempt| attempt.status == RuntimeStatus::Deny)
+        && attempts.len() > 1;
     emit(
         &ebus,
         RuntimeEvent::new(RuntimeEventKind::ProbeCompleted)
@@ -108,9 +173,29 @@ fn probe_with_protocol(
                 },
             )
             .field("elapsedMs", elapsed_ms(started))
+            .field("attemptsUsed", attempts.len())
+            .field("retryEnabled", retry_policy.enabled())
+            .field("recoveredAfterRetry", recovered_after_retry)
             .field("reason", &reason),
     )?;
     let events = ebus.snapshot()?;
+    let failure_scope = probe_failure_scope(status, &events);
+    let unresolved_direct_tls_eof = status == RuntimeStatus::Deny
+        && attempts
+            .last()
+            .is_some_and(|attempt| attempt.classification == retry::DIRECT_TLS_EOF);
+    let retry = if retry_policy.enabled() {
+        ProbeRetryReport {
+            enabled: true,
+            policy: retry_policy,
+            attempts_used: attempts.len(),
+            recovered_after_retry,
+            unresolved_direct_tls_eof,
+            attempts,
+        }
+    } else {
+        ProbeRetryReport::default()
+    };
     Ok(ProbeReport {
         schema: "dynet-probe/v1alpha1".to_string(),
         status,
@@ -118,9 +203,12 @@ fn probe_with_protocol(
         protocol,
         target: settings.target,
         inbound: settings.inbound,
+        failure_scope,
         route_decisions: count_kind(&events, RuntimeEventKind::RouteMatched)
             + count_kind(&events, RuntimeEventKind::RuleMatched),
         outbound_attempts: count_kind(&events, RuntimeEventKind::OutboundAttemptFinished),
+        read_policy: settings.read_policy,
+        retry,
         events,
     })
 }
@@ -204,6 +292,7 @@ fn probe_selected_outbound(
     emit(
         ebus,
         RuntimeEvent::new(RuntimeEventKind::OutboundAdmissionPassed)
+            .field("scope", "plan-candidate")
             .field("outbound", tag)
             .field("gate", "admission")
             .field("transport", "tcp"),
@@ -212,6 +301,7 @@ fn probe_selected_outbound(
         emit(
             ebus,
             RuntimeEvent::new(RuntimeEventKind::OutboundCandidateSet)
+                .field("scope", "plan-candidate")
                 .field("plan", &decision.plan)
                 .field("strategySource", &decision.strategy.source)
                 .field("strategyKey", &decision.strategy.key)
@@ -230,6 +320,7 @@ fn probe_selected_outbound(
     emit(
         ebus,
         RuntimeEvent::new(RuntimeEventKind::OutboundGraphSelected)
+            .field("scope", "plan-candidate")
             .field("requested", &path.requested)
             .field("selected", &path.selected)
             .field("hops", path.hops.len())
@@ -240,6 +331,7 @@ fn probe_selected_outbound(
     emit(
         ebus,
         RuntimeEvent::new(RuntimeEventKind::OutboundEgressPassed)
+            .field("scope", "plan-candidate")
             .field("gate", "egress")
             .field("requested", &path.requested)
             .field("selected", &path.selected)
@@ -275,22 +367,31 @@ fn probe_over_outbound(
         Ok(response) => {
             emit(
                 ebus,
-                outbound_attempt_finished(outbound, protocol, "success", started, &response),
+                outcome::outbound_attempt_finished(
+                    outbound, protocol, "success", started, &response,
+                ),
             )?;
-            Ok(success_reason(protocol, &response))
+            Ok(outcome::success_reason(protocol, &response))
         }
         Err(error) => {
             emit(
                 ebus,
-                RuntimeEvent::new(RuntimeEventKind::OutboundAttemptFinished)
-                    .field("outbound", &outbound.tag)
-                    .field("kind", &outbound.kind)
-                    .field("transport", "tcp")
-                    .field("protocol", protocol.as_str())
-                    .field("status", "failed")
-                    .field("errorType", classify_runtime_error(&error))
-                    .field("error", &error)
-                    .field("elapsedMs", elapsed_ms(started)),
+                annotate_runtime_error_fields(
+                    RuntimeEvent::new(RuntimeEventKind::OutboundAttemptFinished)
+                        .field("outbound", &outbound.tag)
+                        .field("kind", &outbound.kind)
+                        .field("transport", "tcp")
+                        .field("protocol", protocol.as_str())
+                        .field("status", "failed")
+                        .field("errorType", classify_runtime_error(&error))
+                        .field(
+                            "errorDisposition",
+                            classify_runtime_error_disposition(&error),
+                        )
+                        .field("error", &error)
+                        .field("elapsedMs", elapsed_ms(started)),
+                    &error,
+                ),
             )?;
             Err(error)
         }
@@ -305,69 +406,9 @@ fn execute_probe(
     protocol: ProbeProtocol,
 ) -> Result<ProbeResponse, String> {
     if outbound.kind == "dialer" {
-        return execute_with_fallback(settings, ebus, context, outbound, protocol);
+        return fallback::execute_with_fallback(settings, ebus, context, outbound, protocol);
     }
     execute_probe_once(settings, ebus, context, outbound, None, protocol)
-}
-
-fn execute_with_fallback(
-    settings: &ProbeSettings,
-    ebus: &EventBus,
-    context: &InboundContext,
-    outbound: &NetworkNode,
-    protocol: ProbeProtocol,
-) -> Result<ProbeResponse, String> {
-    let candidates = outbound::dialer_bound_candidate_order(outbound, &settings.policy, context)?;
-    let mut failures = Vec::new();
-    for (index, candidate) in candidates.iter().enumerate() {
-        let started = Instant::now();
-        emit(
-            ebus,
-            RuntimeEvent::new(RuntimeEventKind::DialerCascadeAttemptStarted)
-                .field("dialer", &outbound.tag)
-                .field("boundSelected", candidate)
-                .field("attempt", index + 1)
-                .field("candidateCount", candidates.len())
-                .field("target", settings.target.address()),
-        )?;
-        match execute_probe_once(settings, ebus, context, outbound, Some(candidate), protocol) {
-            Ok(response) => {
-                let event = cascade_attempt_finished(
-                    outbound,
-                    candidate,
-                    index,
-                    candidates.len(),
-                    settings,
-                    started,
-                    &response,
-                );
-                emit(ebus, event)?;
-                return Ok(response);
-            }
-            Err(error) => {
-                emit(
-                    ebus,
-                    RuntimeEvent::new(RuntimeEventKind::DialerCascadeAttemptFinished)
-                        .field("dialer", &outbound.tag)
-                        .field("boundSelected", candidate)
-                        .field("attempt", index + 1)
-                        .field("candidateCount", candidates.len())
-                        .field("target", settings.target.address())
-                        .field("status", "failed")
-                        .field("errorType", classify_runtime_error(&error))
-                        .field("error", &error)
-                        .field("elapsedMs", elapsed_ms(started)),
-                )?;
-                failures.push(format!("{candidate}: {error}"));
-            }
-        }
-    }
-    Err(format!(
-        "dialer `{}` failed all {} bound candidates: {}",
-        outbound.tag,
-        candidates.len(),
-        failures.join(" | ")
-    ))
 }
 
 fn execute_probe_once(
@@ -388,68 +429,20 @@ fn execute_probe_once(
         outbound,
         &settings.policy,
         context,
-        settings.bypass_mark,
         &mut events,
         dialer_bound_override,
+        outbound::TcpConnectOptions::new(settings.bypass_mark, settings.outbound_tcp),
     );
     emit_events(ebus, events)?;
     let stream = stream?;
-    http::execute_with_protocol(ebus, outbound, &settings.target, stream, protocol)
-}
-
-fn outbound_attempt_finished(
-    outbound: &NetworkNode,
-    protocol: ProbeProtocol,
-    status: &str,
-    started: Instant,
-    response: &ProbeResponse,
-) -> RuntimeEvent {
-    let mut event = RuntimeEvent::new(RuntimeEventKind::OutboundAttemptFinished)
-        .field("outbound", &outbound.tag)
-        .field("kind", &outbound.kind)
-        .field("transport", "tcp")
-        .field("protocol", protocol.as_str())
-        .field("status", status)
-        .field("elapsedMs", elapsed_ms(started))
-        .field("responseBytes", response.bytes);
-    if let Some(status_code) = response.status_code {
-        event = event.field("httpStatus", status_code);
-    }
-    event
-}
-
-fn cascade_attempt_finished(
-    outbound: &NetworkNode,
-    candidate: &str,
-    index: usize,
-    candidate_count: usize,
-    settings: &ProbeSettings,
-    started: Instant,
-    response: &ProbeResponse,
-) -> RuntimeEvent {
-    let mut event = RuntimeEvent::new(RuntimeEventKind::DialerCascadeAttemptFinished)
-        .field("dialer", &outbound.tag)
-        .field("boundSelected", candidate)
-        .field("attempt", index + 1)
-        .field("candidateCount", candidate_count)
-        .field("target", settings.target.address())
-        .field("status", "success")
-        .field("elapsedMs", elapsed_ms(started))
-        .field("responseBytes", response.bytes);
-    if let Some(status_code) = response.status_code {
-        event = event.field("httpStatus", status_code);
-    }
-    event
-}
-
-fn success_reason(protocol: ProbeProtocol, response: &ProbeResponse) -> String {
-    match (protocol, response.status_code) {
-        (ProbeProtocol::HttpsHead, Some(status_code)) => {
-            format!("HTTPS HEAD completed with HTTP {status_code}")
-        }
-        (ProbeProtocol::HttpsHead, None) => "HTTPS HEAD completed".to_string(),
-        (ProbeProtocol::TlsHandshake, _) => "TLS handshake completed".to_string(),
-    }
+    http::execute_with_protocol(
+        ebus,
+        outbound,
+        &settings.target,
+        stream,
+        protocol,
+        settings.read_policy,
+    )
 }
 
 fn emit(ebus: &EventBus, event: RuntimeEvent) -> Result<(), String> {
@@ -465,31 +458,4 @@ fn emit_events(ebus: &EventBus, events: Vec<RuntimeEvent>) -> Result<(), String>
 
 fn count_kind(events: &[RuntimeEvent], kind: RuntimeEventKind) -> usize {
     events.iter().filter(|event| event.kind == kind).count()
-}
-
-impl ProbeTarget {
-    pub(crate) fn validate(&self) -> Result<(), String> {
-        if self.host.trim() != self.host || self.host.is_empty() {
-            return Err("probe host must not be empty or padded".to_string());
-        }
-        if self.port == 0 {
-            return Err("probe port must not be zero".to_string());
-        }
-        if !self.path.starts_with('/') {
-            return Err("probe path must start with `/`".to_string());
-        }
-        Ok(())
-    }
-
-    pub(crate) fn address(&self) -> String {
-        format!("{}:{}", self.host, self.port)
-    }
-
-    pub(crate) fn host_header(&self) -> String {
-        if self.port == 443 {
-            self.host.clone()
-        } else {
-            self.address()
-        }
-    }
 }

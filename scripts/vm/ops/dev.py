@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from common import (
@@ -19,6 +18,7 @@ from common import (
     lab_cli_args,
     logger,
     validate_name,
+    vmctl_command,
 )
 from setup import require_guest_elf
 
@@ -221,11 +221,11 @@ def collect_failure_evidence(
 
 
 def run_vmctl(lab: Lab, args: list[str], *, check: bool = True) -> None:
-    command = [sys.executable, str(ROOT / "scripts" / "vmctl.py"), *args]
+    command = vmctl_command(*args)
     logger.info("run vmctl: %s", join(command))
     if lab.dry_run:
         return
-    result = subprocess.run(command, check=check)
+    result = subprocess.run(command, cwd=ROOT, check=check)
     if not check and result.returncode != 0:
         logger.error(
             "evidence command failed with exit code %s: %s",

@@ -1,8 +1,10 @@
 # VM Tooling
 
-`scripts/vm/` contains local operator tooling for the dynet VM lab. These
-scripts are allowed to orchestrate the remote KVM/libvirt host, but dynet
-network experiments must stay inside disposable guests.
+`scripts/vm/` contains local operator tooling for the dynet VM lab. The public
+aggregate entrypoint is `scripts/cli/vmctl.py`; invoke it from the repo root
+with `uv --project scripts run python -m scripts.cli.vmctl`. VM modules are
+allowed to orchestrate the remote KVM/libvirt host, but dynet network
+experiments must stay inside disposable guests.
 
 ## Boundaries
 
@@ -34,6 +36,10 @@ network experiments must stay inside disposable guests.
   helpers used by VM lab commands.
 - `lib/common_guest.py` owns guest key, guest IP, guest SSH, guest SCP, and
   remote command argument helpers.
+- `lib/interface.py` owns guest interface detection and validation for scoped
+  outbound socket binding in VM experiments.
+- `lib/probe_summary.py` owns sanitized dynet probe event summarization helpers
+  shared by VM probe/runtime entrypoints.
 - `ops/capture.py` owns packet captures scoped to guest tap interfaces or guest
   internal interfaces.
 - `ops/check.py` owns high-level readiness checks that compose lower-level tools,
@@ -53,6 +59,9 @@ network experiments must stay inside disposable guests.
   acceptance probes. It may use local provider material to generate temporary
   dynet-native configs, but retained artifacts must remain sanitized and secret
   configs must be written only to guest temp files and cleaned after probing.
+  Its paired mode coordinates local Clash black-box probes with VM guest
+  dynet probes when an adapter needs Linux interface-bound product-effect
+  comparison evidence.
 - `private_runtime.py` owns VM guest execution of sanitized Private cascade
   runtime acceptance. It verifies `dynet run` takeover, DNS hijack, scoped
   quality-driven dialer selection, TUN packet observation, cleanup, and retained
@@ -60,6 +69,20 @@ network experiments must stay inside disposable guests.
 - `private_runtime_lib/` owns helper modules for the Private runtime acceptance
   entrypoint: generated guest probe scripts, runtime command construction, VM
   orchestration, summaries, checks, and sanitized report rendering.
+- `private_runtime_lib/reporting/` owns local post-processing for retained
+  runtime artifacts, including repeat, round-gap, cascade-stop, stage-pressure,
+  and workload-surface attribution summaries.
+- `private_runtime_lib/tcp_flow/` owns TCP flow/workload correlation and
+  primary-vs-fallback dialer-bound selection summaries used by runtime
+  acceptance gates.
+- `probe_smoke.py` owns VM guest execution of sanitized non-direct adapter
+  smoke probes. It stages local smoke helpers into guest temp files, collects
+  reports back under `.task/resources`, and verifies attribution, probe-batch,
+  quality-state, and offline plan artifacts.
+- `smokes/quality_gap.py` owns VM guest execution of sanitized repeated
+  selected-vs-best quality-gap smoke probes. It keeps guest work to raw probe
+  collection and runs attribution, quality-state, plan, and verification on
+  the host after collection.
 - `smoke.py` owns VM guest cold-start smoke checks that exercise guest network
   access, dynet CLI contracts, loopback API health, and the minimal
   install/run/uninstall TUN + DNS runtime boundary inside a disposable guest.

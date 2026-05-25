@@ -3,8 +3,8 @@ mod quality;
 use serde::Serialize;
 
 pub use quality::{
-    OutboundQualityEntry, OutboundQualityState, QualityConfidence, QualityVerdict,
-    StageQualityEntry,
+    OutboundQualityEntry, OutboundQualityPlannerFeedback, OutboundQualitySignal,
+    OutboundQualityState, QualityConfidence, QualityVerdict, StageQualityEntry,
 };
 
 use crate::{ConfigSummary, DnsModel, DnsReverseIndex, DynetConfig, ModeledNode, NetworkModel};

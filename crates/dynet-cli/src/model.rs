@@ -1,11 +1,10 @@
-use std::path::PathBuf;
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use dynet_core::{
-    build_plan, validate_config, AppState, ConfigDiagnostic, ConfigSummary, DnsModel,
-    DnsReverseIndex, DynetConfig, InboundContext, NetworkModel, Plan, PlanSummary, Severity,
-    Verdict,
+    build_plan, dialer_payload, resolve_outbound_path, validate_config, AppState, ConfigDiagnostic,
+    ConfigSummary, DnsModel, DnsReverseIndex, DynetConfig, InboundContext, NetworkModel,
+    OutboundPath, OutboundQualityPlannerFeedback, OutboundQualitySignal, OutboundQualityState,
+    Plan, PlanAction, PlanSummary, QualityScope, Severity, Verdict,
 };
 use serde::Serialize;
 
@@ -69,6 +68,46 @@ pub(crate) struct PlanReport {
     pub(crate) plan: Plan,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) verdict: Option<Verdict>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) outbound_path: Option<OutboundPath>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) dialer_bound_path: Option<OutboundPath>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) quality_feedback: Option<PlanQualityFeedback>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) quality_signals: Vec<PlanQualitySignal>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlanQualityFeedback {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) requested_mode: Option<String>,
+    pub(crate) penalty_observations: u32,
+    pub(crate) fallback_signals: u32,
+    pub(crate) recovered_fallback_signals: u32,
+    pub(crate) non_retry_safe_fallback_signals: u32,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlanQualitySignal {
+    #[serde(rename = "type")]
+    pub(crate) signal_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) fallback_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failed_bound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recovered_bound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) replay_safe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) flow_id: Option<String>,
 }
 
 pub(crate) struct PlanEvaluationInput {
@@ -240,14 +279,39 @@ impl PlanReport {
         source: &ConfigSource,
         config: &DynetConfig,
         evaluation: Option<PlanEvaluationInput>,
+        quality: Option<OutboundQualityState>,
     ) -> Self {
-        let state = match &evaluation {
-            Some(evaluation) => AppState::from_config(config.clone())
-                .with_dns_reverse(evaluation.dns_reverse.clone()),
-            None => AppState::from_config(config.clone()),
-        };
+        let mut state = AppState::from_config(config.clone());
+        let quality_feedback = quality
+            .as_ref()
+            .and_then(|quality| quality.planner_feedback.as_ref())
+            .map(PlanQualityFeedback::from);
+        let quality_signals = quality
+            .as_ref()
+            .map(|quality| {
+                quality
+                    .signals
+                    .iter()
+                    .map(PlanQualitySignal::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(quality) = quality {
+            state = state.with_quality(quality);
+        }
+        if let Some(evaluation) = &evaluation {
+            state = state.with_dns_reverse(evaluation.dns_reverse.clone());
+        }
         let plan = build_plan(&state);
-        let verdict = evaluation.map(|evaluation| plan.evaluate(&evaluation.context, &state));
+        let verdict = evaluation
+            .as_ref()
+            .map(|evaluation| plan.evaluate(&evaluation.context, &state));
+        let outbound_path = evaluation
+            .as_ref()
+            .and_then(|evaluation| outbound_path(&state, &evaluation.context, &verdict));
+        let dialer_bound_path = evaluation
+            .as_ref()
+            .and_then(|evaluation| dialer_bound_path(&state, &evaluation.context, &verdict));
         Self {
             root: root.as_ref().display().to_string(),
             config_source: source_label(source),
@@ -256,6 +320,10 @@ impl PlanReport {
             diagnostics: validate_config(config),
             plan,
             verdict,
+            outbound_path,
+            dialer_bound_path,
+            quality_feedback,
+            quality_signals,
         }
     }
 
@@ -280,6 +348,69 @@ impl PlanReport {
             0
         }
     }
+}
+
+impl From<&OutboundQualityPlannerFeedback> for PlanQualityFeedback {
+    fn from(feedback: &OutboundQualityPlannerFeedback) -> Self {
+        Self {
+            mode: feedback.mode.clone(),
+            requested_mode: feedback.requested_mode.clone(),
+            penalty_observations: feedback.penalty_observations,
+            fallback_signals: feedback.fallback_signals,
+            recovered_fallback_signals: feedback.recovered_fallback_signals,
+            non_retry_safe_fallback_signals: feedback.non_retry_safe_fallback_signals,
+        }
+    }
+}
+
+impl From<&OutboundQualitySignal> for PlanQualitySignal {
+    fn from(signal: &OutboundQualitySignal) -> Self {
+        Self {
+            signal_type: signal.signal_type.clone(),
+            action: signal.action.clone(),
+            fallback_type: signal.fallback_type.clone(),
+            failed_bound: signal.failed_bound.clone(),
+            recovered_bound: signal.recovered_bound.clone(),
+            replay_safe: signal.replay_safe.clone(),
+            flow_id: signal.flow_id.clone(),
+        }
+    }
+}
+
+fn outbound_path(
+    state: &AppState,
+    context: &InboundContext,
+    verdict: &Option<Verdict>,
+) -> Option<OutboundPath> {
+    let tag = match &verdict.as_ref()?.action {
+        PlanAction::UseOutbound { tag } => tag,
+        PlanAction::Reject | PlanAction::NoRoute => return None,
+    };
+    resolve_outbound_path(state, context, tag).ok()
+}
+
+fn dialer_bound_path(
+    state: &AppState,
+    context: &InboundContext,
+    verdict: &Option<Verdict>,
+) -> Option<OutboundPath> {
+    let tag = match &verdict.as_ref()?.action {
+        PlanAction::UseOutbound { tag } => tag,
+        PlanAction::Reject | PlanAction::NoRoute => return None,
+    };
+    let outbound = state
+        .config
+        .outbounds
+        .iter()
+        .find(|outbound| outbound.tag == *tag)?;
+    if outbound.kind != "dialer" {
+        return None;
+    }
+    let payload = dialer_payload(outbound).ok()?;
+    let bound_context = context
+        .clone()
+        .with_quality_scope(QualityScope::DialerBound);
+    resolve_outbound_path(state, &bound_context, &payload.bound).ok()
 }
 
 impl ApiCapabilityReport {

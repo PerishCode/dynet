@@ -32,16 +32,25 @@ pub struct RuntimeSettings {
     pub dns_bind: SocketAddr,
     pub dns_chain: DnsRuntimeChain,
     pub bypass_mark: u32,
+    pub outbound_tcp: OutboundTcpSettings,
     pub tcp_forwarding: TcpForwardingSettings,
     pub udp_forwarding: UdpForwardingSettings,
     #[serde(skip_serializing)]
     pub policy: Option<RuntimePolicy>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboundTcpSettings {
+    pub connect_timeout_ms: u64,
+    pub read_write_timeout_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcpForwardingSettings {
     pub enabled: bool,
+    pub listen_slots_per_port: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize)]
@@ -73,7 +82,10 @@ pub struct RunLimits {
     pub max_dns_queries: Option<usize>,
     pub max_tun_packets: Option<usize>,
     pub max_tcp_sessions: Option<usize>,
+    pub max_tcp_closed_sessions: Option<usize>,
+    pub max_tcp_terminal_sessions: Option<usize>,
     pub max_udp_sessions: Option<usize>,
+    pub max_udp_downstream_bytes: Option<usize>,
     pub timeout: Option<Duration>,
 }
 
@@ -127,6 +139,7 @@ impl TakeoverSettings {
             dns_bind: self.dns_bind,
             dns_chain,
             bypass_mark: self.bypass_mark,
+            outbound_tcp: OutboundTcpSettings::default(),
             tcp_forwarding: TcpForwardingSettings::default(),
             udp_forwarding: UdpForwardingSettings::default(),
             policy: None,
@@ -146,6 +159,11 @@ impl RuntimeSettings {
         self
     }
 
+    pub fn with_outbound_tcp(mut self, outbound_tcp: OutboundTcpSettings) -> Self {
+        self.outbound_tcp = outbound_tcp;
+        self
+    }
+
     pub fn with_tcp_forwarding(mut self, tcp_forwarding: TcpForwardingSettings) -> Self {
         self.tcp_forwarding = tcp_forwarding;
         self
@@ -161,8 +179,58 @@ impl RuntimeSettings {
         if self.dns_bind.port() == 0 {
             return Err("dns bind port must not be zero".to_string());
         }
+        if self.tcp_forwarding.enabled && self.tcp_forwarding.listen_slots_per_port == 0 {
+            return Err("TCP forwarding listen slots per port must be positive".to_string());
+        }
+        self.outbound_tcp.validate()?;
         self.dns_chain.validate()?;
         Ok(())
+    }
+}
+
+impl Default for OutboundTcpSettings {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 8_000,
+            read_write_timeout_ms: 8_000,
+        }
+    }
+}
+
+impl OutboundTcpSettings {
+    pub fn connect_timeout(self) -> Duration {
+        Duration::from_millis(self.connect_timeout_ms)
+    }
+
+    pub fn read_write_timeout(self) -> Duration {
+        Duration::from_millis(self.read_write_timeout_ms)
+    }
+
+    fn validate(self) -> Result<(), String> {
+        if self.connect_timeout_ms == 0 {
+            return Err("outbound TCP connect timeout must be positive".to_string());
+        }
+        if self.read_write_timeout_ms == 0 {
+            return Err("outbound TCP read/write timeout must be positive".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl TcpForwardingSettings {
+    pub const DEFAULT_LISTEN_SLOTS_PER_PORT: usize = 8;
+    pub const LISTEN_PORTS: [u16; 2] = [443, 80];
+
+    pub fn listen_ports(self) -> Vec<u16> {
+        if self.enabled {
+            Self::LISTEN_PORTS.to_vec()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn listen_capacity(self) -> usize {
+        self.listen_ports().len() * self.listen_slots_per_port
     }
 }
 

@@ -4,26 +4,33 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 from common import (
-    DEFAULT_VM_USER,
     ROOT,
     CommandError,
     Lab,
     RESOURCE_LIMITS,
-    add_lab_options,
     guard_repo_resources,
     guest_ssh,
     join,
     logger,
     q,
     validate_name,
+    vmctl_command,
 )
+from lib.interface import resolve_trojan_interface
+from lib.private_probe_cli import build_parser as build_private_probe_parser
+from lib.probe_summary import (
+    cascade_attempts,
+    failed_stage,
+    failure_scope,
+    final_bound_selected,
+)
+from lib.private_paired_report import command_paired_selection
 
 
 DEFAULT_TARGETS = ["https://www.cloudflare.com/", "https://chatgpt.com/"]
@@ -45,21 +52,19 @@ def task_output_dir(raw: str | None, label: str) -> Path:
 def build_artifact(lab: Lab, args: argparse.Namespace) -> Path:
     if args.artifact:
         return Path(args.artifact).expanduser().resolve()
-    command = [
-        sys.executable,
-        str(ROOT / "scripts" / "vmctl.py"),
+    command = vmctl_command(
         "dev",
         *lab_args(lab),
         "build",
         "--target",
         args.target,
-    ]
+    )
     if args.release:
         command.append("--release")
     logger.info("build guest artifact: %s", join(command))
     if lab.dry_run:
         return ROOT / "target" / args.target / ("release" if args.release else "debug") / "dynet"
-    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    result = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if not lines:
         raise CommandError("dev build did not print an artifact path")
@@ -67,9 +72,7 @@ def build_artifact(lab: Lab, args: argparse.Namespace) -> Path:
 
 
 def install_artifact(lab: Lab, guest: str, artifact: Path, args: argparse.Namespace) -> None:
-    command = [
-        sys.executable,
-        str(ROOT / "scripts" / "vmctl.py"),
+    command = vmctl_command(
         "setup",
         *lab_args(lab),
         "install-bin",
@@ -81,10 +84,10 @@ def install_artifact(lab: Lab, guest: str, artifact: Path, args: argparse.Namesp
         args.source,
         "--dest",
         args.dynet_bin,
-    ]
+    )
     logger.info("install guest artifact: %s", join(command))
     if not lab.dry_run:
-        subprocess.run(command, check=True)
+        subprocess.run(command, cwd=ROOT, check=True)
 
 
 def build_secret_config(args: argparse.Namespace, output_dir: Path) -> tuple[str, dict]:
@@ -104,18 +107,26 @@ def private_config_command(args: argparse.Namespace, config_path: Path, meta_pat
     command = [
         sys.executable, str(ROOT / "scripts" / "experiments" / "tunnel_private_lab.py"),
         "build", "--output-config", str(config_path), "--output-meta", str(meta_path),
-        "--tunnel-name", args.tunnel_name, "--filter", args.filter, "--strategy-key", args.strategy_key,
+        "--tunnel-name", args.tunnel_name, "--strategy-key", args.strategy_key,
     ]
+    if args.filter is not None:
+        command.extend(["--filter", args.filter])
     if args.limit:
         command.extend(["--limit", str(args.limit)])
+    if getattr(args, "candidate_offset", 0):
+        command.extend(["--candidate-offset", str(args.candidate_offset)])
     for value in args.domain_suffix:
         command.extend(["--domain-suffix", value])
     for value in args.domain:
         command.extend(["--domain", value])
-    for value in args.supported_type:
+    for value in args.supported_type or []:
         command.extend(["--supported-type", value])
     if getattr(args, "resolve_tunnel_server", False):
         command.append("--resolve-tunnel-server")
+    if getattr(args, "tcp_route_plan_private", False):
+        command.append("--tcp-route-plan-private")
+    if getattr(args, "trojan_interface_name", None):
+        command.extend(["--trojan-interface-name", args.trojan_interface_name])
     return command
 
 
@@ -200,6 +211,7 @@ def command_guest(lab: Lab, args: argparse.Namespace) -> None:
     targets = args.target_url or DEFAULT_TARGETS
     if not args.domain_suffix:
         args.domain_suffix = sorted({target_family(url) for url in targets})
+    resolve_trojan_interface(lab, guest, args)
     config_text, meta = build_secret_config(args, output_dir)
     remote_config = f"/tmp/dynet-{label}-private.json"
     remote_quality = f"/tmp/dynet-{label}-quality.json" if args.quality_state else None
@@ -216,10 +228,16 @@ def command_guest(lab: Lab, args: argparse.Namespace) -> None:
     summary = build_summary(guest, label, version, meta, reports)
     write_json(output_dir / "summary.json", summary)
     write_markdown(output_dir / "summary.md", summary)
-    build_quality_state(output_dir)
+    build_quality_state(output_dir, args)
     print(json.dumps({"outputDir": str(output_dir), **summary["totals"]}, sort_keys=True))
     if summary["totals"]["failed"]:
         raise SystemExit(1)
+
+
+def command_paired(lab: Lab, args: argparse.Namespace) -> None:
+    from lib.private_paired import command_paired as run_paired
+
+    run_paired(lab, args)
 
 
 def stage_guest_inputs(
@@ -291,7 +309,7 @@ def build_summary(guest: str, label: str, version: subprocess.CompletedProcess[s
     }
 
 
-def build_quality_state(output_dir: Path) -> None:
+def build_quality_state(output_dir: Path, args: argparse.Namespace) -> None:
     command = [
         sys.executable,
         str(ROOT / "scripts" / "experiments" / "dynet_probe_quality.py"),
@@ -302,9 +320,9 @@ def build_quality_state(output_dir: Path) -> None:
         "--output-md",
         str(output_dir / "quality-state.md"),
         "--ttl-seconds",
-        "300",
+        str(args.quality_ttl_seconds),
         "--window-seconds",
-        "1800",
+        str(args.quality_window_seconds),
     ]
     subprocess.run(command, check=True, capture_output=True, text=True)
 
@@ -321,61 +339,10 @@ def summarize_probe(report: dict, url: str, report_path: Path) -> dict:
         "exitCode": report.get("_exitCode"),
         "boundSelected": final_bound_selected(report),
         "failedStage": None if report.get("status") == "pass" else failed_stage(report),
+        "failureScope": failure_scope(report),
         "cascadeAttempts": cascade_attempts(report),
         "reportPath": str(report_path),
     }
-
-
-def fields(event: dict) -> dict[str, str]:
-    value = event.get("fields", {})
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): str(item) for key, item in value.items()}
-
-
-def final_bound_selected(report: dict) -> str | None:
-    for event in report.get("events", []):
-        event_fields = fields(event)
-        if (
-            event.get("kind") == "dialer-cascade-attempt-finished"
-            and event_fields.get("status") == "success"
-        ):
-            return event_fields.get("boundSelected")
-    for event in report.get("events", []):
-        if event.get("kind") == "dialer-cascade-selected":
-            return fields(event).get("boundSelected")
-    return None
-
-
-def failed_stage(report: dict) -> str | None:
-    for event in report.get("events", []):
-        event_fields = fields(event)
-        if event.get("kind") == "outbound-stage-finished" and event_fields.get("status") == "failed":
-            return f"{event_fields.get('outbound', '<unknown>')}:{event_fields.get('stage', 'unknown')}"
-    return None
-
-
-def cascade_attempts(report: dict) -> list[dict[str, str]]:
-    rows = []
-    for event in report.get("events", []):
-        if event.get("kind") != "dialer-cascade-attempt-finished":
-            continue
-        event_fields = fields(event)
-        rows.append(
-            {
-                key: value
-                for key, value in {
-                    "attempt": event_fields.get("attempt"),
-                    "boundSelected": event_fields.get("boundSelected"),
-                    "status": event_fields.get("status"),
-                    "errorType": event_fields.get("errorType"),
-                    "elapsedMs": event_fields.get("elapsedMs"),
-                    "httpStatus": event_fields.get("httpStatus"),
-                }.items()
-                if value is not None
-            }
-        )
-    return rows
 
 
 def write_json(path: Path, data: object) -> None:
@@ -399,7 +366,8 @@ def write_markdown(path: Path, summary: dict) -> None:
     for item in summary["reports"]:
         lines.append(
             f"- `{item['targetUrl']}` status=`{item['status']}` "
-            f"bound=`{item['boundSelected']}` failedStage=`{item['failedStage']}`"
+            f"scope=`{item.get('failureScope')}` bound=`{item['boundSelected']}` "
+            f"failedStage=`{item['failedStage']}`"
         )
     path.write_text("\n".join(lines) + "\n")
 
@@ -431,36 +399,11 @@ def lab_args(lab: Lab) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run dynet Private cascade probes inside a disposable VM guest."
+    return build_private_probe_parser(
+        guest_handler=command_guest,
+        paired_handler=command_paired,
+        paired_selection_handler=command_paired_selection,
     )
-    add_lab_options(parser)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    guest = subparsers.add_parser("guest")
-    guest.add_argument("guest")
-    guest.add_argument("--label")
-    guest.add_argument("--output-dir")
-    guest.add_argument("--user", default=DEFAULT_VM_USER)
-    guest.add_argument("--source", default="lease", choices=["lease", "agent"])
-    guest.add_argument("--target-url", action="append")
-    guest.add_argument("--quality-state")
-    guest.add_argument("--skip-install", action="store_true")
-    guest.add_argument("--artifact")
-    guest.add_argument("--target", default="x86_64-unknown-linux-gnu")
-    guest.add_argument("--release", action="store_true")
-    guest.add_argument("--dynet-bin", default="/usr/local/bin/dynet")
-    guest.add_argument("--tunnel-name", default="Tunnel")
-    guest.add_argument("--filter", default="Basic-美国")
-    guest.add_argument("--limit", type=int, default=4)
-    guest.add_argument("--strategy-key", default="cascade-quality")
-    guest.add_argument("--resolve-tunnel-server", action="store_true")
-    guest.add_argument("--domain", action="append", default=[])
-    guest.add_argument("--domain-suffix", action="append", default=[])
-    guest.add_argument("--supported-type", action="append", default=["vmess", "trojan"])
-    guest.set_defaults(handler=command_guest)
-
-    return parser
 
 
 def main() -> None:

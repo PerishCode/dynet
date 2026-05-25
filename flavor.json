@@ -6,7 +6,9 @@
       "scripts/**/*.py"
     ],
     "exclude": [
-      "**/target/**"
+      "**/target/**",
+      "**/.venv/**",
+      "**/__pycache__/**"
     ]
   },
   "overrides": [
@@ -37,6 +39,18 @@
       "rules": {
         "core/fs/too-many-children": {
           "severity": "warning"
+        }
+      }
+    },
+    {
+      "match": "scripts/cli",
+      "kind": "dir",
+      "rules": {
+        "core/fs/too-many-children": {
+          "severity": "warning",
+          "payload": {
+            "max_children": 12
+          }
         }
       }
     }
