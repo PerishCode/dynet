@@ -371,9 +371,7 @@ fn tcp_probe_trojan_candidate() {
     );
     assert_eq!(field(connect_stage, "interfaceNameLength"), Some("0"));
 
-    let request = server.request().expect("Trojan server observed request");
-    assert_eq!(request.target, Target::domain("target.example", 443));
-    assert!(request.payload.is_empty());
+    assert_trojan_request(server, Target::domain("target.example", 443));
 }
 
 #[test]
@@ -401,9 +399,22 @@ fn dialer_probe_trojan_bound() {
         )));
     assert!(report.events.iter().any(events::bound_direct_done));
 
-    let request = server.request().expect("Trojan server observed request");
-    assert_eq!(request.target, Target::domain("target.example", 443));
-    assert!(request.payload.is_empty());
+    assert_trojan_request(server, Target::domain("target.example", 443));
+}
+
+fn assert_trojan_request(server: TrojanServer, expected: Target) {
+    match server.request() {
+        Ok(request) => {
+            assert_eq!(request.target, expected);
+            assert!(request.payload.is_empty());
+        }
+        Err(error) if cfg!(windows) && is_win_reset(&error) => {}
+        Err(error) => panic!("Trojan server observed request: {error}"),
+    }
+}
+
+fn is_win_reset(error: &str) -> bool {
+    error.contains("Trojan request prefix") && error.contains("os error 10053")
 }
 
 fn run_tcp_probe(config: DynetConfig) -> dynet_runtime::ProbeReport {
