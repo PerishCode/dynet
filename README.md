@@ -1,228 +1,59 @@
 # dynet
 
-Sing-box-like experimental proxy/VPN CLI and runtime.
+`dynet` is intentionally reset to a minimal Rust project skeleton.
 
-`dynet` currently establishes the installable CLI, workspace boundaries, config
-loading, reporting, release packaging, platform ownership lifecycle, and a
-self-owned Linux runtime boundary. The runtime can observe TUN packets, hijack
-DNS into dynet DNS chains, preserve DNS reverse evidence, and run narrow
-experimental IPv4 TCP/UDP forwarding paths. Concrete production protocol
-adapters and the full forwarding plane are still evolving behind those
-boundaries.
+The previous TUN, DNS hijack, platform takeover, VM lab, proxy runtime, config,
+and command surfaces have been removed so the next design can grow from the new
+boundary:
 
-## Usage
-
-```bash
-dynet check                       # auto-discovers dynet.json from --root
-dynet check --config dynet.json   # explicit path
-dynet check --format json
-dynet doctor --config dynet.json  # local/VM cold-start readiness checks
-dynet plan --config dynet.json    # compile an explainable plan model
-dynet install --check --config dynet.json
-dynet status
-dynet verify
-dynet repair
-dynet uninstall
-dynet api capabilities            # list local API surface
-dynet api serve --bind 127.0.0.1:9977
-dynet run --config dynet.json     # starts the Linux TUN/DNS runtime boundary
-dynet version
-dynet help
+```text
+dynet does not capture traffic.
+dynet does not own system network state.
+dynet assumes any future traffic/context input is provided by an external
+capture frontend.
 ```
 
-`dynet check` exits `1` when the config cannot be read, parsed, or validated.
-`dynet doctor` reports config, platform, tun, resolver, and API bind readiness.
-`dynet plan` compiles explicit route rules into a `dynet-plan/v1alpha1`
-verdict model over `dynet-state/v1alpha1`: inbound context is matched against
-rules plus CLI state, then a verdict action selects an outbound or no route.
-The plan harness can evaluate DNS reverse mapping experiments with
-`--context '{"destinationIp":"93.184.216.34"}' --dns-answer example.com=93.184.216.34`.
-`dynet install --check` validates network ownership preflight and lists dynet-owned
-resources plus render-only nft/tun/DNS desired-state artifacts and validation
-status without mutating system network paths. `status`, `verify`, `repair`, and
-`uninstall` report the current dynet-owned resource state; mutating network
-apply/cleanup is intentionally gated until the ownership invariants are proven.
-`dynet api serve` is a loopback-only HTTP skeleton with `/health` and
-`/v1/capabilities`.
-`dynet run` starts dynet's Linux runtime boundary: TUN packet observation, DNS
-hijack forwarding through configured dynet DNS chains, DNS reverse capture, and
-socket-mark loop avoidance. `--experimental-tcp-forward` and
-`--experimental-udp-forward` enable the current narrow IPv4 forwarding
-experiments for VM/runtime acceptance; unsupported paths fail closed.
+The first reintroduced surface is a minimal local control plane under
+`/api/v1`. Cold start currently exposes:
 
-Platform takeover is drop-in only. The host must already expose an nftables
-drop-in directory included by `/etc/nftables.conf`; dynet only owns its
-`dynet.nft` drop-in and does not patch the main nftables config in the normal
-lifecycle. Takeover values are rendered through a single effective config. The
-defaults can be overridden for a new install plan with `DYNET_NFT_TABLE`,
-`DYNET_NFT_MAIN_CONFIG`, `DYNET_NFT_DROPIN_DIR`, `DYNET_TUN_NAME`,
-`DYNET_ROUTE_MARK`, `DYNET_ROUTE_TABLE`, `DYNET_DNS_LISTEN`,
-`DYNET_DNS_PORT`, `DYNET_RUNTIME_DIR`, and `DYNET_STATE_DIR`. Future apply,
-verify, rollback, and uninstall operations use the installed takeover manifest
-as truth; environment overrides do not rewrite installed ownership.
-
-## Config
-
-The skeleton config is intentionally small and generic:
-
-```json
-{
-  "log": {
-    "level": "info"
-  },
-  "inbounds": [
-    { "tag": "mixed-in", "type": "mixed" }
-  ],
-  "outbounds": [
-    { "tag": "direct", "type": "direct" }
-  ],
-  "routes": [
-    { "inbound": "mixed-in", "outbound": "direct" }
-  ]
-}
+```text
+GET /api/v1/health
+GET /api/v1/events
 ```
 
-Inbound and outbound nodes are dynamic network objects. The stable node fields
-are `tag`, `type`, optional `id`, optional `capabilities`, optional
-`constraints`, and optional `metadata`; protocol-specific fields stay on the
-same object as payload for the protocol adapter. `tag` is the user-facing route
-reference, while dynet derives an internal fingerprint for state/history
-matching.
+The first ingress experiment is a fixed-upstream relay set. It does not parse
+HTTP, HTTP/3, or DNS semantics; it only verifies transparent delivery and event
+capture.
 
-Route rules currently support `inbound`, `domain`, and `outbound`. `domain`
-matches do not use fake IPs: the inbound context supplies a destination IP, and
-the plan evaluates that IP against the DNS reverse index stored in `AppState`.
-Without prior DNS answer state, the same IP falls through to the next route.
+Default local listeners:
 
-Pure TCP and UDP nodes are first-class model fixtures:
-
-```json
-{
-  "inbounds": [
-    {
-      "tag": "tcp-in",
-      "type": "tcp",
-      "listen": "127.0.0.1",
-      "listenPort": 1080
-    }
-  ],
-  "outbounds": [
-    {
-      "tag": "tcp-out",
-      "type": "tcp",
-      "server": "example.com",
-      "serverPort": 443
-    }
-  ],
-  "routes": [
-    { "inbound": "tcp-in", "outbound": "tcp-out" }
-  ]
-}
+```text
+control: 127.0.0.1:9977
+dns:     127.0.0.1:1053  -> 1.1.1.1:53
+tcp:     127.0.0.1:18080 -> 93.184.216.34:80
+udp:     127.0.0.1:18443 -> 1.1.1.1:443
 ```
 
-Built-in capability inference currently covers `tcp`, `udp`, `dns`,
-`ip-target`, `domain-target`, `transparent`, and `probeable`. Unknown
-capabilities are preserved with warnings so future protocol adapters can evolve
-without turning the core model into a protocol-specific schema dump.
+Cold-start bind/upstream values can be overridden with environment variables:
 
-Discovery order:
-
-1. `--config <path>` if provided. The file's directory becomes the project root.
-2. The nearest `dynet.json` found by walking ancestors from `--root`.
-3. Built-in empty config for `check` only.
-
-## Workspace
-
-- `crates/dynet-cli`: installable binary, command parsing, config discovery,
-  reports, and exit behavior.
-- `crates/dynet-core`: shared config/domain primitives and validation contracts.
-- `crates/dynet-runtime`: Linux runtime boundary for TUN, DNS hijack serving,
-  DNS chain execution, takeover apply/cleanup, socket marking, and experimental
-  forwarding adapters.
-
-Harness fixtures live with the crate that owns the boundary being tested. CLI
-tests should exercise command/config/output contracts, not private future
-runtime details.
+```text
+DYNET_CONTROL_BIND
+DYNET_DNS_BIND
+DYNET_DNS_UPSTREAM
+DYNET_DNS_TIMEOUT_MS
+DYNET_TCP_BIND
+DYNET_TCP_UPSTREAM
+DYNET_UDP_BIND
+DYNET_UDP_UPSTREAM
+DYNET_UDP_IDLE_TIMEOUT_MS
+```
 
 ## Development
 
 ```bash
-uv --project scripts run python -m scripts.cli.init
 cargo fmt --all --check
 flavor check --root . --config flavor.json
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-cargo run --locked -p dynet-cli -- check --root . --config dynet.json
-cargo run --locked -p dynet-cli -- doctor --config dynet.json
-cargo run --locked -p dynet-cli -- plan --config dynet.json
-cargo run --locked -p dynet-cli -- install --check --config dynet.json
-cargo run --locked -p dynet-cli -- status
-cargo run --locked -p dynet-cli -- verify
-cargo run --locked -p dynet-cli -- api capabilities
-cargo zigbuild --locked --target x86_64-unknown-linux-gnu -p dynet-cli
-uv --project scripts run python -m scripts.cli.vmctl dev --host fuisp guest dynet-smoke --user ubuntu
+scripts/smoke/ingress.sh
 ```
-
-## VM Lab Tooling
-
-The VM lab scripts are local operator tools for disposable dynet experiments on
-the remote KVM host. The physical host remains control-plane only; tun, DNS,
-route, firewall, and failure-injection experiments belong inside guests.
-
-```bash
-uv --project scripts run python -m scripts.cli.vmctl image catalog
-uv --project scripts run python -m scripts.cli.vmctl image --host fuisp list
-uv --project scripts run python -m scripts.cli.vmctl image --host fuisp ensure ubuntu-24.04
-uv --project scripts run python -m scripts.cli.vmctl image --host fuisp overlay ubuntu-24.04 dynet-smoke
-uv --project scripts run python -m scripts.cli.vmctl net --host fuisp list
-uv --project scripts run python -m scripts.cli.vmctl net --host fuisp start default
-uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp key-ensure
-uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp cloud-init dynet-smoke --image ubuntu-24.04
-uv --project scripts run python -m scripts.cli.vmctl guest --host fuisp status
-uv --project scripts run python -m scripts.cli.vmctl snapshot --host fuisp create dynet-smoke dynet-installed --force
-uv --project scripts run python -m scripts.cli.vmctl snapshot --host fuisp revert dynet-smoke dynet-installed --yes
-uv --project scripts run python -m scripts.cli.vmctl check --host fuisp guest dynet-smoke
-uv --project scripts run python -m scripts.cli.vmctl dev --host fuisp guest dynet-smoke --user ubuntu
-uv --project scripts run python -m scripts.cli.vmctl setup --host fuisp install-bin dynet-smoke target/x86_64-unknown-linux-gnu/debug/dynet --user ubuntu
-uv --project scripts run python -m scripts.cli.vmctl smoke --host fuisp guest dynet-smoke --label cold-start --user ubuntu
-uv --project scripts run python -m scripts.cli.vmctl collect --host fuisp guest dynet-smoke --label baseline --user ubuntu
-uv --project scripts run python -m scripts.cli.vmctl capture --host fuisp host dynet-smoke --label probe --duration 4 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
-uv --project scripts run python -m scripts.cli.vmctl capture --host fuisp guest dynet-smoke --label probe --duration 4 --iface enp1s0 --filter 'icmp or arp' --probe 'ping -c 1 192.168.122.1'
-uv --project scripts run python -m scripts.cli.vmctl cleanup --host fuisp report
-uv --project scripts run python -m scripts.cli.vmctl cleanup --host fuisp prune-remote pcap --older-than-days 7
-uv --project scripts run python -m scripts.cli.vmctl cleanup prune-local pcap --older-than-days 7
-```
-
-`scripts/vm/image.py` owns image-layer operations. `scripts/vm/setup.py` owns
-staging and installing local dynet artifacts into guests. `scripts/vm/guest.py`
-owns guest definitions and lifecycle commands. `scripts/vm/net.py` owns explicit
-libvirt network operations. `scripts/vm/snapshot.py` owns offline qcow2
-snapshot/revert operations. `scripts/vm/ops/collect.py` owns host/guest evidence
-bundles. `scripts/vm/ops/check.py` owns high-level readiness checks.
-`scripts/vm/ops/capture.py` owns short scoped packet captures on guest tap
-interfaces or inside guest interfaces. `scripts/vm/ops/cleanup.py` owns resource
-usage reporting and safe pruning for generated cache/artifact buckets.
-`scripts/vm/smoke.py` owns guest cold-start smoke checks for dynet CLI/API
-contracts. `scripts/vm/ops/dev.py` owns the high-frequency build/install/smoke/check
-developer loop.
-
-Commands that can grow image caches, overlays, cloud-init seeds, staged
-artifacts, snapshots, evidence bundles, or pcaps print current resource usage
-before mutating state. Each guarded bucket has warning and fail thresholds; fail
-thresholds stop growth commands. Remote paths are constrained under the lab root
-and local fetched artifacts are constrained under `dist/lab/`. Cleanup commands
-preview candidates by default and require `--yes` before deletion.
-VM tooling diagnostics are logged to stderr through the shared VM logger. Use
-`--log-level error|warning|info|debug|trace` or `DYNET_VM_LOG_LEVEL` to adjust
-verbosity; `--verbose` implies debug. Stdout is reserved for command results
-such as paths, catalog rows, guest IPs, and check status lines.
-`setup install-bin` rejects non-ELF host binaries by default so a macOS build is
-not accidentally installed into a Linux guest.
-`dev guest` builds the Linux guest artifact with `cargo zigbuild`, installs it,
-runs smoke checks, and finishes with guest readiness checks. If install, smoke,
-or readiness fails after the guest has been touched, `dev guest` collects a
-host/guest evidence bundle by default. Add `--capture-on-failure` when packet
-evidence is useful. `check guest` and `smoke guest` verify the guest default
-route, resolver, DNS lookup, and HTTPS egress before dynet network ownership is
-enabled. `smoke guest` also probes the real loopback API `/health` endpoint
-through `dynet api serve --once`.
