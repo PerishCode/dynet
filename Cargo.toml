@@ -4,6 +4,7 @@ members = [
     "crates/dynet-cli",
     "crates/dynet-ingress",
     "crates/dynet-state",
+    "prototype/shadowsocks",
 ]
 resolver = "2"
 

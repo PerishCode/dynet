@@ -19,7 +19,8 @@ pub struct EventStore {
 
 #[derive(Debug, Default)]
 struct EventInner {
-    next_id: AtomicU64,
+    next_event_id: AtomicU64,
+    next_session_id: AtomicU64,
     events: Mutex<VecDeque<IngressEvent>>,
 }
 
@@ -48,9 +49,13 @@ pub enum IngressEventKind {
 }
 
 impl EventStore {
+    pub(crate) fn next_session_id(&self) -> u64 {
+        self.inner.next_session_id.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
     pub fn record(&self, kind: IngressEventKind, fields: impl IntoFields) {
         let event = IngressEvent {
-            id: self.inner.next_id.fetch_add(1, Ordering::SeqCst) + 1,
+            id: self.inner.next_event_id.fetch_add(1, Ordering::SeqCst) + 1,
             observed_at_unix_ms: unix_ms(),
             kind,
             fields: fields.into_fields(),

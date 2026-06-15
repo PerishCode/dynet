@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use dynet_ingress::{run_udp, EventStore, IngressEventKind, UdpRelayConfig};
 use support::{
-    count_kind, event_field, event_kinds, local_addr, udp_roundtrip, udp_roundtrip_with,
-    unused_udp_addr, wait_for_count, wait_for_event,
+    count_kind, event_field, event_fields, event_kinds, local_addr, udp_roundtrip,
+    udp_roundtrip_with, unused_udp_addr, wait_for_count, wait_for_event,
 };
 use tokio::{net::UdpSocket, time};
 
@@ -29,6 +29,7 @@ async fn relay_loop() {
             bind,
             upstream: upstream_addr,
             idle_timeout: Duration::from_secs(2),
+            ..UdpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -57,6 +58,19 @@ async fn relay_loop() {
         event_field(&events, IngressEventKind::UdpSessionStart, "upstreamPort"),
         upstream_addr.port().to_string()
     );
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpSessionStart, "inbound"),
+        "udp"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpSessionStart, "outbound"),
+        "direct"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpSessionStart, "targetIp"),
+        upstream_addr.ip().to_string()
+    );
+    assert!(!event_field(&events, IngressEventKind::UdpDatagram, "sessionId").is_empty());
 }
 
 #[tokio::test]
@@ -81,6 +95,7 @@ async fn multi_client_isolation() {
             bind,
             upstream: upstream_addr,
             idle_timeout: Duration::from_secs(2),
+            ..UdpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -122,6 +137,7 @@ async fn same_client_reuse() {
             bind,
             upstream: upstream_addr,
             idle_timeout: Duration::from_secs(2),
+            ..UdpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -136,6 +152,11 @@ async fn same_client_reuse() {
     let kinds = wait_for_count(&events, IngressEventKind::UdpDatagram, 4).await;
 
     assert_eq!(count_kind(&kinds, IngressEventKind::UdpSessionStart), 1);
+    let session_ids = event_fields(&events, IngressEventKind::UdpDatagram)
+        .into_iter()
+        .map(|fields| fields.get("sessionId").cloned().unwrap_or_default())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(session_ids.len(), 1);
 }
 
 #[tokio::test]
@@ -158,6 +179,7 @@ async fn idle_close_event() {
             bind,
             upstream: upstream_addr,
             idle_timeout: Duration::from_millis(25),
+            ..UdpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -171,4 +193,48 @@ async fn idle_close_event() {
 
     assert!(kinds.contains(&IngressEventKind::UdpSessionStart));
     assert!(kinds.contains(&IngressEventKind::UdpSessionClose));
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpSessionClose, "closeReason"),
+        "idle-timeout"
+    );
+}
+
+#[tokio::test]
+async fn max_sessions_capacity_error() {
+    let upstream = UdpSocket::bind(local_addr()).await.expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 1024];
+        let _ = upstream.recv_from(&mut buffer).await.expect("recv request");
+    });
+
+    let bind = unused_udp_addr().await;
+    let events = EventStore::default();
+    tokio::spawn(run_udp(
+        UdpRelayConfig {
+            bind,
+            upstream: upstream_addr,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 1,
+        },
+        events.clone(),
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let first = UdpSocket::bind(local_addr()).await.expect("bind first");
+    first.send_to(b"first", bind).await.expect("send first");
+    let _ = wait_for_event(&events, IngressEventKind::UdpSessionStart).await;
+    let second = UdpSocket::bind(local_addr()).await.expect("bind second");
+    second.send_to(b"second", bind).await.expect("send second");
+    let kinds = wait_for_event(&events, IngressEventKind::UdpError).await;
+
+    assert!(kinds.contains(&IngressEventKind::UdpError));
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpError, "errorStage"),
+        "inbound-capacity"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpError, "maxSessions"),
+        "1"
+    );
 }

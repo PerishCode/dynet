@@ -43,9 +43,53 @@ DYNET_DNS_UPSTREAM
 DYNET_DNS_TIMEOUT_MS
 DYNET_TCP_BIND
 DYNET_TCP_UPSTREAM
+DYNET_TCP_MAX_SESSIONS      # default: 1024 active sessions
 DYNET_UDP_BIND
 DYNET_UDP_UPSTREAM
 DYNET_UDP_IDLE_TIMEOUT_MS
+DYNET_UDP_MAX_SESSIONS      # default: 1024 active associations
+```
+
+`dynet` also reads a TOML config file. `--config <path>` selects a file; without
+`--config`, it looks for `dynet.toml` in the current working directory and
+continues with defaults when that file is absent. Environment variables override
+file values.
+
+```toml
+[control]
+bind = "127.0.0.1:9977"
+
+[ingress.dns]
+bind = "127.0.0.1:1053"
+upstream = "1.1.1.1:53"
+timeout_ms = 5000
+
+[ingress.tcp]
+bind = "127.0.0.1:18080"
+upstream = "93.184.216.34:80"
+max_sessions = 1024
+
+[ingress.udp]
+bind = "127.0.0.1:18443"
+upstream = "1.1.1.1:443"
+idle_timeout_ms = 30000
+max_sessions = 1024
+
+[outbound]
+type = "direct"
+```
+
+For the first protocol-backed experiment, `dynet.toml` can hold a local
+dual-protocol Shadowsocks node. Keep `dynet.toml` uncommitted.
+
+```toml
+[outbound]
+type = "shadowsocks"
+server = "node.example.com"
+port = 8388
+method = "aes-256-gcm"
+password = "local-secret"
+udp = true
 ```
 
 ## Development

@@ -8,4 +8,5 @@ description = "Current dynet application state and configuration."
 
 [dependencies]
 dynet-ingress = { path = "../dynet-ingress" }
-
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
