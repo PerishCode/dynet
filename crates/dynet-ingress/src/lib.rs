@@ -1,21 +1,20 @@
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::net::SocketAddr;
+use std::time::Duration;
 
-use tokio::{
-    io,
-    net::{TcpListener, TcpStream, UdpSocket},
-    sync::mpsc,
-    time,
-};
+use tokio::{net::UdpSocket, time};
 
 mod dns;
 mod event;
+mod inbound;
+mod outbound;
 
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const UDP_CHANNEL_DEPTH: usize = 64;
 const DATAGRAM_LIMIT: usize = 65_535;
+pub const DEFAULT_TCP_MAX_SESSIONS: usize = 1024;
+pub const DEFAULT_UDP_MAX_SESSIONS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DnsRelayConfig {
@@ -28,6 +27,7 @@ pub struct DnsRelayConfig {
 pub struct TcpRelayConfig {
     pub bind: SocketAddr,
     pub upstream: SocketAddr,
+    pub max_sessions: usize,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -35,6 +35,7 @@ pub struct UdpRelayConfig {
     pub bind: SocketAddr,
     pub upstream: SocketAddr,
     pub idle_timeout: Duration,
+    pub max_sessions: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -42,6 +43,34 @@ pub struct IngressConfig {
     pub dns: DnsRelayConfig,
     pub tcp: TcpRelayConfig,
     pub udp: UdpRelayConfig,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub enum OutboundConfig {
+    #[default]
+    Direct,
+    Shadowsocks(ShadowsocksConfig),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ShadowsocksConfig {
+    pub server: String,
+    pub port: u16,
+    pub method: ShadowsocksMethod,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ShadowsocksMethod {
+    Aes256Gcm,
+}
+
+impl ShadowsocksMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Aes256Gcm => "aes-256-gcm",
+        }
+    }
 }
 
 impl Default for DnsRelayConfig {
@@ -59,6 +88,7 @@ impl Default for TcpRelayConfig {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 18080)),
             upstream: SocketAddr::from(([93, 184, 216, 34], 80)),
+            max_sessions: DEFAULT_TCP_MAX_SESSIONS,
         }
     }
 }
@@ -69,6 +99,7 @@ impl Default for UdpRelayConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 18443)),
             upstream: SocketAddr::from(([1, 1, 1, 1], 443)),
             idle_timeout: UDP_IDLE_TIMEOUT,
+            max_sessions: DEFAULT_UDP_MAX_SESSIONS,
         }
     }
 }
@@ -128,76 +159,37 @@ pub async fn run_dns(config: DnsRelayConfig, events: EventStore) -> Result<(), S
 }
 
 pub async fn run_tcp(config: TcpRelayConfig, events: EventStore) -> Result<(), String> {
-    let listener = TcpListener::bind(config.bind)
-        .await
-        .map_err(|error| format!("failed to bind TCP relay {}: {error}", config.bind))?;
-    loop {
-        let (client, peer) = listener
-            .accept()
-            .await
-            .map_err(|error| format!("failed accepting TCP connection: {error}"))?;
-        let events = events.clone();
-        tokio::spawn(async move {
-            if let Err(error) = relay_tcp(client, peer, config.upstream, events.clone()).await {
-                let mut fields = vec![
-                    ("peer", peer.to_string()),
-                    ("upstream", config.upstream.to_string()),
-                    ("error", error),
-                ];
-                push_endpoint_fields(&mut fields, "peer", peer);
-                push_endpoint_fields(&mut fields, "upstream", config.upstream);
-                events.record(IngressEventKind::TcpError, fields);
-            }
-        });
-    }
+    run_tcp_with_outbound(config, OutboundConfig::Direct, events).await
 }
 
 pub async fn run_udp(config: UdpRelayConfig, events: EventStore) -> Result<(), String> {
-    let socket = Arc::new(
-        UdpSocket::bind(config.bind)
-            .await
-            .map_err(|error| format!("failed to bind UDP relay {}: {error}", config.bind))?,
-    );
-    let mut sessions = BTreeMap::<SocketAddr, mpsc::Sender<Vec<u8>>>::new();
-    let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
-    loop {
-        let (size, peer) = socket
-            .recv_from(&mut buffer)
-            .await
-            .map_err(|error| format!("failed receiving UDP datagram: {error}"))?;
-        let payload = buffer[..size].to_vec();
-        let sender = if let Some(sender) = sessions.get(&peer) {
-            sender.clone()
-        } else {
-            let (sender, receiver) = mpsc::channel(UDP_CHANNEL_DEPTH);
-            sessions.insert(peer, sender.clone());
-            spawn_udp_session(
-                peer,
-                config.upstream,
-                config.idle_timeout,
-                socket.clone(),
-                receiver,
-                events.clone(),
-            );
-            sender
-        };
-        events.record(
-            IngressEventKind::UdpDatagram,
-            [
-                ("direction", "client-to-upstream".to_string()),
-                ("peer", peer.to_string()),
-                ("upstream", config.upstream.to_string()),
-                ("peerIp", peer.ip().to_string()),
-                ("peerPort", peer.port().to_string()),
-                ("upstreamIp", config.upstream.ip().to_string()),
-                ("upstreamPort", config.upstream.port().to_string()),
-                ("bytes", size.to_string()),
-            ],
-        );
-        if sender.send(payload).await.is_err() {
-            sessions.remove(&peer);
-        }
-    }
+    run_udp_with_outbound(config, OutboundConfig::Direct, events).await
+}
+
+pub async fn run_tcp_with_outbound(
+    config: TcpRelayConfig,
+    outbound: OutboundConfig,
+    events: EventStore,
+) -> Result<(), String> {
+    inbound::run_tcp(
+        config,
+        outbound::OutboundMedium::try_from(outbound)?,
+        events,
+    )
+    .await
+}
+
+pub async fn run_udp_with_outbound(
+    config: UdpRelayConfig,
+    outbound: OutboundConfig,
+    events: EventStore,
+) -> Result<(), String> {
+    inbound::run_udp(
+        config,
+        outbound::OutboundMedium::try_from(outbound)?,
+        events,
+    )
+    .await
 }
 
 async fn resolve_dns(
@@ -225,173 +217,6 @@ async fn resolve_dns(
     );
     response.truncate(size);
     Ok(response)
-}
-
-async fn relay_tcp(
-    mut client: TcpStream,
-    peer: SocketAddr,
-    upstream: SocketAddr,
-    events: EventStore,
-) -> Result<(), String> {
-    events.record(
-        IngressEventKind::TcpAccept,
-        [
-            ("peer", peer.to_string()),
-            ("upstream", upstream.to_string()),
-            ("peerIp", peer.ip().to_string()),
-            ("peerPort", peer.port().to_string()),
-            ("upstreamIp", upstream.ip().to_string()),
-            ("upstreamPort", upstream.port().to_string()),
-        ],
-    );
-    let mut server = TcpStream::connect(upstream)
-        .await
-        .map_err(|error| format!("failed connecting TCP upstream {upstream}: {error}"))?;
-    let (from_client, from_upstream) = io::copy_bidirectional(&mut client, &mut server)
-        .await
-        .map_err(|error| format!("TCP relay failed: {error}"))?;
-    events.record(
-        IngressEventKind::TcpClose,
-        [
-            ("peer", peer.to_string()),
-            ("upstream", upstream.to_string()),
-            ("peerIp", peer.ip().to_string()),
-            ("peerPort", peer.port().to_string()),
-            ("upstreamIp", upstream.ip().to_string()),
-            ("upstreamPort", upstream.port().to_string()),
-            ("clientToUpstreamBytes", from_client.to_string()),
-            ("upstreamToClientBytes", from_upstream.to_string()),
-        ],
-    );
-    Ok(())
-}
-
-fn spawn_udp_session(
-    peer: SocketAddr,
-    upstream: SocketAddr,
-    idle_timeout: Duration,
-    downstream: Arc<UdpSocket>,
-    mut receiver: mpsc::Receiver<Vec<u8>>,
-    events: EventStore,
-) {
-    tokio::spawn(async move {
-        events.record(
-            IngressEventKind::UdpSessionStart,
-            [
-                ("peer", peer.to_string()),
-                ("upstream", upstream.to_string()),
-                ("peerIp", peer.ip().to_string()),
-                ("peerPort", peer.port().to_string()),
-                ("upstreamIp", upstream.ip().to_string()),
-                ("upstreamPort", upstream.port().to_string()),
-            ],
-        );
-        let result = relay_udp_session(
-            peer,
-            upstream,
-            idle_timeout,
-            downstream,
-            &mut receiver,
-            events.clone(),
-        );
-        if let Err(error) = result.await {
-            let mut fields = vec![
-                ("peer", peer.to_string()),
-                ("upstream", upstream.to_string()),
-                ("error", error),
-            ];
-            push_endpoint_fields(&mut fields, "peer", peer);
-            push_endpoint_fields(&mut fields, "upstream", upstream);
-            events.record(IngressEventKind::UdpError, fields);
-        }
-        events.record(
-            IngressEventKind::UdpSessionClose,
-            [
-                ("peer", peer.to_string()),
-                ("upstream", upstream.to_string()),
-                ("peerIp", peer.ip().to_string()),
-                ("peerPort", peer.port().to_string()),
-                ("upstreamIp", upstream.ip().to_string()),
-                ("upstreamPort", upstream.port().to_string()),
-            ],
-        );
-    });
-}
-
-async fn relay_udp_session(
-    peer: SocketAddr,
-    upstream: SocketAddr,
-    idle_timeout: Duration,
-    downstream: Arc<UdpSocket>,
-    receiver: &mut mpsc::Receiver<Vec<u8>>,
-    events: EventStore,
-) -> Result<(), String> {
-    let upstream_socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
-        .await
-        .map_err(|error| format!("failed to bind UDP upstream socket: {error}"))?;
-    upstream_socket
-        .connect(upstream)
-        .await
-        .map_err(|error| format!("failed connecting UDP upstream {upstream}: {error}"))?;
-    let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
-    loop {
-        let step = time::timeout(
-            idle_timeout,
-            udp_step(receiver, &upstream_socket, &mut buffer),
-        )
-        .await;
-        match step {
-            Ok(UdpStep::Client(payload)) => {
-                upstream_socket
-                    .send(&payload)
-                    .await
-                    .map_err(|error| format!("failed sending UDP upstream datagram: {error}"))?;
-            }
-            Ok(UdpStep::Upstream(size)) => {
-                downstream
-                    .send_to(&buffer[..size], peer)
-                    .await
-                    .map_err(|error| format!("failed sending UDP downstream datagram: {error}"))?;
-                events.record(
-                    IngressEventKind::UdpDatagram,
-                    [
-                        ("direction", "upstream-to-client".to_string()),
-                        ("peer", peer.to_string()),
-                        ("upstream", upstream.to_string()),
-                        ("peerIp", peer.ip().to_string()),
-                        ("peerPort", peer.port().to_string()),
-                        ("upstreamIp", upstream.ip().to_string()),
-                        ("upstreamPort", upstream.port().to_string()),
-                        ("bytes", size.to_string()),
-                    ],
-                );
-            }
-            Ok(UdpStep::Closed) | Err(_) => return Ok(()),
-        }
-    }
-}
-
-enum UdpStep {
-    Client(Vec<u8>),
-    Upstream(usize),
-    Closed,
-}
-
-async fn udp_step(
-    receiver: &mut mpsc::Receiver<Vec<u8>>,
-    upstream_socket: &UdpSocket,
-    buffer: &mut [u8],
-) -> UdpStep {
-    tokio::select! {
-        payload = receiver.recv() => match payload {
-            Some(payload) => UdpStep::Client(payload),
-            None => UdpStep::Closed,
-        },
-        result = upstream_socket.recv(buffer) => match result {
-            Ok(size) => UdpStep::Upstream(size),
-            Err(_) => UdpStep::Closed,
-        },
-    }
 }
 
 fn dns_response_fields(
@@ -424,7 +249,29 @@ fn dns_response_fields(
     fields
 }
 
-fn push_endpoint_fields(
+pub(crate) fn session_fields(
+    session_id: u64,
+    inbound: &'static str,
+    outbound: &'static str,
+    peer: SocketAddr,
+    target: SocketAddr,
+    upstream: SocketAddr,
+) -> Vec<(&'static str, String)> {
+    let mut fields = vec![
+        ("sessionId", session_id.to_string()),
+        ("inbound", inbound.to_string()),
+        ("outbound", outbound.to_string()),
+        ("peer", peer.to_string()),
+        ("target", target.to_string()),
+        ("upstream", upstream.to_string()),
+    ];
+    push_endpoint_fields(&mut fields, "peer", peer);
+    push_endpoint_fields(&mut fields, "target", target);
+    push_endpoint_fields(&mut fields, "upstream", upstream);
+    fields
+}
+
+pub(crate) fn push_endpoint_fields(
     fields: &mut Vec<(&'static str, String)>,
     prefix: &'static str,
     address: SocketAddr,
@@ -437,6 +284,10 @@ fn push_endpoint_fields(
         "upstream" => {
             fields.push(("upstreamIp", address.ip().to_string()));
             fields.push(("upstreamPort", address.port().to_string()));
+        }
+        "target" => {
+            fields.push(("targetIp", address.ip().to_string()));
+            fields.push(("targetPort", address.port().to_string()));
         }
         "source" => {
             fields.push(("sourceIp", address.ip().to_string()));

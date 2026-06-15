@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use std::{net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
-use dynet_ingress::{EventStore, IngressEventKind};
+use dynet_ingress::{EventStore, IngressEvent, IngressEventKind};
 use tokio::{
     net::{TcpListener, UdpSocket},
     time,
@@ -39,6 +39,21 @@ pub fn event_field(events: &EventStore, kind: IngressEventKind, field: &str) -> 
         .find(|event| event.kind == kind)
         .and_then(|event| event.fields.get(field).cloned())
         .unwrap_or_default()
+}
+
+pub fn events_of_kind(events: &EventStore, kind: IngressEventKind) -> Vec<IngressEvent> {
+    events
+        .snapshot()
+        .into_iter()
+        .filter(|event| event.kind == kind)
+        .collect()
+}
+
+pub fn event_fields(events: &EventStore, kind: IngressEventKind) -> Vec<BTreeMap<String, String>> {
+    events_of_kind(events, kind)
+        .into_iter()
+        .map(|event| event.fields)
+        .collect()
 }
 
 pub fn count_kind(kinds: &[IngressEventKind], kind: IngressEventKind) -> usize {

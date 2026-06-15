@@ -1,16 +1,26 @@
-use std::{env, net::SocketAddr, time::Duration};
+use std::{
+    env, fs, io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-use dynet_ingress::{DnsRelayConfig, IngressConfig, TcpRelayConfig, UdpRelayConfig};
+use dynet_ingress::{
+    DnsRelayConfig, IngressConfig, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
+    TcpRelayConfig, UdpRelayConfig,
+};
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct AppState {
     pub config: Config,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Config {
     pub control: ControlConfig,
     pub ingress: IngressConfig,
+    pub outbound: OutboundConfig,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -29,6 +39,7 @@ impl Default for Config {
                 tcp: TcpRelayConfig::default(),
                 udp: UdpRelayConfig::default(),
             },
+            outbound: OutboundConfig::Direct,
         }
     }
 }
@@ -39,27 +50,69 @@ impl AppState {
             config: Config::from_env()?,
         })
     }
+
+    pub fn from_config_path(path: Option<&Path>) -> Result<Self, String> {
+        Ok(Self {
+            config: Config::from_config_path(path)?,
+        })
+    }
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let mut config = Self::default();
-        config.control.bind = env_socket("DYNET_CONTROL_BIND", config.control.bind)?;
-        config.ingress.dns.bind = env_socket("DYNET_DNS_BIND", config.ingress.dns.bind)?;
-        config.ingress.dns.upstream =
-            env_socket("DYNET_DNS_UPSTREAM", config.ingress.dns.upstream)?;
-        config.ingress.dns.timeout =
-            env_duration_ms("DYNET_DNS_TIMEOUT_MS", config.ingress.dns.timeout)?;
-        config.ingress.tcp.bind = env_socket("DYNET_TCP_BIND", config.ingress.tcp.bind)?;
-        config.ingress.tcp.upstream =
-            env_socket("DYNET_TCP_UPSTREAM", config.ingress.tcp.upstream)?;
-        config.ingress.udp.bind = env_socket("DYNET_UDP_BIND", config.ingress.udp.bind)?;
-        config.ingress.udp.upstream =
-            env_socket("DYNET_UDP_UPSTREAM", config.ingress.udp.upstream)?;
-        config.ingress.udp.idle_timeout =
-            env_duration_ms("DYNET_UDP_IDLE_TIMEOUT_MS", config.ingress.udp.idle_timeout)?;
+        apply_env(&mut config)?;
         Ok(config)
     }
+
+    pub fn from_config_path(path: Option<&Path>) -> Result<Self, String> {
+        let mut config = Self::default();
+        apply_config_file(&mut config, path)?;
+        apply_env(&mut config)?;
+        Ok(config)
+    }
+}
+
+fn apply_env(config: &mut Config) -> Result<(), String> {
+    config.control.bind = env_socket("DYNET_CONTROL_BIND", config.control.bind)?;
+    config.ingress.dns.bind = env_socket("DYNET_DNS_BIND", config.ingress.dns.bind)?;
+    config.ingress.dns.upstream = env_socket("DYNET_DNS_UPSTREAM", config.ingress.dns.upstream)?;
+    config.ingress.dns.timeout =
+        env_duration_ms("DYNET_DNS_TIMEOUT_MS", config.ingress.dns.timeout)?;
+    config.ingress.tcp.bind = env_socket("DYNET_TCP_BIND", config.ingress.tcp.bind)?;
+    config.ingress.tcp.upstream = env_socket("DYNET_TCP_UPSTREAM", config.ingress.tcp.upstream)?;
+    config.ingress.tcp.max_sessions =
+        env_positive_usize("DYNET_TCP_MAX_SESSIONS", config.ingress.tcp.max_sessions)?;
+    config.ingress.udp.bind = env_socket("DYNET_UDP_BIND", config.ingress.udp.bind)?;
+    config.ingress.udp.upstream = env_socket("DYNET_UDP_UPSTREAM", config.ingress.udp.upstream)?;
+    config.ingress.udp.idle_timeout =
+        env_duration_ms("DYNET_UDP_IDLE_TIMEOUT_MS", config.ingress.udp.idle_timeout)?;
+    config.ingress.udp.max_sessions =
+        env_positive_usize("DYNET_UDP_MAX_SESSIONS", config.ingress.udp.max_sessions)?;
+    Ok(())
+}
+
+fn apply_config_file(config: &mut Config, path: Option<&Path>) -> Result<(), String> {
+    let (path, ignore_missing) = match path {
+        Some(path) => (path.to_path_buf(), false),
+        None => (default_config_path()?, true),
+    };
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound && ignore_missing => {
+            return Ok(());
+        }
+        Err(error) => return Err(format!("failed to read config {}: {error}", path.display())),
+    };
+    let file = toml::from_str::<FileConfig>(&content)
+        .map_err(|error| format!("failed to parse config {}: {error}", path.display()))?;
+    file.apply(config)
+}
+
+fn default_config_path() -> Result<PathBuf, String> {
+    env::current_dir()
+        .map(|directory| directory.join("dynet.toml"))
+        .map_err(|error| format!("failed to resolve current directory: {error}"))
 }
 
 fn env_socket(name: &str, fallback: SocketAddr) -> Result<SocketAddr, String> {
@@ -81,4 +134,228 @@ fn env_duration_ms(name: &str, fallback: Duration) -> Result<Duration, String> {
         Err(env::VarError::NotPresent) => Ok(fallback),
         Err(error) => Err(format!("failed to read {name}: {error}")),
     }
+}
+
+fn env_positive_usize(name: &str, fallback: usize) -> Result<usize, String> {
+    match env::var(name) {
+        Ok(value) => {
+            let parsed = value
+                .parse::<usize>()
+                .map_err(|error| format!("{name} must be a positive integer: {error}"))?;
+            if parsed == 0 {
+                return Err(format!("{name} must be a positive integer"));
+            }
+            Ok(parsed)
+        }
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileConfig {
+    control: Option<FileControlConfig>,
+    ingress: Option<FileIngressConfig>,
+    outbound: Option<FileOutboundConfig>,
+}
+
+impl FileConfig {
+    fn apply(self, config: &mut Config) -> Result<(), String> {
+        if let Some(control) = self.control {
+            control.apply(&mut config.control)?;
+        }
+        if let Some(ingress) = self.ingress {
+            ingress.apply(&mut config.ingress)?;
+        }
+        if let Some(outbound) = self.outbound {
+            config.outbound = outbound.load()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileControlConfig {
+    bind: Option<String>,
+}
+
+impl FileControlConfig {
+    fn apply(self, config: &mut ControlConfig) -> Result<(), String> {
+        if let Some(bind) = self.bind {
+            config.bind = parse_socket("control.bind", &bind)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileIngressConfig {
+    dns: Option<FileDnsRelayConfig>,
+    tcp: Option<FileTcpRelayConfig>,
+    udp: Option<FileUdpRelayConfig>,
+}
+
+impl FileIngressConfig {
+    fn apply(self, config: &mut IngressConfig) -> Result<(), String> {
+        if let Some(dns) = self.dns {
+            dns.apply(&mut config.dns)?;
+        }
+        if let Some(tcp) = self.tcp {
+            tcp.apply(&mut config.tcp)?;
+        }
+        if let Some(udp) = self.udp {
+            udp.apply(&mut config.udp)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileDnsRelayConfig {
+    bind: Option<String>,
+    upstream: Option<String>,
+    timeout_ms: Option<u64>,
+}
+
+impl FileDnsRelayConfig {
+    fn apply(self, config: &mut DnsRelayConfig) -> Result<(), String> {
+        if let Some(bind) = self.bind {
+            config.bind = parse_socket("ingress.dns.bind", &bind)?;
+        }
+        if let Some(upstream) = self.upstream {
+            config.upstream = parse_socket("ingress.dns.upstream", &upstream)?;
+        }
+        if let Some(timeout_ms) = self.timeout_ms {
+            config.timeout = Duration::from_millis(timeout_ms);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileTcpRelayConfig {
+    bind: Option<String>,
+    upstream: Option<String>,
+    max_sessions: Option<usize>,
+}
+
+impl FileTcpRelayConfig {
+    fn apply(self, config: &mut TcpRelayConfig) -> Result<(), String> {
+        if let Some(bind) = self.bind {
+            config.bind = parse_socket("ingress.tcp.bind", &bind)?;
+        }
+        if let Some(upstream) = self.upstream {
+            config.upstream = parse_socket("ingress.tcp.upstream", &upstream)?;
+        }
+        if let Some(max_sessions) = self.max_sessions {
+            config.max_sessions = positive_usize("ingress.tcp.max_sessions", max_sessions)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileUdpRelayConfig {
+    bind: Option<String>,
+    upstream: Option<String>,
+    idle_timeout_ms: Option<u64>,
+    max_sessions: Option<usize>,
+}
+
+impl FileUdpRelayConfig {
+    fn apply(self, config: &mut UdpRelayConfig) -> Result<(), String> {
+        if let Some(bind) = self.bind {
+            config.bind = parse_socket("ingress.udp.bind", &bind)?;
+        }
+        if let Some(upstream) = self.upstream {
+            config.upstream = parse_socket("ingress.udp.upstream", &upstream)?;
+        }
+        if let Some(idle_timeout_ms) = self.idle_timeout_ms {
+            config.idle_timeout = Duration::from_millis(idle_timeout_ms);
+        }
+        if let Some(max_sessions) = self.max_sessions {
+            config.max_sessions = positive_usize("ingress.udp.max_sessions", max_sessions)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileOutboundConfig {
+    #[serde(rename = "type")]
+    kind: String,
+    server: Option<String>,
+    port: Option<u16>,
+    method: Option<String>,
+    cipher: Option<String>,
+    password: Option<String>,
+    udp: Option<bool>,
+}
+
+impl FileOutboundConfig {
+    fn load(self) -> Result<OutboundConfig, String> {
+        match self.kind.as_str() {
+            "direct" => Ok(OutboundConfig::Direct),
+            "shadowsocks" | "ss" => self.load_shadowsocks(),
+            _ => Err(format!("outbound.type unsupported: {}", self.kind)),
+        }
+    }
+
+    fn load_shadowsocks(self) -> Result<OutboundConfig, String> {
+        if self.udp != Some(true) {
+            return Err("outbound.udp must be true for shadowsocks cold start".to_string());
+        }
+        let server = self
+            .server
+            .ok_or_else(|| "outbound.server is required for shadowsocks".to_string())?;
+        let port = self
+            .port
+            .ok_or_else(|| "outbound.port is required for shadowsocks".to_string())?;
+        let method = match (self.method, self.cipher) {
+            (Some(method), None) | (None, Some(method)) => method,
+            (Some(method), Some(cipher)) if method == cipher => method,
+            (Some(_), Some(_)) => {
+                return Err("outbound.method and outbound.cipher disagree".to_string());
+            }
+            (None, None) => {
+                return Err("outbound.method is required for shadowsocks".to_string());
+            }
+        };
+        let password = self
+            .password
+            .ok_or_else(|| "outbound.password is required for shadowsocks".to_string())?;
+        Ok(OutboundConfig::Shadowsocks(ShadowsocksConfig {
+            server,
+            port,
+            method: parse_shadowsocks_method(&method)?,
+            password,
+        }))
+    }
+}
+
+fn parse_shadowsocks_method(value: &str) -> Result<ShadowsocksMethod, String> {
+    match value {
+        "aes-256-gcm" => Ok(ShadowsocksMethod::Aes256Gcm),
+        _ => Err(format!("unsupported shadowsocks cipher: {value}")),
+    }
+}
+
+fn parse_socket(name: &str, value: &str) -> Result<SocketAddr, String> {
+    value
+        .parse()
+        .map_err(|error| format!("{name} must be a socket address: {error}"))
+}
+
+fn positive_usize(name: &str, value: usize) -> Result<usize, String> {
+    if value == 0 {
+        return Err(format!("{name} must be a positive integer"));
+    }
+    Ok(value)
 }

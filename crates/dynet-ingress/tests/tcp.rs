@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use dynet_ingress::{run_tcp, EventStore, IngressEventKind, TcpRelayConfig};
 use support::{
-    count_kind, event_field, local_addr, unused_tcp_addr, wait_for_count, wait_for_event,
+    count_kind, event_field, event_fields, local_addr, unused_tcp_addr, wait_for_count,
+    wait_for_event,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::oneshot,
     time,
 };
 
@@ -34,6 +36,7 @@ async fn relay_loop() {
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
+            ..TcpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -63,6 +66,22 @@ async fn relay_loop() {
         event_field(&events, IngressEventKind::TcpAccept, "upstreamPort"),
         upstream_addr.port().to_string()
     );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "inbound"),
+        "tcp"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "outbound"),
+        "direct"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "targetIp"),
+        upstream_addr.ip().to_string()
+    );
+    let accept_session = event_field(&events, IngressEventKind::TcpAccept, "sessionId");
+    let close_session = event_field(&events, IngressEventKind::TcpClose, "sessionId");
+    assert!(!accept_session.is_empty());
+    assert_eq!(accept_session, close_session);
 }
 
 #[tokio::test]
@@ -87,6 +106,7 @@ async fn payload_transparency() {
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
+            ..TcpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -110,6 +130,10 @@ async fn payload_transparency() {
     assert_eq!(
         event_field(&events, IngressEventKind::TcpClose, "upstreamToClientBytes"),
         payload.len().to_string()
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpClose, "closeReason"),
+        "normal"
     );
 }
 
@@ -139,6 +163,7 @@ async fn concurrent_clients() {
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
+            ..TcpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -166,6 +191,11 @@ async fn concurrent_clients() {
 
     assert_eq!(count_kind(&kinds, IngressEventKind::TcpAccept), 4);
     assert_eq!(count_kind(&kinds, IngressEventKind::TcpClose), 4);
+    let session_ids = event_fields(&events, IngressEventKind::TcpAccept)
+        .into_iter()
+        .map(|fields| fields.get("sessionId").cloned().unwrap_or_default())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(session_ids.len(), 4);
 }
 
 #[tokio::test]
@@ -176,6 +206,7 @@ async fn upstream_error_event() {
         TcpRelayConfig {
             bind,
             upstream: unused_tcp_addr().await,
+            ..TcpRelayConfig::default()
         },
         events.clone(),
     ));
@@ -187,4 +218,54 @@ async fn upstream_error_event() {
 
     assert!(kinds.contains(&IngressEventKind::TcpAccept));
     assert!(kinds.contains(&IngressEventKind::TcpError));
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorStage"),
+        "outbound-connect"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "outbound"),
+        "direct"
+    );
+}
+
+#[tokio::test]
+async fn max_sessions_capacity_error() {
+    let upstream = TcpListener::bind(local_addr())
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    let (release_tx, release_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let (_stream, _) = upstream.accept().await.expect("accept upstream");
+        let _ = release_rx.await;
+    });
+
+    let bind = unused_tcp_addr().await;
+    let events = EventStore::default();
+    tokio::spawn(run_tcp(
+        TcpRelayConfig {
+            bind,
+            upstream: upstream_addr,
+            max_sessions: 1,
+        },
+        events.clone(),
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let _first = TcpStream::connect(bind).await.expect("connect first");
+    let _ = wait_for_event(&events, IngressEventKind::TcpAccept).await;
+    let mut second = TcpStream::connect(bind).await.expect("connect second");
+    let _ = second.write_all(b"over-limit").await;
+    let kinds = wait_for_event(&events, IngressEventKind::TcpError).await;
+    let _ = release_tx.send(());
+
+    assert!(kinds.contains(&IngressEventKind::TcpError));
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorStage"),
+        "inbound-capacity"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "maxSessions"),
+        "1"
+    );
 }

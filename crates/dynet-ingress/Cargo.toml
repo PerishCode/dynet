@@ -8,5 +8,6 @@ description = "Transparent ingress relay experiments for dynet."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+shadowsocks-prototype = { path = "../../prototype/shadowsocks" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 utoipa = "5"

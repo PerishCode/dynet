@@ -29,6 +29,9 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   for cold-start ports and upstreams.
 - `scripts/smoke/` owns small local shell smoke checks. Keep it dependency-light
   and do not rebuild the old Python/VM experiment system here.
+- `prototype/shadowsocks/` owns the experimental hand-written Shadowsocks
+  client protocol implementation. Keep protocol mechanics here; `dynet-ingress`
+  should only adapt it behind the outbound boundary.
 - `flavor.json` owns the source shape scan for supported files.
 - When adding a new subtree, document its ownership here in the same change.
 

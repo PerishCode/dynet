@@ -1,4 +1,5 @@
 .task/
+dynet.toml
 target/
 dist/
 .venv/

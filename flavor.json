@@ -3,6 +3,8 @@
     "include": [
       "crates/*/src/**",
       "crates/*/tests/**",
+      "prototype/*/src/**",
+      "prototype/*/tests/**",
       "scripts/smoke/**"
     ],
     "exclude": [
