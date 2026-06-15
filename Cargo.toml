@@ -1,8 +1,9 @@
 [workspace]
 members = [
+    "crates/dynet-api",
     "crates/dynet-cli",
-    "crates/dynet-core",
-    "crates/dynet-runtime",
+    "crates/dynet-ingress",
+    "crates/dynet-state",
 ]
 resolver = "2"
 

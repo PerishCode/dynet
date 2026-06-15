@@ -3,56 +3,12 @@
     "include": [
       "crates/*/src/**",
       "crates/*/tests/**",
-      "scripts/**/*.py"
+      "scripts/smoke/**"
     ],
     "exclude": [
       "**/target/**",
       "**/.venv/**",
       "**/__pycache__/**"
     ]
-  },
-  "overrides": [
-    {
-      "match": "scripts/**/*.py",
-      "kind": "file",
-      "rules": {
-        "core/dispatch/branch-too-long": {
-          "severity": "warning"
-        },
-        "core/function/too-long": {
-          "severity": "warning"
-        },
-        "core/naming/too-many-words": {
-          "severity": "warning"
-        },
-        "core/source/too-long": {
-          "severity": "warning"
-        },
-        "python/parse/error": {
-          "severity": "warning"
-        }
-      }
-    },
-    {
-      "match": "scripts/**",
-      "kind": "dir",
-      "rules": {
-        "core/fs/too-many-children": {
-          "severity": "warning"
-        }
-      }
-    },
-    {
-      "match": "scripts/cli",
-      "kind": "dir",
-      "rules": {
-        "core/fs/too-many-children": {
-          "severity": "warning",
-          "payload": {
-            "max_children": 12
-          }
-        }
-      }
-    }
-  ]
+  }
 }
