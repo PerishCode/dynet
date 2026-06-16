@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     env,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -14,7 +14,9 @@ use dynet_runtime::{
     RuntimeState, RuntimeStore, SchedulerPolicy,
 };
 use tokio::{
+    io::AsyncReadExt,
     net::{TcpListener, UdpSocket},
+    task::JoinHandle,
     time,
 };
 
@@ -32,6 +34,32 @@ pub async fn unused_tcp_addr() -> SocketAddr {
 pub async fn unused_udp_addr() -> SocketAddr {
     let socket = UdpSocket::bind(local_addr()).await.expect("bind udp port");
     socket.local_addr().expect("udp addr")
+}
+
+pub async fn spawn_dns_a(address: Ipv4Addr) -> SocketAddr {
+    let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
+    let dns_addr = dns.local_addr().expect("dns addr");
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 1024];
+        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
+        let response = dns_a_response(&buffer[..size], address);
+        dns.send_to(&response, peer).await.expect("send response");
+    });
+    dns_addr
+}
+
+pub async fn spawn_ss_salt_server() -> (SocketAddr, JoinHandle<[u8; 32]>) {
+    let listener = TcpListener::bind(local_addr())
+        .await
+        .expect("bind ss server");
+    let address = listener.local_addr().expect("ss server addr");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept ss server");
+        let mut salt = [0_u8; 32];
+        stream.read_exact(&mut salt).await.expect("read ss salt");
+        salt
+    });
+    (address, task)
 }
 
 pub fn event_kinds(events: &EventStore) -> Vec<IngressEventKind> {
@@ -216,4 +244,28 @@ fn temp_db_path(name: &str) -> PathBuf {
         "dynet-ingress-{name}-{}-{now}.sqlite",
         std::process::id()
     ))
+}
+
+fn dns_a_response(query: &[u8], address: Ipv4Addr) -> Vec<u8> {
+    let question_end = query
+        .iter()
+        .enumerate()
+        .skip(12)
+        .find_map(|(index, byte)| (*byte == 0).then_some(index + 5))
+        .expect("question end");
+    let mut response = Vec::new();
+    response.extend_from_slice(&query[..2]);
+    response.extend_from_slice(&0x8180_u16.to_be_bytes());
+    response.extend_from_slice(&1_u16.to_be_bytes());
+    response.extend_from_slice(&1_u16.to_be_bytes());
+    response.extend_from_slice(&0_u16.to_be_bytes());
+    response.extend_from_slice(&0_u16.to_be_bytes());
+    response.extend_from_slice(&query[12..question_end]);
+    response.extend_from_slice(&[0xc0, 0x0c]);
+    response.extend_from_slice(&1_u16.to_be_bytes());
+    response.extend_from_slice(&1_u16.to_be_bytes());
+    response.extend_from_slice(&60_u32.to_be_bytes());
+    response.extend_from_slice(&4_u16.to_be_bytes());
+    response.extend_from_slice(&address.octets());
+    response
 }

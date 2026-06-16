@@ -59,10 +59,14 @@ impl Outbound for GraphOutbound {
         &self,
         session: TcpOutboundSession,
     ) -> Result<TcpOutboundOutcome, OutboundError> {
-        reject_chained_tcp(&session.decision)?;
-        self.outbound_for_decision(&session.decision)?
-            .handle_tcp(session)
-            .await
+        let outbound = self.outbound_for_decision(&session.decision)?;
+        if session.decision.trace.len() == 1 && session.decision.terminal.kind() == "direct" {
+            return outbound.handle_tcp(session).await;
+        }
+        if session.decision.terminal.kind() == "direct" {
+            return outbound.handle_tcp_direct(session).await;
+        }
+        Err(chained_error("TCP"))
     }
 
     async fn handle_udp(
@@ -74,13 +78,6 @@ impl Outbound for GraphOutbound {
             .handle_udp(association)
             .await
     }
-}
-
-fn reject_chained_tcp(decision: &SelectionDecision) -> Result<(), OutboundError> {
-    if decision.trace.len() == 1 && decision.terminal.kind() == "direct" {
-        return Ok(());
-    }
-    Err(chained_error("TCP"))
 }
 
 fn reject_chained_udp(decision: &SelectionDecision) -> Result<(), OutboundError> {

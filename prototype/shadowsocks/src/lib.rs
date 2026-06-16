@@ -103,6 +103,14 @@ impl Client {
         format!("{}:{}", self.server, self.port)
     }
 
+    pub fn server_host(&self) -> &str {
+        &self.server
+    }
+
+    pub fn server_port(&self) -> u16 {
+        self.port
+    }
+
     pub fn udp_session(&self) -> UdpSession {
         let protocol = match &self.protocol {
             Protocol::Aead2017(cipher) => UdpProtocol::Aead2017(cipher.udp_session()),
@@ -127,6 +135,16 @@ impl Client {
                     ),
                 )
             })?;
+        self.relay_tcp_with_stream(downstream, upstream, target)
+            .await
+    }
+
+    pub async fn relay_tcp_with_stream(
+        &self,
+        downstream: TcpStream,
+        upstream: TcpStream,
+        target: SocketAddr,
+    ) -> Result<TcpRelayOutcome, Error> {
         let upstream_addr = upstream.peer_addr().map_err(|error| {
             Error::new(
                 "outbound-connect",

@@ -6,7 +6,10 @@ use std::{
     time::Duration,
 };
 
-use dynet_ingress::{run_socks5, run_socks5_graph, OutboundConfig, Socks5IngressConfig};
+use dynet_ingress::{
+    run_socks5, run_socks5_graph, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
+    Socks5IngressConfig,
+};
 use dynet_runtime::{DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState};
 use support::{event_field, local_addr, unused_tcp_addr, wait_for_count, wait_for_event};
 use tokio::{
@@ -88,14 +91,7 @@ async fn domain_connect_uses_dns() {
         stream.write_all(&request).await.expect("write response");
     });
 
-    let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
-    let dns_addr = dns.local_addr().expect("dns addr");
-    tokio::spawn(async move {
-        let mut buffer = [0_u8; 1024];
-        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
-        let response = dns_a_response(&buffer[..size], Ipv4Addr::LOCALHOST);
-        dns.send_to(&response, peer).await.expect("send response");
-    });
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
     let runtime = runtime_with_dns(dns_addr);
@@ -151,14 +147,7 @@ async fn graph_routes_node() {
         stream.write_all(&request).await.expect("write response");
     });
 
-    let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
-    let dns_addr = dns.local_addr().expect("dns addr");
-    tokio::spawn(async move {
-        let mut buffer = [0_u8; 1024];
-        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
-        let response = dns_a_response(&buffer[..size], Ipv4Addr::LOCALHOST);
-        dns.send_to(&response, peer).await.expect("send response");
-    });
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
@@ -202,15 +191,48 @@ async fn graph_routes_node() {
 }
 
 #[tokio::test]
+async fn graph_chains_shadowsocks_direct() {
+    let (ss_addr, ss_task) = support::spawn_ss_salt_server().await;
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let mut outbounds = BTreeMap::new();
+    outbounds.insert(
+        "routed-node".to_string(),
+        OutboundConfig::Shadowsocks(ShadowsocksConfig {
+            server: ss_addr.ip().to_string(),
+            port: ss_addr.port(),
+            method: ShadowsocksMethod::Aes256Gcm,
+            password: "fake-password".to_string(),
+        }),
+    );
+    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+
+    let salt = time::timeout(Duration::from_secs(2), ss_task)
+        .await
+        .expect("ss server timeout")
+        .expect("ss task");
+    assert_ne!(salt, [0_u8; 32]);
+}
+
+#[tokio::test]
 async fn graph_chain_fails_tcp() {
-    let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
-    let dns_addr = dns.local_addr().expect("dns addr");
-    tokio::spawn(async move {
-        let mut buffer = [0_u8; 1024];
-        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
-        let response = dns_a_response(&buffer[..size], Ipv4Addr::LOCALHOST);
-        dns.send_to(&response, peer).await.expect("send response");
-    });
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
@@ -429,30 +451,6 @@ fn parse_socks_udp(packet: &[u8]) -> (SocketAddr, Vec<u8>) {
         }
         _ => panic!("unexpected udp address type"),
     }
-}
-
-fn dns_a_response(query: &[u8], address: Ipv4Addr) -> Vec<u8> {
-    let question_end = query
-        .iter()
-        .enumerate()
-        .skip(12)
-        .find_map(|(index, byte)| (*byte == 0).then_some(index + 5))
-        .expect("question end");
-    let mut response = Vec::new();
-    response.extend_from_slice(&query[..2]);
-    response.extend_from_slice(&0x8180_u16.to_be_bytes());
-    response.extend_from_slice(&1_u16.to_be_bytes());
-    response.extend_from_slice(&1_u16.to_be_bytes());
-    response.extend_from_slice(&0_u16.to_be_bytes());
-    response.extend_from_slice(&0_u16.to_be_bytes());
-    response.extend_from_slice(&query[12..question_end]);
-    response.extend_from_slice(&[0xc0, 0x0c]);
-    response.extend_from_slice(&1_u16.to_be_bytes());
-    response.extend_from_slice(&1_u16.to_be_bytes());
-    response.extend_from_slice(&60_u32.to_be_bytes());
-    response.extend_from_slice(&4_u16.to_be_bytes());
-    response.extend_from_slice(&address.octets());
-    response
 }
 
 fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
