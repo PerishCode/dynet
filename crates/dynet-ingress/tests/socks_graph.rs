@@ -2,7 +2,9 @@ mod support;
 
 use std::{collections::BTreeMap, net::Ipv4Addr, time::Duration};
 
-use dynet_ingress::{run_socks5_graph, OutboundConfig, Socks5IngressConfig, VmessConfig};
+use dynet_ingress::{
+    run_socks5_graph, OutboundConfig, Socks5IngressConfig, VlessConfig, VmessConfig,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -46,6 +48,48 @@ async fn graph_chains_vmess_direct() {
         .expect("vmess server timeout")
         .expect("vmess task");
     assert_ne!(prefix, [0_u8; 16]);
+}
+
+#[tokio::test]
+async fn graph_chains_vless_direct() {
+    let (vless_addr, reality_task) = support::spawn_tcp_prefix_server::<1>().await;
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let mut outbounds = BTreeMap::new();
+    outbounds.insert(
+        "routed-node".to_string(),
+        OutboundConfig::Vless(VlessConfig {
+            server: vless_addr.ip().to_string(),
+            port: vless_addr.port(),
+            uuid: "00112233-4455-6677-8899-aabbccddeeff".to_string(),
+            server_name: "example.com".to_string(),
+            public_key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI".to_string(),
+            short_id: "0123456789abcdef".to_string(),
+        }),
+    );
+    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+
+    let prefix = time::timeout(Duration::from_secs(2), reality_task)
+        .await
+        .expect("vless server timeout")
+        .expect("vless task");
+    assert_eq!(prefix[0], 0x16);
 }
 
 async fn socks_connect_domain(bind: std::net::SocketAddr, domain: &str, port: u16) -> TcpStream {

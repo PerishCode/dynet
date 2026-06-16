@@ -158,6 +158,14 @@ impl Client {
         format!("{}:{}", self.server, self.port)
     }
 
+    pub fn server_host(&self) -> &str {
+        &self.server
+    }
+
+    pub fn server_port(&self) -> u16 {
+        self.port
+    }
+
     pub fn tcp_request_header(&self, target: TargetAddress) -> Result<Vec<u8>, Error> {
         vless_protocol::tcp_request_header(&self.user_id, target)
     }
@@ -195,7 +203,16 @@ impl Client {
         &self,
         target: SocketAddr,
     ) -> Result<(TcpRelayParts, TcpStreamHandle), Error> {
-        let (upstream, mut stream) = self.connect_reality().await?;
+        self.connect_tcp_with_stream(target, self.dial_tcp_server().await?)
+            .await
+    }
+
+    pub async fn connect_tcp_with_stream(
+        &self,
+        target: SocketAddr,
+        tcp: TcpStream,
+    ) -> Result<(TcpRelayParts, TcpStreamHandle), Error> {
+        let (upstream, mut stream) = self.connect_reality_with_stream(tcp).await?;
         stream
             .write_all(&self.tcp_request_header(TargetAddress::socket(target))?)
             .await
@@ -251,8 +268,8 @@ impl Client {
         ))
     }
 
-    async fn connect_reality(&self) -> Result<(SocketAddr, RealityStream), Error> {
-        let mut tcp = TcpStream::connect((self.server.as_str(), self.port))
+    async fn dial_tcp_server(&self) -> Result<TcpStream, Error> {
+        let tcp = TcpStream::connect((self.server.as_str(), self.port))
             .await
             .map_err(|error| {
                 Error::new(
@@ -263,6 +280,18 @@ impl Client {
                     ),
                 )
             })?;
+        Ok(tcp)
+    }
+
+    async fn connect_reality(&self) -> Result<(SocketAddr, RealityStream), Error> {
+        self.connect_reality_with_stream(self.dial_tcp_server().await?)
+            .await
+    }
+
+    async fn connect_reality_with_stream(
+        &self,
+        mut tcp: TcpStream,
+    ) -> Result<(SocketAddr, RealityStream), Error> {
         let upstream = tcp.peer_addr().map_err(|error| {
             Error::new(
                 "outbound-connect",

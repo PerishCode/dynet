@@ -123,8 +123,9 @@ impl OutboundMedium {
         match self {
             Self::Shadowsocks(outbound) => outbound.handle_tcp_via_direct(session).await,
             Self::Trojan(outbound) => outbound.handle_tcp_via_direct(session).await,
+            Self::Vless(outbound) => outbound.handle_tcp_via_direct(session).await,
             Self::Vmess(outbound) => outbound.handle_tcp_via_direct(session).await,
-            Self::Direct(_) | Self::Vless(_) => Err(OutboundError {
+            Self::Direct(_) => Err(OutboundError {
                 stage: "outbound-select",
                 upstream: None,
                 message: format!(

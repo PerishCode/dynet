@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::{io, sync::mpsc, time};
+use tokio::{io, net::TcpStream, sync::mpsc, time};
 
 use vless_prototype::{
     Client as VlessClient, ClientConfig as VlessClientConfig, UdpReader as VlessUdpReader,
@@ -36,6 +36,41 @@ impl VlessOutbound {
 
     fn tag(&self) -> &'static str {
         "vless"
+    }
+
+    pub(super) async fn handle_tcp_via_direct(
+        &self,
+        mut session: TcpOutboundSession,
+    ) -> Result<TcpOutboundOutcome, OutboundError> {
+        let upstream = TcpStream::connect((self.client.server_host(), self.client.server_port()))
+            .await
+            .map_err(|error| OutboundError {
+                stage: "outbound-connect",
+                upstream: None,
+                message: format!(
+                    "failed connecting VLESS Reality server {} through direct dialer: {error}",
+                    self.client.server_endpoint()
+                ),
+            })?;
+        let (parts, mut upstream) = self
+            .client
+            .connect_tcp_with_stream(session.target, upstream)
+            .await
+            .map_err(|error| vless_error(error, None))?;
+        let (client_to_upstream, upstream_to_client) =
+            io::copy_bidirectional(&mut session.downstream, &mut upstream)
+                .await
+                .map_err(|error| OutboundError {
+                    stage: "relay",
+                    upstream: Some(parts.upstream),
+                    message: format!("VLESS TCP relay failed: {error}"),
+                })?;
+        Ok(TcpOutboundOutcome {
+            upstream: parts.upstream,
+            client_to_upstream_bytes: client_to_upstream,
+            upstream_to_client_bytes: upstream_to_client,
+            close_reason: "normal",
+        })
     }
 }
 
