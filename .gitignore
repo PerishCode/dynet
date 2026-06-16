@@ -1,5 +1,6 @@
 .task/
 dynet.toml
+dynet.sqlite*
 target/
 dist/
 .venv/
