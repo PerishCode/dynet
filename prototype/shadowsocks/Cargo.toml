@@ -7,9 +7,15 @@ repository.workspace = true
 description = "Prototype hand-written Shadowsocks client protocol support for dynet."
 
 [dependencies]
+aes = "0.8"
 aes-gcm = "0.10"
+base64 = "0.22"
+blake3 = "1"
 hkdf = "0.12"
 md-5 = "0.10"
 rand = "0.8"
 sha1 = "0.10"
-tokio = { version = "1", features = ["io-util", "net"] }
+tokio = { version = "1", features = ["io-util", "macros", "net"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt"] }

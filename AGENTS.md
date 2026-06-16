@@ -32,6 +32,10 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
 - `prototype/shadowsocks/` owns the experimental hand-written Shadowsocks
   client protocol implementation. Keep protocol mechanics here; `dynet-ingress`
   should only adapt it behind the outbound boundary.
+- `prototype/shadowsocks/src/aead2022/` owns Shadowsocks 2022 crypto and UDP
+  session internals.
+- `prototype/shadowsocks/tests/` owns Shadowsocks wire-format integration
+  tests against the prototype public API.
 - `flavor.json` owns the source shape scan for supported files.
 - When adding a new subtree, document its ownership here in the same change.
 

@@ -63,12 +63,14 @@ pub struct ShadowsocksConfig {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ShadowsocksMethod {
     Aes256Gcm,
+    Blake3Aes128Gcm2022,
 }
 
 impl ShadowsocksMethod {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Aes256Gcm => "aes-256-gcm",
+            Self::Blake3Aes128Gcm2022 => "2022-blake3-aes-128-gcm",
         }
     }
 }

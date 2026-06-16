@@ -7,7 +7,7 @@ use tokio::{
     time,
 };
 
-use shadowsocks_prototype::{Client as ShadowsocksClient, ClientConfig, Method};
+use shadowsocks_prototype::{Client as ShadowsocksClient, ClientConfig, Method, UdpSession};
 
 use crate::{
     session_fields, EventStore, IngressEventKind, OutboundConfig, ShadowsocksConfig,
@@ -99,12 +99,13 @@ impl TryFrom<OutboundConfig> for OutboundMedium {
 impl ShadowsocksOutbound {
     fn new(config: ShadowsocksConfig) -> Result<Self, String> {
         Ok(Self {
-            client: ShadowsocksClient::new(ClientConfig {
+            client: ShadowsocksClient::try_new(ClientConfig {
                 server: config.server,
                 port: config.port,
                 method: shadowsocks_method(config.method),
                 password: config.password,
-            }),
+            })
+            .map_err(|error| error.to_string())?,
         })
     }
 
@@ -309,6 +310,7 @@ impl Outbound for ShadowsocksOutbound {
             upstream: None,
             message: format!("failed reading Shadowsocks UDP server address: {error}"),
         })?;
+        let mut udp_session = self.client.udp_session();
         let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
         loop {
             let step = time::timeout(
@@ -322,8 +324,7 @@ impl Outbound for ShadowsocksOutbound {
             .await;
             match step {
                 Ok(UdpStep::Downstream(payload)) => {
-                    let packet = self
-                        .client
+                    let packet = udp_session
                         .encode_udp_datagram(association.target, &payload)
                         .map_err(|error| shadowsocks_error(error, Some(upstream)))?;
                     upstream_socket
@@ -336,8 +337,13 @@ impl Outbound for ShadowsocksOutbound {
                         })?;
                 }
                 Ok(UdpStep::Upstream(size)) => {
-                    self.handle_udp_response(&association, upstream, &buffer[..size])
-                        .await?;
+                    self.handle_udp_response(
+                        &mut udp_session,
+                        &association,
+                        upstream,
+                        &buffer[..size],
+                    )
+                    .await?;
                 }
                 Ok(UdpStep::Closed) => {
                     return Ok(UdpOutboundOutcome {
@@ -359,12 +365,12 @@ impl Outbound for ShadowsocksOutbound {
 impl ShadowsocksOutbound {
     async fn handle_udp_response(
         &self,
+        udp_session: &mut UdpSession,
         association: &UdpOutboundAssociation,
         upstream: SocketAddr,
         packet: &[u8],
     ) -> Result<(), OutboundError> {
-        let payload = self
-            .client
+        let payload = udp_session
             .decode_udp_datagram(packet)
             .map_err(|error| shadowsocks_error(error, Some(upstream)))?;
         association
@@ -396,6 +402,7 @@ impl ShadowsocksOutbound {
 fn shadowsocks_method(method: ShadowsocksMethod) -> Method {
     match method {
         ShadowsocksMethod::Aes256Gcm => Method::Aes256Gcm,
+        ShadowsocksMethod::Blake3Aes128Gcm2022 => Method::Blake3Aes128Gcm2022,
     }
 }
 

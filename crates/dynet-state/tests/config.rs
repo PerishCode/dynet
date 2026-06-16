@@ -172,6 +172,36 @@ udp = true
 }
 
 #[test]
+fn loads_shadowsocks_2022_outbound() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_shadowsocks_2022_outbound");
+    fs::write(
+        &config_path,
+        r#"
+[outbound]
+type = "ss"
+server = "demo.example"
+port = 8388
+method = "2022-blake3-aes-128-gcm"
+password = "AQIDBAUGBwgJCgsMDQ4PEA=="
+udp = true
+"#,
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    let OutboundConfig::Shadowsocks(outbound) = config.outbound else {
+        panic!("expected shadowsocks outbound");
+    };
+    assert_eq!(outbound.method, ShadowsocksMethod::Blake3Aes128Gcm2022);
+    assert_eq!(outbound.password, "AQIDBAUGBwgJCgsMDQ4PEA==");
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
 fn rejects_udp_missing_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
