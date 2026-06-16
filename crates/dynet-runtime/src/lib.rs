@@ -12,6 +12,10 @@ use std::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
+mod persistence;
+
+pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
+
 const EVENT_LIMIT: usize = 1024;
 const DEFAULT_NODE_ID: &str = "default";
 
@@ -26,19 +30,21 @@ struct RuntimeInner {
     nodes: NodeStore,
     dns_map: ObservedDnsMap,
     selector_matrix: SelectorMatrix,
+    observation_sink: Option<persistence::ObservationSink>,
     next_decision_id: AtomicU64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EventStore {
     inner: Arc<EventInner>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct EventInner {
     next_event_id: AtomicU64,
     next_session_id: AtomicU64,
     events: Mutex<VecDeque<IngressEvent>>,
+    observation_sink: Option<persistence::ObservationSink>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -155,6 +161,41 @@ impl RuntimeState {
                 nodes,
                 dns_map: ObservedDnsMap,
                 selector_matrix: SelectorMatrix,
+                observation_sink: None,
+                next_decision_id: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    pub async fn from_store_seed(
+        store: RuntimeStore,
+        tag: impl Into<String>,
+    ) -> Result<Self, RuntimeStoreError> {
+        let mut nodes = store.load_nodes().await?;
+        if nodes.is_empty() {
+            let node = OutboundNode {
+                id: NodeId::new(DEFAULT_NODE_ID),
+                tag: tag.into(),
+                enabled: true,
+            };
+            store.seed_node(&node).await?;
+            nodes.push(node);
+        }
+        let observation_sink = store.spawn_observation_sink();
+        Ok(Self::from_nodes(nodes, Some(observation_sink)))
+    }
+
+    fn from_nodes(
+        nodes: Vec<OutboundNode>,
+        observation_sink: Option<persistence::ObservationSink>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RuntimeInner {
+                events: EventStore::with_sink(observation_sink.clone()),
+                nodes: NodeStore::from_nodes(nodes),
+                dns_map: ObservedDnsMap,
+                selector_matrix: SelectorMatrix,
+                observation_sink,
                 next_decision_id: AtomicU64::new(0),
             }),
         }
@@ -176,16 +217,30 @@ impl RuntimeState {
         &self.inner.selector_matrix
     }
 
-    pub fn select(&self, _context: SelectionContext) -> Result<SelectionDecision, SelectionError> {
+    pub fn persistence_stats(&self) -> PersistenceStatsSnapshot {
+        self.inner.observation_sink.as_ref().map_or(
+            PersistenceStatsSnapshot {
+                dropped_observations: 0,
+                sink_errors: 0,
+            },
+            |sink| sink.stats_snapshot(),
+        )
+    }
+
+    pub fn select(&self, context: SelectionContext) -> Result<SelectionDecision, SelectionError> {
         let node_id =
             self.inner.nodes.default_node_id().ok_or_else(|| {
                 SelectionError::new("no enabled default outbound node is available")
             })?;
-        Ok(SelectionDecision {
+        let decision = SelectionDecision {
             decision_id: self.inner.next_decision_id.fetch_add(1, Ordering::SeqCst) + 1,
             node_id,
             reason: SelectionReason::SingleNode,
-        })
+        };
+        if let Some(sink) = &self.inner.observation_sink {
+            sink.record_selection_decision(context, decision.clone());
+        }
+        Ok(decision)
     }
 }
 
@@ -194,6 +249,24 @@ impl NodeStore {
         let default_node = Some(node.id.clone());
         let mut nodes = BTreeMap::new();
         nodes.insert(node.id.clone(), node);
+        Self {
+            inner: Arc::new(RwLock::new(NodeStoreInner {
+                default_node,
+                nodes,
+            })),
+        }
+    }
+
+    pub fn from_nodes(nodes: Vec<OutboundNode>) -> Self {
+        let default_node = nodes
+            .iter()
+            .find(|node| node.id.as_str() == DEFAULT_NODE_ID && node.enabled)
+            .or_else(|| nodes.iter().find(|node| node.enabled))
+            .map(|node| node.id.clone());
+        let nodes = nodes
+            .into_iter()
+            .map(|node| (node.id.clone(), node))
+            .collect();
         Self {
             inner: Arc::new(RwLock::new(NodeStoreInner {
                 default_node,
@@ -270,7 +343,24 @@ impl fmt::Display for SelectionError {
 
 impl std::error::Error for SelectionError {}
 
+impl Default for EventStore {
+    fn default() -> Self {
+        Self::with_sink(None)
+    }
+}
+
 impl EventStore {
+    fn with_sink(observation_sink: Option<persistence::ObservationSink>) -> Self {
+        Self {
+            inner: Arc::new(EventInner {
+                next_event_id: AtomicU64::new(0),
+                next_session_id: AtomicU64::new(0),
+                events: Mutex::new(VecDeque::new()),
+                observation_sink,
+            }),
+        }
+    }
+
     pub fn next_session_id(&self) -> u64 {
         self.inner.next_session_id.fetch_add(1, Ordering::SeqCst) + 1
     }
@@ -286,7 +376,11 @@ impl EventStore {
         if events.len() == EVENT_LIMIT {
             events.pop_front();
         }
-        events.push_back(event);
+        events.push_back(event.clone());
+        drop(events);
+        if let Some(sink) = &self.inner.observation_sink {
+            sink.record_event(event);
+        }
     }
 
     pub fn snapshot(&self) -> Vec<IngressEvent> {
@@ -320,7 +414,7 @@ impl IntoFields for Vec<(&'static str, String)> {
     }
 }
 
-fn unix_ms() -> u128 {
+pub(crate) fn unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock is before unix epoch")
