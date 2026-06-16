@@ -36,6 +36,11 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   session internals.
 - `prototype/shadowsocks/tests/` owns Shadowsocks wire-format integration
   tests against the prototype public API.
+- `prototype/trojan/` owns the experimental hand-written Trojan client
+  protocol implementation. Keep TLS/protocol mechanics here; `dynet-ingress`
+  should only adapt it behind the outbound boundary.
+- `prototype/trojan/tests/` owns Trojan wire-format integration tests against
+  the prototype public API.
 - `flavor.json` owns the source shape scan for supported files.
 - When adding a new subtree, document its ownership here in the same change.
 

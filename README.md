@@ -96,6 +96,21 @@ Supported prototype Shadowsocks methods are `aes-256-gcm` and
 `2022-blake3-aes-128-gcm`. For `2022-blake3-aes-128-gcm`, `password` must be
 the node's base64-encoded 16-byte pre-shared key.
 
+`dynet.toml` can also hold a local dual-protocol Trojan node. `sni` is optional
+when it matches `server`; `skip-cert-verify` is available for local experiment
+nodes that require it.
+
+```toml
+[outbound]
+type = "trojan"
+server = "node.example.com"
+port = 443
+password = "local-secret"
+sni = "node.example.com"
+skip-cert-verify = true
+udp = true
+```
+
 ## Development
 
 ```bash
