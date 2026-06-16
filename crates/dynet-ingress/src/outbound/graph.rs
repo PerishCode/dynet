@@ -59,6 +59,7 @@ impl Outbound for GraphOutbound {
         &self,
         session: TcpOutboundSession,
     ) -> Result<TcpOutboundOutcome, OutboundError> {
+        reject_chained_tcp(&session.decision)?;
         self.outbound_for_decision(&session.decision)?
             .handle_tcp(session)
             .await
@@ -68,8 +69,31 @@ impl Outbound for GraphOutbound {
         &self,
         association: UdpOutboundAssociation,
     ) -> Result<UdpOutboundOutcome, OutboundError> {
+        reject_chained_udp(&association.decision)?;
         self.outbound_for_decision(&association.decision)?
             .handle_udp(association)
             .await
+    }
+}
+
+fn reject_chained_tcp(decision: &SelectionDecision) -> Result<(), OutboundError> {
+    if decision.trace.len() == 1 && decision.terminal.kind() == "direct" {
+        return Ok(());
+    }
+    Err(chained_error("TCP"))
+}
+
+fn reject_chained_udp(decision: &SelectionDecision) -> Result<(), OutboundError> {
+    if decision.trace.len() == 1 && decision.terminal.kind() == "direct" {
+        return Ok(());
+    }
+    Err(chained_error("UDP"))
+}
+
+fn chained_error(protocol: &str) -> OutboundError {
+    OutboundError {
+        stage: "outbound-select",
+        upstream: None,
+        message: format!("{protocol} chained graph execution is not implemented"),
     }
 }

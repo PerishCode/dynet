@@ -180,6 +180,33 @@ pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     }
 }
 
+pub fn chained_route_seed(dns_addr: SocketAddr) -> RuntimeSeed {
+    let mut seed = route_selected_seed(dns_addr);
+    for group in &mut seed.groups {
+        if group.id.as_str() == "routed" {
+            group.outbound = OutboundRef::named("egress");
+        }
+    }
+    seed.nodes.push(OutboundNode {
+        id: NodeId::new("egress-node"),
+        tag: "direct".to_string(),
+        enabled: true,
+    });
+    seed.groups.push(OutboundGroup {
+        id: GroupId::new("egress"),
+        enabled: true,
+        scheduler: SchedulerPolicy::SingleFirstEnabled,
+        outbound: OutboundRef::direct_audit_outlet(),
+    });
+    seed.group_members.push(GroupMember {
+        group_id: GroupId::new("egress"),
+        node_id: NodeId::new("egress-node"),
+        enabled: true,
+        priority: 0,
+    });
+    seed
+}
+
 fn temp_db_path(name: &str) -> PathBuf {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

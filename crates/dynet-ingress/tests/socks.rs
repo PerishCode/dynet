@@ -202,6 +202,56 @@ async fn graph_routes_node() {
 }
 
 #[tokio::test]
+async fn graph_chain_fails_tcp() {
+    let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
+    let dns_addr = dns.local_addr().expect("dns addr");
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 1024];
+        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
+        let response = dns_a_response(&buffer[..size], Ipv4Addr::LOCALHOST);
+        dns.send_to(&response, peer).await.expect("send response");
+    });
+
+    let bind = unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut outbounds = BTreeMap::new();
+    outbounds.insert("routed-node".to_string(), OutboundConfig::Direct);
+    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+    let mut response = Vec::new();
+    let read = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("read response");
+
+    assert_eq!(read, 0);
+    let _ = wait_for_event(&events, IngressEventKind::TcpError).await;
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorStage"),
+        "outbound-select"
+    );
+    assert!(event_field(&events, IngressEventKind::TcpError, "error").contains("TCP chained graph"));
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "selectionGroups"),
+        "routed,egress"
+    );
+}
+
+#[tokio::test]
 async fn udp_associate() {
     let upstream = UdpSocket::bind(local_addr()).await.expect("bind upstream");
     let upstream_addr = upstream.local_addr().expect("upstream addr");
