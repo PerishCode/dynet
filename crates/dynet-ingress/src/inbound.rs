@@ -82,26 +82,22 @@ where
                     return;
                 }
             };
-            let mut fields = session_fields(
-                session_id,
-                TCP_INBOUND,
-                outbound.tag(),
-                peer,
-                target,
-                target,
-            );
+            let outbound_tag = outbound.decision_tag(&decision);
+            let mut fields =
+                session_fields(session_id, TCP_INBOUND, outbound_tag, peer, target, target);
             push_decision_fields(&mut fields, &decision);
             runtime.events().record(IngressEventKind::TcpAccept, fields);
             let session = TcpOutboundSession {
                 target,
                 downstream: client,
+                decision: decision.clone(),
             };
             match outbound.handle_tcp(session).await {
                 Ok(outcome) => {
                     let mut fields = session_fields(
                         session_id,
                         TCP_INBOUND,
-                        outbound.tag(),
+                        outbound_tag,
                         peer,
                         target,
                         outcome.upstream,
@@ -124,7 +120,7 @@ where
                         error_fields(
                             session_id,
                             TCP_INBOUND,
-                            outbound.tag(),
+                            outbound_tag,
                             peer,
                             target,
                             error,
@@ -211,13 +207,14 @@ where
                     let session = UdpSessionSender {
                         session_id,
                         decision: decision.clone(),
+                        outbound_tag: outbound.decision_tag(&decision),
                         tx,
                     };
                     sessions.insert(peer, session.clone());
                     spawn_udp_association(UdpAssociationTask {
                         peer,
                         config,
-                        outbound: outbound.clone(),
+                    outbound: outbound.clone(),
                         downstream: socket.clone(),
                         downstream_rx: rx,
                         complete_tx: complete_tx.clone(),
@@ -231,7 +228,7 @@ where
                 let mut fields = session_fields(
                     sender.session_id,
                     UDP_INBOUND,
-                    outbound.tag(),
+                    sender.outbound_tag,
                     peer,
                     target,
                     target,
@@ -277,14 +274,9 @@ where
             runtime,
         } = task;
         let target = config.upstream;
-        let mut fields = session_fields(
-            session_id,
-            UDP_INBOUND,
-            outbound.tag(),
-            peer,
-            target,
-            target,
-        );
+        let outbound_tag = outbound.decision_tag(&decision);
+        let mut fields =
+            session_fields(session_id, UDP_INBOUND, outbound_tag, peer, target, target);
         push_decision_fields(&mut fields, &decision);
         runtime
             .events()
@@ -322,21 +314,15 @@ where
                     error_fields(
                         session_id,
                         UDP_INBOUND,
-                        outbound.tag(),
+                        outbound_tag,
                         peer,
                         target,
                         error,
                         Some(&decision),
                     ),
                 );
-                let mut fields = session_fields(
-                    session_id,
-                    UDP_INBOUND,
-                    outbound.tag(),
-                    peer,
-                    target,
-                    target,
-                );
+                let mut fields =
+                    session_fields(session_id, UDP_INBOUND, outbound_tag, peer, target, target);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("closeReason", "error".to_string()));
                 runtime
@@ -371,5 +357,6 @@ fn error_fields(
 struct UdpSessionSender {
     session_id: u64,
     decision: SelectionDecision,
+    outbound_tag: &'static str,
     tx: mpsc::Sender<Vec<u8>>,
 }

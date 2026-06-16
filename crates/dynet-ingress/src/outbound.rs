@@ -15,11 +15,13 @@ use crate::{
     ShadowsocksMethod, DATAGRAM_LIMIT,
 };
 
+mod graph;
 mod trojan;
 mod udp_downstream;
 mod vless;
 mod vmess;
 
+pub(crate) use graph::GraphOutbound;
 use trojan::TrojanOutbound;
 pub(crate) use udp_downstream::UdpDownstream;
 use vless::VlessOutbound;
@@ -39,6 +41,7 @@ pub(crate) struct ShadowsocksOutbound {
 pub(crate) struct TcpOutboundSession {
     pub target: SocketAddr,
     pub downstream: TcpStream,
+    pub decision: SelectionDecision,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -77,6 +80,10 @@ pub(crate) struct OutboundError {
 
 pub(crate) trait Outbound: Clone + Send + Sync + 'static {
     fn tag(&self) -> &'static str;
+
+    fn decision_tag(&self, _decision: &SelectionDecision) -> &'static str {
+        self.tag()
+    }
 
     fn handle_tcp(
         &self,

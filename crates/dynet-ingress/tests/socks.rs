@@ -1,11 +1,12 @@
 mod support;
 
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     time::Duration,
 };
 
-use dynet_ingress::{run_socks5, Socks5IngressConfig};
+use dynet_ingress::{run_socks5, run_socks5_graph, OutboundConfig, Socks5IngressConfig};
 use dynet_runtime::{DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState};
 use support::{event_field, local_addr, unused_tcp_addr, wait_for_count, wait_for_event};
 use tokio::{
@@ -131,6 +132,72 @@ async fn domain_connect_uses_dns() {
     assert_eq!(
         runtime.dns_map().snapshot()["example.test"],
         vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
+    );
+}
+
+#[tokio::test]
+async fn graph_routes_node() {
+    let upstream = TcpListener::bind(local_addr())
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await.expect("accept upstream");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .await
+            .expect("read request");
+        stream.write_all(&request).await.expect("write response");
+    });
+
+    let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
+    let dns_addr = dns.local_addr().expect("dns addr");
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 1024];
+        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
+        let response = dns_a_response(&buffer[..size], Ipv4Addr::LOCALHOST);
+        dns.send_to(&response, peer).await.expect("send response");
+    });
+
+    let bind = unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut outbounds = BTreeMap::new();
+    outbounds.insert("routed-node".to_string(), OutboundConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", upstream_addr.port()).await;
+    client
+        .write_all(b"graph-route")
+        .await
+        .expect("write payload");
+    client.shutdown().await.expect("shutdown payload");
+    let mut response = Vec::new();
+    client
+        .read_to_end(&mut response)
+        .await
+        .expect("read response");
+
+    assert_eq!(response, b"graph-route");
+    let _ = wait_for_event(&events, IngressEventKind::TcpClose).await;
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "nodeId"),
+        "routed-node"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "selectionGroups"),
+        "routed"
     );
 }
 

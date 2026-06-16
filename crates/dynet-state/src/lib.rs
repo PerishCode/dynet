@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fs, io,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -37,7 +38,7 @@ pub struct ControlConfig {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OutboundGraphConfig {
     pub seed: RuntimeSeed,
-    pub execution_outbound: OutboundConfig,
+    pub execution_outbounds: BTreeMap<String, OutboundConfig>,
 }
 
 impl Default for Config {
@@ -54,9 +55,11 @@ impl Default for Config {
 
 impl Default for OutboundGraphConfig {
     fn default() -> Self {
+        let mut execution_outbounds = BTreeMap::new();
+        execution_outbounds.insert("default-node".to_string(), OutboundConfig::Direct);
         Self {
             seed: RuntimeSeed::single_node("direct"),
-            execution_outbound: OutboundConfig::Direct,
+            execution_outbounds,
         }
     }
 }

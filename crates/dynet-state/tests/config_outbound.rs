@@ -32,7 +32,7 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Shadowsocks(outbound) = config.outbound.execution_outbound else {
+    let OutboundConfig::Shadowsocks(outbound) = node_outbound(&config, "default-node") else {
         panic!("expected shadowsocks outbound");
     };
     assert_eq!(outbound.server, "demo.example");
@@ -65,7 +65,7 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Shadowsocks(outbound) = config.outbound.execution_outbound else {
+    let OutboundConfig::Shadowsocks(outbound) = node_outbound(&config, "default-node") else {
         panic!("expected shadowsocks outbound");
     };
     assert_eq!(outbound.method, ShadowsocksMethod::Blake3Aes128Gcm2022);
@@ -97,7 +97,7 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Trojan(outbound) = config.outbound.execution_outbound else {
+    let OutboundConfig::Trojan(outbound) = node_outbound(&config, "default-node") else {
         panic!("expected trojan outbound");
     };
     assert_eq!(outbound.server, "demo.example");
@@ -131,7 +131,7 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Trojan(outbound) = config.outbound.execution_outbound else {
+    let OutboundConfig::Trojan(outbound) = node_outbound(&config, "default-node") else {
         panic!("expected trojan outbound");
     };
     assert_eq!(outbound.sni.as_deref(), Some("sni.example"));
@@ -163,7 +163,7 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Vmess(outbound) = config.outbound.execution_outbound else {
+    let OutboundConfig::Vmess(outbound) = node_outbound(&config, "default-node") else {
         panic!("expected vmess outbound");
     };
     assert_eq!(outbound.server, "demo.example");
@@ -202,7 +202,7 @@ short-id = "0123456789abcdef"
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Vless(outbound) = config.outbound.execution_outbound else {
+    let OutboundConfig::Vless(outbound) = node_outbound(&config, "default-node") else {
         panic!("expected vless outbound");
     };
     assert_eq!(outbound.server, "demo.example");
@@ -344,6 +344,14 @@ mode = "smart"
 members = ["default-node"]
 "#
     )
+}
+
+fn node_outbound<'a>(config: &'a Config, id: &str) -> &'a OutboundConfig {
+    config
+        .outbound
+        .execution_outbounds
+        .get(id)
+        .unwrap_or_else(|| panic!("missing outbound node {id}"))
 }
 
 struct EnvGuard {

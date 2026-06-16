@@ -143,28 +143,20 @@ where
         SocketAddr::from(([0, 0, 0, 0], 0)),
     )
     .await?;
-    let mut fields = socks_session_fields(
-        session_id,
-        outbound.tag(),
-        peer,
-        target,
-        &request.destination,
-    );
+    let outbound_tag = outbound.decision_tag(&decision);
+    let mut fields =
+        socks_session_fields(session_id, outbound_tag, peer, target, &request.destination);
     push_decision_fields(&mut fields, &decision);
     runtime.events().record(IngressEventKind::TcpAccept, fields);
     let session = TcpOutboundSession {
         target,
         downstream: client,
+        decision: decision.clone(),
     };
     match outbound.handle_tcp(session).await {
         Ok(outcome) => {
-            let mut fields = socks_session_fields(
-                session_id,
-                outbound.tag(),
-                peer,
-                target,
-                &request.destination,
-            );
+            let mut fields =
+                socks_session_fields(session_id, outbound_tag, peer, target, &request.destination);
             push_decision_fields(&mut fields, &decision);
             fields.push(("upstream", outcome.upstream.to_string()));
             push_endpoint_fields(&mut fields, "upstream", outcome.upstream);
@@ -185,7 +177,7 @@ where
                 IngressEventKind::TcpError,
                 outbound_error_fields(
                     session_id,
-                    outbound.tag(),
+                    outbound_tag,
                     peer,
                     target,
                     &request.destination,
@@ -298,6 +290,7 @@ where
                         select_target(&task.runtime, task.session_id, InboundKind::Udp, target_context)?;
                     let (tx, rx) = mpsc::channel(UDP_CHANNEL_DEPTH);
                     let sender = UdpAssociationSender {
+                        outbound_tag: task.outbound.decision_tag(&decision),
                         decision: decision.clone(),
                         tx,
                     };
@@ -317,8 +310,13 @@ where
                     });
                     sender
                 };
-                let mut fields =
-                    socks_session_fields(task.session_id, task.outbound.tag(), task.peer, target, &packet.destination);
+                let mut fields = socks_session_fields(
+                    task.session_id,
+                    sender.outbound_tag,
+                    task.peer,
+                    target,
+                    &packet.destination,
+                );
                 push_decision_fields(&mut fields, &sender.decision);
                 fields.push(("udpPeer", udp_peer.to_string()));
                 fields.push(("direction", "client-to-upstream".to_string()));
@@ -364,6 +362,7 @@ where
             outbound,
             idle_timeout,
         } = task;
+        let outbound_tag = outbound.decision_tag(&decision);
         let association = UdpOutboundAssociation {
             session_id,
             inbound: SOCKS5_INBOUND,
@@ -380,13 +379,8 @@ where
         };
         match outbound.handle_udp(association).await {
             Ok(outcome) => {
-                let mut fields = socks_session_fields(
-                    session_id,
-                    outbound.tag(),
-                    udp_peer,
-                    target,
-                    &destination,
-                );
+                let mut fields =
+                    socks_session_fields(session_id, outbound_tag, udp_peer, target, &destination);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("upstream", outcome.upstream.to_string()));
                 push_endpoint_fields(&mut fields, "upstream", outcome.upstream);
@@ -400,7 +394,7 @@ where
                     IngressEventKind::UdpError,
                     outbound_error_fields(
                         session_id,
-                        outbound.tag(),
+                        outbound_tag,
                         udp_peer,
                         target,
                         &destination,
@@ -452,6 +446,7 @@ async fn resolve_destination(
 
 #[derive(Debug, Clone)]
 struct UdpAssociationSender {
+    outbound_tag: &'static str,
     decision: dynet_runtime::SelectionDecision,
     tx: mpsc::Sender<Vec<u8>>,
 }

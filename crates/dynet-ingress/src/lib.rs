@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -226,6 +227,19 @@ pub async fn run_tcp_with_outbound(
     .await
 }
 
+pub async fn run_tcp_graph(
+    config: TcpRelayConfig,
+    outbounds: BTreeMap<String, OutboundConfig>,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    inbound::run_tcp(
+        config,
+        outbound::GraphOutbound::try_from(outbounds)?,
+        runtime,
+    )
+    .await
+}
+
 pub async fn run_udp_with_outbound(
     config: UdpRelayConfig,
     outbound: OutboundConfig,
@@ -239,6 +253,19 @@ pub async fn run_udp_with_outbound(
     .await
 }
 
+pub async fn run_udp_graph(
+    config: UdpRelayConfig,
+    outbounds: BTreeMap<String, OutboundConfig>,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    inbound::run_udp(
+        config,
+        outbound::GraphOutbound::try_from(outbounds)?,
+        runtime,
+    )
+    .await
+}
+
 pub async fn run_socks5_with_outbound(
     config: Socks5IngressConfig,
     outbound: OutboundConfig,
@@ -247,6 +274,19 @@ pub async fn run_socks5_with_outbound(
     socks::run_socks5(
         config,
         outbound::OutboundMedium::try_from(outbound)?,
+        runtime,
+    )
+    .await
+}
+
+pub async fn run_socks5_graph(
+    config: Socks5IngressConfig,
+    outbounds: BTreeMap<String, OutboundConfig>,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    socks::run_socks5(
+        config,
+        outbound::GraphOutbound::try_from(outbounds)?,
         runtime,
     )
     .await

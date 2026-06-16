@@ -124,7 +124,7 @@ fn build_graph(
         .into_iter()
         .map(FileRouteRuleConfig::load)
         .collect::<Result<Vec<_>, _>>()?;
-    let execution_outbound = select_execution_outbound(
+    validate_execution_outbound(
         &default_group,
         &runtime_groups,
         &group_members,
@@ -141,7 +141,7 @@ fn build_graph(
             dns_upstreams: defaults.dns_upstreams,
             dns_policy: defaults.dns_policy,
         },
-        execution_outbound,
+        execution_outbounds: node_outbounds,
     })
 }
 
@@ -425,12 +425,12 @@ impl FileOutboundNodeConfig {
     }
 }
 
-fn select_execution_outbound(
+fn validate_execution_outbound(
     default_group: &str,
     groups: &[OutboundGroup],
     group_members: &[GroupMember],
     node_outbounds: &BTreeMap<String, OutboundConfig>,
-) -> Result<OutboundConfig, String> {
+) -> Result<(), String> {
     let group = groups
         .iter()
         .find(|group| group.id.as_str() == default_group)
@@ -449,15 +449,13 @@ fn select_execution_outbound(
                 .then_with(|| left.node_id.cmp(&right.node_id))
         })
         .ok_or_else(|| format!("outbound.default_group {default_group:?} has no members"))?;
-    node_outbounds
-        .get(member.node_id.as_str())
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "outbound.default_group {default_group:?} member {:?} is missing",
-                member.node_id.as_str()
-            )
-        })
+    if !node_outbounds.contains_key(member.node_id.as_str()) {
+        return Err(format!(
+            "outbound.default_group {default_group:?} member {:?} is missing",
+            member.node_id.as_str()
+        ));
+    }
+    Ok(())
 }
 
 fn validate_thresholds(id: &str, thresholds: Option<&FileGroupThresholds>) -> Result<(), String> {

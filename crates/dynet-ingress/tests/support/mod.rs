@@ -1,8 +1,18 @@
 #![allow(dead_code)]
 
-use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
+use std::{
+    collections::BTreeMap,
+    env,
+    net::SocketAddr,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use dynet_runtime::{EventStore, IngressEvent, IngressEventKind};
+use dynet_runtime::{
+    DnsUpstream, DnsUpstreamId, EventStore, GroupId, GroupMember, IngressEvent, IngressEventKind,
+    NodeId, OutboundGroup, OutboundNode, OutboundRef, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
+    RuntimeState, RuntimeStore, SchedulerPolicy,
+};
 use tokio::{
     net::{TcpListener, UdpSocket},
     time,
@@ -99,4 +109,84 @@ pub async fn wait_for_count(
         time::sleep(Duration::from_millis(10)).await;
     }
     event_kinds(events)
+}
+
+pub async fn runtime_from_seed(seed: RuntimeSeed) -> RuntimeState {
+    let store = RuntimeStore::open(temp_db_path("runtime-seed"))
+        .await
+        .expect("runtime store");
+    RuntimeState::from_store_seed(store, seed)
+        .await
+        .expect("runtime from seed")
+}
+
+pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
+    RuntimeSeed {
+        nodes: vec![
+            OutboundNode {
+                id: NodeId::new("default-node"),
+                tag: "direct".to_string(),
+                enabled: true,
+            },
+            OutboundNode {
+                id: NodeId::new("routed-node"),
+                tag: "direct".to_string(),
+                enabled: true,
+            },
+        ],
+        default_group_id: GroupId::new("default"),
+        groups: vec![
+            OutboundGroup {
+                id: GroupId::new("default"),
+                enabled: true,
+                scheduler: SchedulerPolicy::SingleFirstEnabled,
+                outbound: OutboundRef::direct_audit_outlet(),
+            },
+            OutboundGroup {
+                id: GroupId::new("routed"),
+                enabled: true,
+                scheduler: SchedulerPolicy::SingleFirstEnabled,
+                outbound: OutboundRef::direct_audit_outlet(),
+            },
+        ],
+        group_members: vec![
+            GroupMember {
+                group_id: GroupId::new("default"),
+                node_id: NodeId::new("default-node"),
+                enabled: true,
+                priority: 0,
+            },
+            GroupMember {
+                group_id: GroupId::new("routed"),
+                node_id: NodeId::new("routed-node"),
+                enabled: true,
+                priority: 0,
+            },
+        ],
+        route_rules: vec![RouteRule {
+            id: RuleId::new("routed-example"),
+            priority: 100,
+            enabled: true,
+            matcher: RouteMatcher::DomainExact("routed.example".to_string()),
+            group_id: GroupId::new("routed"),
+        }],
+        dns_upstreams: vec![DnsUpstream {
+            id: DnsUpstreamId::new("test"),
+            address: dns_addr,
+            enabled: true,
+            priority: 0,
+        }],
+        dns_policy: RuntimeSeed::single_node("direct").dns_policy,
+    }
+}
+
+fn temp_db_path(name: &str) -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    env::temp_dir().join(format!(
+        "dynet-ingress-{name}-{}-{now}.sqlite",
+        std::process::id()
+    ))
 }
