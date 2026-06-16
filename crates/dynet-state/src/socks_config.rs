@@ -1,4 +1,8 @@
-use std::{env, net::SocketAddr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 use dynet_ingress::Socks5IngressConfig;
 use serde::Deserialize;
@@ -7,6 +11,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub(crate) struct FileSocks5IngressConfig {
     bind: Option<String>,
+    udp_advertise_ip: Option<String>,
     udp_idle_timeout_ms: Option<u64>,
     max_sessions: Option<usize>,
 }
@@ -15,6 +20,9 @@ impl FileSocks5IngressConfig {
     pub(crate) fn apply(self, config: &mut Socks5IngressConfig) -> Result<(), String> {
         if let Some(bind) = self.bind {
             config.bind = parse_socket("ingress.socks5.bind", &bind)?;
+        }
+        if let Some(address) = self.udp_advertise_ip {
+            config.udp_advertise_ip = Some(parse_ip("ingress.socks5.udp_advertise_ip", &address)?);
         }
         if let Some(timeout_ms) = self.udp_idle_timeout_ms {
             config.idle_timeout = Duration::from_millis(timeout_ms);
@@ -28,9 +36,19 @@ impl FileSocks5IngressConfig {
 
 pub(crate) fn apply_env(config: &mut Socks5IngressConfig) -> Result<(), String> {
     config.bind = env_socket("DYNET_SOCKS5_BIND", config.bind)?;
+    config.udp_advertise_ip =
+        env_optional_ip("DYNET_SOCKS5_UDP_ADVERTISE_IP", config.udp_advertise_ip)?;
     config.idle_timeout = env_duration_ms("DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS", config.idle_timeout)?;
     config.max_sessions = env_positive_usize("DYNET_SOCKS5_MAX_SESSIONS", config.max_sessions)?;
     Ok(())
+}
+
+fn env_optional_ip(name: &str, fallback: Option<IpAddr>) -> Result<Option<IpAddr>, String> {
+    match env::var(name) {
+        Ok(value) => parse_ip(name, &value).map(Some),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
 }
 
 fn env_socket(name: &str, fallback: SocketAddr) -> Result<SocketAddr, String> {
@@ -69,6 +87,12 @@ fn parse_socket(name: &str, value: &str) -> Result<SocketAddr, String> {
     value
         .parse()
         .map_err(|error| format!("{name} must be a socket address: {error}"))
+}
+
+fn parse_ip(name: &str, value: &str) -> Result<IpAddr, String> {
+    value
+        .parse()
+        .map_err(|error| format!("{name} must be an IP address: {error}"))
 }
 
 fn positive_usize(name: &str, value: usize) -> Result<usize, String> {

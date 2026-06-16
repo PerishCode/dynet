@@ -50,6 +50,7 @@ DYNET_UDP_UPSTREAM
 DYNET_UDP_IDLE_TIMEOUT_MS
 DYNET_UDP_MAX_SESSIONS      # default: 1024 active associations
 DYNET_SOCKS5_BIND
+DYNET_SOCKS5_UDP_ADVERTISE_IP
 DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS
 DYNET_SOCKS5_MAX_SESSIONS   # default: 1024 active sessions
 ```
@@ -79,6 +80,7 @@ max_sessions = 1024
 
 [ingress.socks5]
 bind = "127.0.0.1:1080"
+udp_advertise_ip = "192.168.5.2"
 udp_idle_timeout_ms = 30000
 max_sessions = 1024
 

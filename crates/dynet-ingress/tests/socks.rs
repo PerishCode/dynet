@@ -36,6 +36,7 @@ async fn tcp_connect() {
     tokio::spawn(run_socks5(
         Socks5IngressConfig {
             bind,
+            udp_advertise_ip: None,
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
@@ -101,6 +102,7 @@ async fn domain_connect_uses_dns() {
     tokio::spawn(run_socks5(
         Socks5IngressConfig {
             bind,
+            udp_advertise_ip: None,
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
@@ -151,6 +153,7 @@ async fn udp_associate() {
     tokio::spawn(run_socks5(
         Socks5IngressConfig {
             bind,
+            udp_advertise_ip: None,
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },

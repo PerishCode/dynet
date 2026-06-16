@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use dynet_runtime::{sniff_dns_query, sniff_dns_response, IngressEventKind, RuntimeState};
@@ -37,6 +37,7 @@ pub struct UdpRelayConfig {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Socks5IngressConfig {
     pub bind: SocketAddr,
+    pub udp_advertise_ip: Option<IpAddr>,
     pub idle_timeout: Duration,
     pub max_sessions: usize,
 }
@@ -153,6 +154,7 @@ impl Default for Socks5IngressConfig {
     fn default() -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 1080)),
+            udp_advertise_ip: None,
             idle_timeout: UDP_IDLE_TIMEOUT,
             max_sessions: DEFAULT_SOCKS5_MAX_SESSIONS,
         }

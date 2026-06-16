@@ -223,10 +223,13 @@ where
     let bind = downstream.local_addr().map_err(|error| {
         SocksError::with_source("socks-udp-bind", "failed reading UDP associate bind", error)
     })?;
-    write_reply(&mut control, SOCKS_REPLY_SUCCEEDED, bind).await?;
+    let advertised_bind =
+        SocketAddr::new(config.udp_advertise_ip.unwrap_or(bind.ip()), bind.port());
+    write_reply(&mut control, SOCKS_REPLY_SUCCEEDED, advertised_bind).await?;
     let mut fields = base_socks_fields(session_id, outbound.tag(), peer);
-    fields.push(("udpBind", bind.to_string()));
-    push_endpoint_fields(&mut fields, "upstream", bind);
+    fields.push(("udpBind", advertised_bind.to_string()));
+    fields.push(("udpListen", bind.to_string()));
+    push_endpoint_fields(&mut fields, "upstream", advertised_bind);
     runtime
         .events()
         .record(IngressEventKind::UdpSessionStart, fields);

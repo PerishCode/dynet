@@ -25,6 +25,7 @@ fn env_overrides_config() {
         ("DYNET_UDP_IDLE_TIMEOUT_MS", "456"),
         ("DYNET_UDP_MAX_SESSIONS", "65"),
         ("DYNET_SOCKS5_BIND", "127.0.0.1:9008"),
+        ("DYNET_SOCKS5_UDP_ADVERTISE_IP", "127.0.0.9"),
         ("DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS", "789"),
         ("DYNET_SOCKS5_MAX_SESSIONS", "66"),
     ]);
@@ -41,6 +42,10 @@ fn env_overrides_config() {
     assert_eq!(config.ingress.udp.idle_timeout, Duration::from_millis(456));
     assert_eq!(config.ingress.udp.max_sessions, 65);
     assert_eq!(config.ingress.socks5.bind, socket("127.0.0.1:9008"));
+    assert_eq!(
+        config.ingress.socks5.udp_advertise_ip,
+        Some("127.0.0.9".parse().expect("ip"))
+    );
     assert_eq!(
         config.ingress.socks5.idle_timeout,
         Duration::from_millis(789)
@@ -75,6 +80,7 @@ max_sessions = 33
 
 [ingress.socks5]
 bind = "127.0.0.1:9108"
+udp_advertise_ip = "127.0.0.8"
 udp_idle_timeout_ms = 987
 max_sessions = 34
 "#,
@@ -93,6 +99,10 @@ max_sessions = 34
     assert_eq!(config.ingress.udp.idle_timeout, Duration::from_millis(654));
     assert_eq!(config.ingress.udp.max_sessions, 33);
     assert_eq!(config.ingress.socks5.bind, socket("127.0.0.1:9108"));
+    assert_eq!(
+        config.ingress.socks5.udp_advertise_ip,
+        Some("127.0.0.8".parse().expect("ip"))
+    );
     assert_eq!(
         config.ingress.socks5.idle_timeout,
         Duration::from_millis(987)
@@ -460,6 +470,7 @@ const ENV_KEYS: &[&str] = &[
     "DYNET_UDP_IDLE_TIMEOUT_MS",
     "DYNET_UDP_MAX_SESSIONS",
     "DYNET_SOCKS5_BIND",
+    "DYNET_SOCKS5_UDP_ADVERTISE_IP",
     "DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS",
     "DYNET_SOCKS5_MAX_SESSIONS",
 ];

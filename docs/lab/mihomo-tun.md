@@ -76,6 +76,11 @@ DYNET_RUNTIME_DB=target/dynet-lab.sqlite \
   target/debug/dynet --config docs/lab/dynet-lab.toml
 ```
 
+The sample sets `ingress.socks5.udp_advertise_ip = "192.168.5.2"`. This is
+needed because a SOCKS5 UDP ASSOCIATE reply must advertise an address reachable
+from the VM; advertising host `127.0.0.1` would make Mihomo send UDP packets to
+the VM loopback instead of host-side `dynet`.
+
 The sample `dynet-lab.toml` uses direct outbound. For provider-node tests, copy
 the file to untracked `dynet.toml` and replace only the `[outbound]` section
 with the local node under test.
