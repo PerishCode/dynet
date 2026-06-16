@@ -174,6 +174,8 @@ scripts/smoke/lab-blackbox.sh
 
 Use `DYNET_LAB_GUEST_CONTROL_URL` if the VM reaches the host at an address
 other than Lima's default `http://192.168.5.2:9977`.
+Use `DYNET_LAB_EXPECT_TCP_GROUPS=Tunnel,Private` to assert the TCP graph trace
+for a Tunnel group that exits through a Private group.
 
 Expected event evidence:
 

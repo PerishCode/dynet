@@ -3,8 +3,10 @@ mod support;
 use std::{collections::BTreeMap, net::Ipv4Addr, time::Duration};
 
 use dynet_ingress::{
-    run_socks5_graph, OutboundConfig, Socks5IngressConfig, VlessConfig, VmessConfig,
+    run_socks5_graph, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod, Socks5IngressConfig,
+    VlessConfig, VmessConfig,
 };
+use dynet_runtime::IngressEventKind;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -90,6 +92,57 @@ async fn graph_chains_vless_direct() {
         .expect("vless server timeout")
         .expect("vless task");
     assert_eq!(prefix[0], 0x16);
+}
+
+#[tokio::test]
+async fn rejects_protocol_tail() {
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut outbounds = BTreeMap::new();
+    for node_id in ["routed-node", "egress-node"] {
+        outbounds.insert(
+            node_id.to_string(),
+            OutboundConfig::Shadowsocks(ShadowsocksConfig {
+                server: "127.0.0.1".to_string(),
+                port: 9,
+                method: ShadowsocksMethod::Aes256Gcm,
+                password: "fake-password".to_string(),
+            }),
+        );
+    }
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+    let mut response = Vec::new();
+    let read = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("read response");
+
+    assert_eq!(read, 0);
+    let _ = support::wait_for_event(&events, IngressEventKind::TcpError).await;
+    assert_eq!(
+        support::event_field(&events, IngressEventKind::TcpError, "selectionGroups"),
+        "routed,egress"
+    );
+    assert!(
+        support::event_field(&events, IngressEventKind::TcpError, "error")
+            .contains("non-direct node egress-node")
+    );
 }
 
 async fn socks_connect_domain(bind: std::net::SocketAddr, domain: &str, port: u16) -> TcpStream {

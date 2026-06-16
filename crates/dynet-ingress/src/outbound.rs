@@ -116,6 +116,10 @@ impl TryFrom<OutboundConfig> for OutboundMedium {
 }
 
 impl OutboundMedium {
+    pub(super) fn is_direct(&self) -> bool {
+        matches!(self, Self::Direct(_))
+    }
+
     pub(super) async fn handle_tcp_direct(
         &self,
         session: TcpOutboundSession,

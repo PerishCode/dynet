@@ -9,6 +9,7 @@ TCP_URLS="${DYNET_LAB_TCP_URLS:-http://example.com/ http://example.org/}"
 UDP_HOST="${DYNET_LAB_UDP_HOST:-1.1.1.1}"
 UDP_PORT="${DYNET_LAB_UDP_PORT:-443}"
 REQUIRE_UDP="${DYNET_LAB_REQUIRE_UDP:-1}"
+EXPECT_TCP_GROUPS="${DYNET_LAB_EXPECT_TCP_GROUPS:-}"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -44,7 +45,7 @@ PY
 
 check_events() {
   EVENTS_JSON="$(curl -fsS "${CONTROL_URL}/api/v1/events")" \
-    python3 - "${BASELINE_EVENTS}" "${DOMAINS}" "${TCP_URLS}" "${REQUIRE_UDP}" <<'PY'
+    python3 - "${BASELINE_EVENTS}" "${DOMAINS}" "${TCP_URLS}" "${REQUIRE_UDP}" "${EXPECT_TCP_GROUPS}" <<'PY'
 import json
 import os
 import sys
@@ -58,6 +59,7 @@ tcp_hosts = [
     if urlparse(url).hostname
 ]
 require_udp = sys.argv[4] == "1"
+expect_tcp_groups = sys.argv[5]
 
 payload = json.loads(os.environ["EVENTS_JSON"])
 events = payload.get("events", [])[baseline:]
@@ -88,6 +90,14 @@ for host in tcp_hosts:
         for event in events
     ):
         missing_tcp.append(host)
+
+if expect_tcp_groups and not any(
+    kind(event) == "tcp-accept"
+    and fields(event).get("inbound") == "socks5"
+    and fields(event).get("selectionGroups") == expect_tcp_groups
+    for event in events
+):
+    missing_tcp.append(f"selectionGroups={expect_tcp_groups}")
 
 missing = []
 if missing_dns:
@@ -159,7 +169,9 @@ for url in ${TCP_URLS}; do
   vm_tcp "${url}"
 done
 
-vm_udp
+if [[ "${REQUIRE_UDP}" == "1" ]]; then
+  vm_udp
+fi
 wait_for_events
 
 echo "lab blackbox smoke passed"

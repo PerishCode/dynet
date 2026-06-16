@@ -42,6 +42,31 @@ impl GraphOutbound {
                 ),
             })
     }
+
+    fn outbound_for_node(&self, node_id: &str) -> Result<&OutboundMedium, OutboundError> {
+        self.nodes.get(node_id).ok_or_else(|| OutboundError {
+            stage: "outbound-select",
+            upstream: None,
+            message: format!("selection node {node_id} has no execution outbound"),
+        })
+    }
+
+    fn validate_direct_tail(&self, decision: &SelectionDecision) -> Result<(), OutboundError> {
+        for hop in decision.trace.iter().skip(1) {
+            let outbound = self.outbound_for_node(hop.node_id.as_str())?;
+            if !outbound.is_direct() {
+                return Err(OutboundError {
+                    stage: "outbound-select",
+                    upstream: None,
+                    message: format!(
+                        "TCP chained graph execution through non-direct node {} is not implemented",
+                        hop.node_id
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Outbound for GraphOutbound {
@@ -64,6 +89,7 @@ impl Outbound for GraphOutbound {
             return outbound.handle_tcp(session).await;
         }
         if session.decision.terminal.kind() == "direct" {
+            self.validate_direct_tail(&session.decision)?;
             return outbound.handle_tcp_direct(session).await;
         }
         Err(chained_error("TCP"))
