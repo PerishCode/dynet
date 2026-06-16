@@ -12,4 +12,5 @@ shadowsocks-prototype = { path = "../../prototype/shadowsocks" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 trojan-prototype = { path = "../../prototype/trojan" }
 utoipa = "5"
+vless-prototype = { path = "../../prototype/vless" }
 vmess-prototype = { path = "../../prototype/vmess" }

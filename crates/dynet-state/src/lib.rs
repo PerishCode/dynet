@@ -7,7 +7,7 @@ use std::{
 
 use dynet_ingress::{
     DnsRelayConfig, IngressConfig, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
-    TcpRelayConfig, TrojanConfig, UdpRelayConfig, VmessConfig,
+    TcpRelayConfig, TrojanConfig, UdpRelayConfig, VlessConfig, VmessConfig,
 };
 use serde::Deserialize;
 
@@ -298,14 +298,28 @@ struct FileOutboundConfig {
     #[serde(rename = "alterId")]
     alter_id: Option<u16>,
     uuid: Option<String>,
+    flow: Option<String>,
     network: Option<String>,
     tls: Option<bool>,
     password: Option<String>,
     sni: Option<String>,
     servername: Option<String>,
+    #[serde(rename = "client-fingerprint")]
+    client_fingerprint: Option<String>,
+    #[serde(rename = "reality-opts")]
+    reality_opts: Option<FileRealityOptions>,
     #[serde(rename = "skip-cert-verify")]
     skip_cert_verify: Option<bool>,
     udp: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileRealityOptions {
+    #[serde(rename = "public-key")]
+    public_key: Option<String>,
+    #[serde(rename = "short-id")]
+    short_id: Option<String>,
 }
 
 impl FileOutboundConfig {
@@ -314,6 +328,7 @@ impl FileOutboundConfig {
             "direct" => Ok(OutboundConfig::Direct),
             "shadowsocks" | "ss" => self.load_shadowsocks(),
             "trojan" => self.load_trojan(),
+            "vless" => self.load_vless(),
             "vmess" => self.load_vmess(),
             _ => Err(format!("outbound.type unsupported: {}", self.kind)),
         }
@@ -406,6 +421,60 @@ impl FileOutboundConfig {
             .uuid
             .ok_or_else(|| "outbound.uuid is required for vmess".to_string())?;
         Ok(OutboundConfig::Vmess(VmessConfig { server, port, uuid }))
+    }
+
+    fn load_vless(self) -> Result<OutboundConfig, String> {
+        if self.udp != Some(true) {
+            return Err("outbound.udp must be true for vless cold start".to_string());
+        }
+        if self.flow.as_deref() != Some("xtls-rprx-vision") {
+            return Err("outbound.flow must be xtls-rprx-vision for vless cold start".to_string());
+        }
+        if !matches!(self.network.as_deref(), None | Some("tcp")) {
+            return Err("outbound.network must be tcp for vless cold start".to_string());
+        }
+        if self.tls != Some(true) {
+            return Err("outbound.tls must be true for vless reality cold start".to_string());
+        }
+        if !matches!(self.client_fingerprint.as_deref(), None | Some("chrome")) {
+            return Err("outbound.client-fingerprint must be chrome for vless cold start".into());
+        }
+        let server = self
+            .server
+            .ok_or_else(|| "outbound.server is required for vless".to_string())?;
+        let port = self
+            .port
+            .ok_or_else(|| "outbound.port is required for vless".to_string())?;
+        let uuid = self
+            .uuid
+            .ok_or_else(|| "outbound.uuid is required for vless".to_string())?;
+        let server_name = match (self.sni, self.servername) {
+            (Some(sni), None) | (None, Some(sni)) => sni,
+            (Some(sni), Some(servername)) if sni == servername => sni,
+            (Some(_), Some(_)) => {
+                return Err("outbound.sni and outbound.servername disagree".to_string());
+            }
+            (None, None) => {
+                return Err("outbound.servername is required for vless reality".to_string());
+            }
+        };
+        let reality_opts = self
+            .reality_opts
+            .ok_or_else(|| "outbound.reality-opts is required for vless reality".to_string())?;
+        let public_key = reality_opts
+            .public_key
+            .ok_or_else(|| "outbound.reality-opts.public-key is required".to_string())?;
+        let short_id = reality_opts
+            .short_id
+            .ok_or_else(|| "outbound.reality-opts.short-id is required".to_string())?;
+        Ok(OutboundConfig::Vless(VlessConfig {
+            server,
+            port,
+            uuid,
+            server_name,
+            public_key,
+            short_id,
+        }))
     }
 }
 

@@ -51,6 +51,7 @@ pub enum OutboundConfig {
     Direct,
     Shadowsocks(ShadowsocksConfig),
     Trojan(TrojanConfig),
+    Vless(VlessConfig),
     Vmess(VmessConfig),
 }
 
@@ -76,6 +77,16 @@ pub struct VmessConfig {
     pub server: String,
     pub port: u16,
     pub uuid: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VlessConfig {
+    pub server: String,
+    pub port: u16,
+    pub uuid: String,
+    pub server_name: String,
+    pub public_key: String,
+    pub short_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

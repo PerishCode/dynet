@@ -15,9 +15,11 @@ use crate::{
 };
 
 mod trojan;
+mod vless;
 mod vmess;
 
 use trojan::TrojanOutbound;
+use vless::VlessOutbound;
 use vmess::VmessOutbound;
 
 pub(crate) const DIRECT_OUTBOUND: &str = "direct";
@@ -88,6 +90,7 @@ pub(crate) enum OutboundMedium {
     Direct(DirectOutbound),
     Shadowsocks(ShadowsocksOutbound),
     Trojan(TrojanOutbound),
+    Vless(VlessOutbound),
     Vmess(VmessOutbound),
 }
 
@@ -101,6 +104,7 @@ impl TryFrom<OutboundConfig> for OutboundMedium {
                 Ok(Self::Shadowsocks(ShadowsocksOutbound::new(config)?))
             }
             OutboundConfig::Trojan(config) => Ok(Self::Trojan(TrojanOutbound::new(config))),
+            OutboundConfig::Vless(config) => Ok(Self::Vless(VlessOutbound::new(config)?)),
             OutboundConfig::Vmess(config) => Ok(Self::Vmess(VmessOutbound::new(config)?)),
         }
     }
@@ -130,6 +134,7 @@ impl Outbound for OutboundMedium {
             Self::Direct(outbound) => outbound.tag(),
             Self::Shadowsocks(outbound) => outbound.tag(),
             Self::Trojan(outbound) => outbound.tag(),
+            Self::Vless(outbound) => outbound.tag(),
             Self::Vmess(outbound) => outbound.tag(),
         }
     }
@@ -142,6 +147,7 @@ impl Outbound for OutboundMedium {
             Self::Direct(outbound) => outbound.handle_tcp(session).await,
             Self::Shadowsocks(outbound) => outbound.handle_tcp(session).await,
             Self::Trojan(outbound) => outbound.handle_tcp(session).await,
+            Self::Vless(outbound) => outbound.handle_tcp(session).await,
             Self::Vmess(outbound) => outbound.handle_tcp(session).await,
         }
     }
@@ -154,6 +160,7 @@ impl Outbound for OutboundMedium {
             Self::Direct(outbound) => outbound.handle_udp(association).await,
             Self::Shadowsocks(outbound) => outbound.handle_udp(association).await,
             Self::Trojan(outbound) => outbound.handle_udp(association).await,
+            Self::Vless(outbound) => outbound.handle_udp(association).await,
             Self::Vmess(outbound) => outbound.handle_udp(association).await,
         }
     }
