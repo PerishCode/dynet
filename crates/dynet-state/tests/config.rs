@@ -17,7 +17,6 @@ fn env_overrides_config() {
     let _guard = EnvGuard::set(&[
         ("DYNET_CONTROL_BIND", "127.0.0.1:9001"),
         ("DYNET_DNS_BIND", "127.0.0.1:9002"),
-        ("DYNET_DNS_UPSTREAM", "127.0.0.1:9003"),
         ("DYNET_DNS_TIMEOUT_MS", "123"),
         ("DYNET_TCP_BIND", "127.0.0.1:9004"),
         ("DYNET_TCP_UPSTREAM", "127.0.0.1:9005"),
@@ -26,13 +25,15 @@ fn env_overrides_config() {
         ("DYNET_UDP_UPSTREAM", "127.0.0.1:9007"),
         ("DYNET_UDP_IDLE_TIMEOUT_MS", "456"),
         ("DYNET_UDP_MAX_SESSIONS", "65"),
+        ("DYNET_SOCKS5_BIND", "127.0.0.1:9008"),
+        ("DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS", "789"),
+        ("DYNET_SOCKS5_MAX_SESSIONS", "66"),
     ]);
 
     let config = Config::from_env().expect("config loads from env");
 
     assert_eq!(config.control.bind, socket("127.0.0.1:9001"));
     assert_eq!(config.ingress.dns.bind, socket("127.0.0.1:9002"));
-    assert_eq!(config.ingress.dns.upstream, socket("127.0.0.1:9003"));
     assert_eq!(config.ingress.dns.timeout, Duration::from_millis(123));
     assert_eq!(config.ingress.tcp.bind, socket("127.0.0.1:9004"));
     assert_eq!(config.ingress.tcp.upstream, socket("127.0.0.1:9005"));
@@ -41,6 +42,12 @@ fn env_overrides_config() {
     assert_eq!(config.ingress.udp.upstream, socket("127.0.0.1:9007"));
     assert_eq!(config.ingress.udp.idle_timeout, Duration::from_millis(456));
     assert_eq!(config.ingress.udp.max_sessions, 65);
+    assert_eq!(config.ingress.socks5.bind, socket("127.0.0.1:9008"));
+    assert_eq!(
+        config.ingress.socks5.idle_timeout,
+        Duration::from_millis(789)
+    );
+    assert_eq!(config.ingress.socks5.max_sessions, 66);
 }
 
 #[test]
@@ -56,7 +63,6 @@ bind = "127.0.0.1:9101"
 
 [ingress.dns]
 bind = "127.0.0.1:9102"
-upstream = "127.0.0.1:9103"
 timeout_ms = 321
 
 [ingress.tcp]
@@ -69,6 +75,11 @@ bind = "127.0.0.1:9106"
 upstream = "127.0.0.1:9107"
 idle_timeout_ms = 654
 max_sessions = 33
+
+[ingress.socks5]
+bind = "127.0.0.1:9108"
+udp_idle_timeout_ms = 987
+max_sessions = 34
 "#,
     )
     .expect("write config");
@@ -77,7 +88,6 @@ max_sessions = 33
 
     assert_eq!(config.control.bind, socket("127.0.0.1:9101"));
     assert_eq!(config.ingress.dns.bind, socket("127.0.0.1:9102"));
-    assert_eq!(config.ingress.dns.upstream, socket("127.0.0.1:9103"));
     assert_eq!(config.ingress.dns.timeout, Duration::from_millis(321));
     assert_eq!(config.ingress.tcp.bind, socket("127.0.0.1:9104"));
     assert_eq!(config.ingress.tcp.upstream, socket("127.0.0.1:9105"));
@@ -86,6 +96,12 @@ max_sessions = 33
     assert_eq!(config.ingress.udp.upstream, socket("127.0.0.1:9107"));
     assert_eq!(config.ingress.udp.idle_timeout, Duration::from_millis(654));
     assert_eq!(config.ingress.udp.max_sessions, 33);
+    assert_eq!(config.ingress.socks5.bind, socket("127.0.0.1:9108"));
+    assert_eq!(
+        config.ingress.socks5.idle_timeout,
+        Duration::from_millis(987)
+    );
+    assert_eq!(config.ingress.socks5.max_sessions, 34);
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -440,7 +456,6 @@ impl EnvGuard {
 const ENV_KEYS: &[&str] = &[
     "DYNET_CONTROL_BIND",
     "DYNET_DNS_BIND",
-    "DYNET_DNS_UPSTREAM",
     "DYNET_DNS_TIMEOUT_MS",
     "DYNET_TCP_BIND",
     "DYNET_TCP_UPSTREAM",
@@ -449,6 +464,9 @@ const ENV_KEYS: &[&str] = &[
     "DYNET_UDP_UPSTREAM",
     "DYNET_UDP_IDLE_TIMEOUT_MS",
     "DYNET_UDP_MAX_SESSIONS",
+    "DYNET_SOCKS5_BIND",
+    "DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS",
+    "DYNET_SOCKS5_MAX_SESSIONS",
 ];
 
 fn temp_config_path(name: &str) -> PathBuf {

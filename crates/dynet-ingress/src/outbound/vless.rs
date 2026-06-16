@@ -94,7 +94,7 @@ impl Outbound for VlessOutbound {
                 Ok(VlessUdpStep::Upstream(payload)) => {
                     association
                         .downstream
-                        .send_to(&payload, association.peer)
+                        .send_to_peer(&payload, association.peer)
                         .await
                         .map_err(|error| OutboundError {
                             stage: "inbound-write",
@@ -111,7 +111,10 @@ impl Outbound for VlessOutbound {
                     );
                     push_decision_fields(&mut fields, &association.decision);
                     fields.push(("direction", "upstream-to-client".to_string()));
-                    fields.push(("bytes", payload.len().to_string()));
+                    fields.push((
+                        "bytes",
+                        association.downstream.payload_len(&payload).to_string(),
+                    ));
                     association
                         .runtime
                         .events()

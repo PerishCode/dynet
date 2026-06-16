@@ -6,10 +6,15 @@ use std::{
 };
 
 use dynet_ingress::{
-    DnsRelayConfig, IngressConfig, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
-    TcpRelayConfig, TrojanConfig, UdpRelayConfig, VlessConfig, VmessConfig,
+    DnsRelayConfig, IngressConfig, OutboundConfig, ShadowsocksConfig, TcpRelayConfig, TrojanConfig,
+    UdpRelayConfig, VlessConfig, VmessConfig,
 };
 use serde::Deserialize;
+
+mod method_config;
+mod socks_config;
+use method_config::parse_shadowsocks_method;
+use socks_config::FileSocks5IngressConfig;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct AppState {
@@ -34,11 +39,7 @@ impl Default for Config {
             control: ControlConfig {
                 bind: SocketAddr::from(([127, 0, 0, 1], 9977)),
             },
-            ingress: IngressConfig {
-                dns: DnsRelayConfig::default(),
-                tcp: TcpRelayConfig::default(),
-                udp: UdpRelayConfig::default(),
-            },
+            ingress: IngressConfig::default(),
             outbound: OutboundConfig::Direct,
         }
     }
@@ -76,7 +77,6 @@ impl Config {
 fn apply_env(config: &mut Config) -> Result<(), String> {
     config.control.bind = env_socket("DYNET_CONTROL_BIND", config.control.bind)?;
     config.ingress.dns.bind = env_socket("DYNET_DNS_BIND", config.ingress.dns.bind)?;
-    config.ingress.dns.upstream = env_socket("DYNET_DNS_UPSTREAM", config.ingress.dns.upstream)?;
     config.ingress.dns.timeout =
         env_duration_ms("DYNET_DNS_TIMEOUT_MS", config.ingress.dns.timeout)?;
     config.ingress.tcp.bind = env_socket("DYNET_TCP_BIND", config.ingress.tcp.bind)?;
@@ -89,6 +89,7 @@ fn apply_env(config: &mut Config) -> Result<(), String> {
         env_duration_ms("DYNET_UDP_IDLE_TIMEOUT_MS", config.ingress.udp.idle_timeout)?;
     config.ingress.udp.max_sessions =
         env_positive_usize("DYNET_UDP_MAX_SESSIONS", config.ingress.udp.max_sessions)?;
+    socks_config::apply_env(&mut config.ingress.socks5)?;
     Ok(())
 }
 
@@ -196,6 +197,7 @@ struct FileIngressConfig {
     dns: Option<FileDnsRelayConfig>,
     tcp: Option<FileTcpRelayConfig>,
     udp: Option<FileUdpRelayConfig>,
+    socks5: Option<FileSocks5IngressConfig>,
 }
 
 impl FileIngressConfig {
@@ -209,6 +211,9 @@ impl FileIngressConfig {
         if let Some(udp) = self.udp {
             udp.apply(&mut config.udp)?;
         }
+        if let Some(socks5) = self.socks5 {
+            socks5.apply(&mut config.socks5)?;
+        }
         Ok(())
     }
 }
@@ -217,7 +222,6 @@ impl FileIngressConfig {
 #[serde(deny_unknown_fields)]
 struct FileDnsRelayConfig {
     bind: Option<String>,
-    upstream: Option<String>,
     timeout_ms: Option<u64>,
 }
 
@@ -225,9 +229,6 @@ impl FileDnsRelayConfig {
     fn apply(self, config: &mut DnsRelayConfig) -> Result<(), String> {
         if let Some(bind) = self.bind {
             config.bind = parse_socket("ingress.dns.bind", &bind)?;
-        }
-        if let Some(upstream) = self.upstream {
-            config.upstream = parse_socket("ingress.dns.upstream", &upstream)?;
         }
         if let Some(timeout_ms) = self.timeout_ms {
             config.timeout = Duration::from_millis(timeout_ms);
@@ -475,14 +476,6 @@ impl FileOutboundConfig {
             public_key,
             short_id,
         }))
-    }
-}
-
-fn parse_shadowsocks_method(value: &str) -> Result<ShadowsocksMethod, String> {
-    match value {
-        "aes-256-gcm" => Ok(ShadowsocksMethod::Aes256Gcm),
-        "2022-blake3-aes-128-gcm" => Ok(ShadowsocksMethod::Blake3Aes128Gcm2022),
-        _ => Err(format!("unsupported shadowsocks cipher: {value}")),
     }
 }
 

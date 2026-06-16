@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::Future, net::SocketAddr, time::Duration};
 
 use dynet_runtime::{RuntimeState, SelectionDecision};
 use tokio::{
@@ -16,10 +16,12 @@ use crate::{
 };
 
 mod trojan;
+mod udp_downstream;
 mod vless;
 mod vmess;
 
 use trojan::TrojanOutbound;
+pub(crate) use udp_downstream::UdpDownstream;
 use vless::VlessOutbound;
 use vmess::VmessOutbound;
 
@@ -54,7 +56,7 @@ pub(crate) struct UdpOutboundAssociation {
     pub peer: SocketAddr,
     pub target: SocketAddr,
     pub idle_timeout: Duration,
-    pub downstream: Arc<UdpSocket>,
+    pub downstream: UdpDownstream,
     pub downstream_rx: mpsc::Receiver<Vec<u8>>,
     pub decision: SelectionDecision,
     pub runtime: RuntimeState,
@@ -248,7 +250,7 @@ impl Outbound for DirectOutbound {
                 Ok(UdpStep::Upstream(size)) => {
                     association
                         .downstream
-                        .send_to(&buffer[..size], association.peer)
+                        .send_to_peer(&buffer[..size], association.peer)
                         .await
                         .map_err(|error| OutboundError {
                             stage: "inbound-write",
@@ -265,7 +267,13 @@ impl Outbound for DirectOutbound {
                     );
                     push_decision_fields(&mut fields, &association.decision);
                     fields.push(("direction", "upstream-to-client".to_string()));
-                    fields.push(("bytes", size.to_string()));
+                    fields.push((
+                        "bytes",
+                        association
+                            .downstream
+                            .payload_len(&buffer[..size])
+                            .to_string(),
+                    ));
                     association
                         .runtime
                         .events()
@@ -402,7 +410,7 @@ impl ShadowsocksOutbound {
             .map_err(|error| shadowsocks_error(error, Some(upstream)))?;
         association
             .downstream
-            .send_to(&payload, association.peer)
+            .send_to_peer(&payload, association.peer)
             .await
             .map_err(|error| OutboundError {
                 stage: "inbound-write",
@@ -419,7 +427,10 @@ impl ShadowsocksOutbound {
         );
         push_decision_fields(&mut fields, &association.decision);
         fields.push(("direction", "upstream-to-client".to_string()));
-        fields.push(("bytes", payload.len().to_string()));
+        fields.push((
+            "bytes",
+            association.downstream.payload_len(&payload).to_string(),
+        ));
         association
             .runtime
             .events()

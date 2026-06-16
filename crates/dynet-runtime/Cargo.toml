@@ -10,7 +10,7 @@ description = "Runtime state and selection boundary for dynet."
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
-tokio = { version = "1", features = ["rt", "sync"] }
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
 tracing = "0.1"
 utoipa = "5"
 

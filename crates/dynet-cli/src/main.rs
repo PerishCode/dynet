@@ -39,8 +39,8 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("failed to read control plane address: {error}"))?;
     eprintln!("dynet: control plane listening on http://{local_addr}/api/v1");
     eprintln!(
-        "dynet: ingress listening on dns={} tcp={} udp={}",
-        ingress.dns.bind, ingress.tcp.bind, ingress.udp.bind
+        "dynet: ingress listening on dns={} tcp={} udp={} socks5={}",
+        ingress.dns.bind, ingress.tcp.bind, ingress.udp.bind, ingress.socks5.bind
     );
     dynet_api::serve(listener, runtime)
         .await
@@ -61,6 +61,11 @@ fn runtime_db_path() -> Result<PathBuf, String> {
 
 fn spawn_ingress(config: IngressConfig, outbound: OutboundConfig, runtime: RuntimeState) {
     tokio::spawn(dynet_ingress::run_dns(config.dns, runtime.clone()));
+    tokio::spawn(dynet_ingress::run_socks5_with_outbound(
+        config.socks5,
+        outbound.clone(),
+        runtime.clone(),
+    ));
     tokio::spawn(dynet_ingress::run_tcp_with_outbound(
         config.tcp,
         outbound.clone(),

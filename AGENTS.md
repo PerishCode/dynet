@@ -31,6 +31,9 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   hooks here instead of hiding them inside ingress adapters.
 - `crates/dynet-state/` owns the current in-memory `AppState { config }` shape
   for cold-start ports and upstreams.
+- `docs/lab/` owns external capture-frontend lab runbooks and sample configs.
+  Keep these as documentation/config examples; do not rebuild VM orchestration
+  or platform takeover inside `dynet`.
 - `scripts/smoke/` owns small local shell smoke checks. Keep it dependency-light
   and do not rebuild the old Python/VM experiment system here.
 - `prototype/shadowsocks/` owns the experimental hand-written Shadowsocks

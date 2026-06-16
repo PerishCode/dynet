@@ -1,9 +1,9 @@
 mod support;
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use dynet_ingress::{run_dns, DnsRelayConfig};
-use dynet_runtime::{IngressEventKind, RuntimeState};
+use dynet_runtime::{DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState};
 use support::{event_field, event_kinds, local_addr, unused_udp_addr, wait_for_event};
 use tokio::{net::UdpSocket, time};
 
@@ -21,12 +21,11 @@ async fn relay_loop() {
     });
 
     let bind = unused_udp_addr().await;
-    let runtime = RuntimeState::default();
+    let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
     tokio::spawn(run_dns(
         DnsRelayConfig {
             bind,
-            upstream: upstream_addr,
             timeout: Duration::from_secs(2),
         },
         runtime,
@@ -66,12 +65,11 @@ async fn sniffs_answer_ip() {
     });
 
     let bind = unused_udp_addr().await;
-    let runtime = RuntimeState::default();
+    let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
     tokio::spawn(run_dns(
         DnsRelayConfig {
             bind,
-            upstream: upstream_addr,
             timeout: Duration::from_secs(2),
         },
         runtime,
@@ -117,12 +115,11 @@ async fn preserves_wire() {
     });
 
     let bind = unused_udp_addr().await;
-    let runtime = RuntimeState::default();
+    let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
     tokio::spawn(run_dns(
         DnsRelayConfig {
             bind,
-            upstream: upstream_addr,
             timeout: Duration::from_secs(2),
         },
         runtime,
@@ -163,15 +160,26 @@ fn dns_a_response() -> Vec<u8> {
     ]
 }
 
+fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
+    RuntimeState::single_node_with_dns(
+        "direct",
+        vec![DnsUpstream {
+            id: DnsUpstreamId::new("test"),
+            address: upstream,
+            enabled: true,
+            priority: 0,
+        }],
+    )
+}
+
 #[tokio::test]
 async fn timeout_event() {
     let bind = unused_udp_addr().await;
-    let runtime = RuntimeState::default();
+    let runtime = runtime_with_dns(unused_udp_addr().await);
     let events = runtime.events().clone();
     tokio::spawn(run_dns(
         DnsRelayConfig {
             bind,
-            upstream: unused_udp_addr().await,
             timeout: Duration::from_millis(25),
         },
         runtime,
@@ -193,12 +201,11 @@ async fn timeout_event() {
 async fn recovers_after_timeout() {
     let upstream_addr = unused_udp_addr().await;
     let bind = unused_udp_addr().await;
-    let runtime = RuntimeState::default();
+    let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
     tokio::spawn(run_dns(
         DnsRelayConfig {
             bind,
-            upstream: upstream_addr,
             timeout: Duration::from_millis(25),
         },
         runtime,

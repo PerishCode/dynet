@@ -21,17 +21,19 @@ GET /api/v1/health
 GET /api/v1/events
 ```
 
-The first ingress experiment is a fixed-upstream relay set. It does not parse
-HTTP, HTTP/3, or DNS semantics; it only verifies transparent delivery and event
-capture.
+The first ingress experiment is a fixed-upstream TCP/UDP relay set plus a DNS
+relay backed by runtime DNS upstreams. It does not parse HTTP or HTTP/3; it only
+verifies transparent delivery and event capture.
 
 Default local listeners:
 
 ```text
-control: 127.0.0.1:9977
-dns:     127.0.0.1:1053  -> 1.1.1.1:53
-tcp:     127.0.0.1:18080 -> 93.184.216.34:80
-udp:     127.0.0.1:18443 -> 1.1.1.1:443
+control:      127.0.0.1:9977
+dns:          127.0.0.1:1053
+runtime DNS:  1.1.1.1:53, 8.8.8.8:53
+tcp:          127.0.0.1:18080 -> 93.184.216.34:80
+udp:          127.0.0.1:18443 -> 1.1.1.1:443
+socks5:       127.0.0.1:1080
 ```
 
 Cold-start bind/upstream values can be overridden with environment variables:
@@ -39,7 +41,6 @@ Cold-start bind/upstream values can be overridden with environment variables:
 ```text
 DYNET_CONTROL_BIND
 DYNET_DNS_BIND
-DYNET_DNS_UPSTREAM
 DYNET_DNS_TIMEOUT_MS
 DYNET_TCP_BIND
 DYNET_TCP_UPSTREAM
@@ -48,6 +49,9 @@ DYNET_UDP_BIND
 DYNET_UDP_UPSTREAM
 DYNET_UDP_IDLE_TIMEOUT_MS
 DYNET_UDP_MAX_SESSIONS      # default: 1024 active associations
+DYNET_SOCKS5_BIND
+DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS
+DYNET_SOCKS5_MAX_SESSIONS   # default: 1024 active sessions
 ```
 
 `dynet` also reads a TOML config file. `--config <path>` selects a file; without
@@ -61,7 +65,6 @@ bind = "127.0.0.1:9977"
 
 [ingress.dns]
 bind = "127.0.0.1:1053"
-upstream = "1.1.1.1:53"
 timeout_ms = 5000
 
 [ingress.tcp]
@@ -75,9 +78,17 @@ upstream = "1.1.1.1:443"
 idle_timeout_ms = 30000
 max_sessions = 1024
 
+[ingress.socks5]
+bind = "127.0.0.1:1080"
+udp_idle_timeout_ms = 30000
+max_sessions = 1024
+
 [outbound]
 type = "direct"
 ```
+
+For a local Linux VM capture experiment using Mihomo TUN as the external
+capture frontend, see `docs/lab/mihomo-tun.md`.
 
 For the first protocol-backed experiment, `dynet.toml` can hold a local
 dual-protocol Shadowsocks node. Keep `dynet.toml` uncommitted.

@@ -1,23 +1,23 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use dynet_runtime::{IngressEventKind, RuntimeState};
-use tokio::{net::UdpSocket, time};
+use dynet_runtime::{sniff_dns_query, sniff_dns_response, IngressEventKind, RuntimeState};
+use tokio::net::UdpSocket;
 
-mod dns;
 mod inbound;
 mod outbound;
+mod socks;
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DATAGRAM_LIMIT: usize = 65_535;
 pub const DEFAULT_TCP_MAX_SESSIONS: usize = 1024;
 pub const DEFAULT_UDP_MAX_SESSIONS: usize = 1024;
+pub const DEFAULT_SOCKS5_MAX_SESSIONS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DnsRelayConfig {
     pub bind: SocketAddr,
-    pub upstream: SocketAddr,
     pub timeout: Duration,
 }
 
@@ -36,11 +36,19 @@ pub struct UdpRelayConfig {
     pub max_sessions: usize,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct Socks5IngressConfig {
+    pub bind: SocketAddr,
+    pub idle_timeout: Duration,
+    pub max_sessions: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct IngressConfig {
     pub dns: DnsRelayConfig,
     pub tcp: TcpRelayConfig,
     pub udp: UdpRelayConfig,
+    pub socks5: Socks5IngressConfig,
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
@@ -118,7 +126,6 @@ impl Default for DnsRelayConfig {
     fn default() -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 1053)),
-            upstream: SocketAddr::from(([1, 1, 1, 1], 53)),
             timeout: DNS_TIMEOUT,
         }
     }
@@ -145,6 +152,16 @@ impl Default for UdpRelayConfig {
     }
 }
 
+impl Default for Socks5IngressConfig {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::from(([127, 0, 0, 1], 1080)),
+            idle_timeout: UDP_IDLE_TIMEOUT,
+            max_sessions: DEFAULT_SOCKS5_MAX_SESSIONS,
+        }
+    }
+}
+
 pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<(), String> {
     let socket = UdpSocket::bind(config.bind)
         .await
@@ -156,43 +173,29 @@ pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<()
             .await
             .map_err(|error| format!("failed receiving DNS datagram: {error}"))?;
         let query = buffer[..size].to_vec();
-        let query_info = dns::sniff_query(&query);
-        let mut fields = vec![
-            ("peer", peer.to_string()),
-            ("upstream", config.upstream.to_string()),
-            ("bytes", size.to_string()),
-        ];
+        let query_info = sniff_dns_query(&query);
+        let mut fields = vec![("peer", peer.to_string()), ("bytes", size.to_string())];
         push_endpoint_fields(&mut fields, "peer", peer);
-        push_endpoint_fields(&mut fields, "upstream", config.upstream);
         if let Some(info) = &query_info {
             fields.push(("transactionId", info.transaction_id.to_string()));
             fields.push(("queryName", info.query_name.clone()));
             fields.push(("queryType", info.query_type.clone()));
         }
         runtime.events().record(IngressEventKind::DnsQuery, fields);
-        match resolve_dns(
-            &query,
-            config.upstream,
-            config.timeout,
-            runtime.clone(),
-            peer,
-        )
-        .await
-        {
-            Ok(response) => {
+        match runtime.resolve_dns_wire(query, config.timeout).await {
+            Ok(resolution) => {
+                runtime.events().record(
+                    IngressEventKind::DnsResponse,
+                    dns_response_fields(peer, &resolution),
+                );
                 socket
-                    .send_to(&response, peer)
+                    .send_to(&resolution.response, peer)
                     .await
                     .map_err(|error| format!("failed sending DNS response: {error}"))?;
             }
             Err(error) => {
-                let mut fields = vec![
-                    ("peer", peer.to_string()),
-                    ("upstream", config.upstream.to_string()),
-                    ("error", error),
-                ];
+                let mut fields = vec![("peer", peer.to_string()), ("error", error.to_string())];
                 push_endpoint_fields(&mut fields, "peer", peer);
-                push_endpoint_fields(&mut fields, "upstream", config.upstream);
                 runtime.events().record(IngressEventKind::DnsError, fields);
             }
         }
@@ -205,6 +208,10 @@ pub async fn run_tcp(config: TcpRelayConfig, runtime: RuntimeState) -> Result<()
 
 pub async fn run_udp(config: UdpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
     run_udp_with_outbound(config, OutboundConfig::Direct, runtime).await
+}
+
+pub async fn run_socks5(config: Socks5IngressConfig, runtime: RuntimeState) -> Result<(), String> {
+    run_socks5_with_outbound(config, OutboundConfig::Direct, runtime).await
 }
 
 pub async fn run_tcp_with_outbound(
@@ -233,49 +240,38 @@ pub async fn run_udp_with_outbound(
     .await
 }
 
-async fn resolve_dns(
-    query: &[u8],
-    upstream: SocketAddr,
-    timeout: Duration,
+pub async fn run_socks5_with_outbound(
+    config: Socks5IngressConfig,
+    outbound: OutboundConfig,
     runtime: RuntimeState,
-    peer: SocketAddr,
-) -> Result<Vec<u8>, String> {
-    let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
-        .await
-        .map_err(|error| format!("failed to bind DNS upstream socket: {error}"))?;
-    socket
-        .send_to(query, upstream)
-        .await
-        .map_err(|error| format!("failed forwarding DNS query: {error}"))?;
-    let mut response = vec![0_u8; DATAGRAM_LIMIT];
-    let (size, source) = time::timeout(timeout, socket.recv_from(&mut response))
-        .await
-        .map_err(|_| "timed out waiting for DNS upstream response".to_string())?
-        .map_err(|error| format!("failed receiving DNS upstream response: {error}"))?;
-    runtime.events().record(
-        IngressEventKind::DnsResponse,
-        dns_response_fields(peer, upstream, source, &response[..size]),
-    );
-    response.truncate(size);
-    Ok(response)
+) -> Result<(), String> {
+    socks::run_socks5(
+        config,
+        outbound::OutboundMedium::try_from(outbound)?,
+        runtime,
+    )
+    .await
 }
 
 fn dns_response_fields(
     peer: SocketAddr,
-    upstream: SocketAddr,
-    source: SocketAddr,
-    response: &[u8],
+    resolution: &dynet_runtime::DnsResolution,
 ) -> Vec<(&'static str, String)> {
     let mut fields = vec![
         ("peer", peer.to_string()),
-        ("upstream", upstream.to_string()),
-        ("source", source.to_string()),
-        ("bytes", response.len().to_string()),
+        ("upstreamId", resolution.upstream.id.to_string()),
+        ("upstream", resolution.upstream.address.to_string()),
+        ("source", resolution.source.to_string()),
+        ("bytes", resolution.response.len().to_string()),
     ];
     push_endpoint_fields(&mut fields, "peer", peer);
-    push_endpoint_fields(&mut fields, "upstream", upstream);
-    push_endpoint_fields(&mut fields, "source", source);
-    if let Some(info) = dns::sniff_response(response) {
+    push_endpoint_fields(&mut fields, "upstream", resolution.upstream.address);
+    push_endpoint_fields(&mut fields, "source", resolution.source);
+    if let Some(info) = resolution
+        .response_info
+        .clone()
+        .or_else(|| sniff_dns_response(&resolution.response))
+    {
         fields.push(("transactionId", info.transaction_id.to_string()));
         if let Some(query_name) = info.query_name {
             fields.push(("queryName", query_name));
@@ -284,7 +280,14 @@ fn dns_response_fields(
             fields.push(("queryType", query_type));
         }
         if !info.answer_ips.is_empty() {
-            fields.push(("answerIps", info.answer_ips.join(",")));
+            fields.push((
+                "answerIps",
+                info.answer_ips
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
         }
     }
     fields
@@ -317,8 +320,14 @@ pub(crate) fn push_decision_fields(
     decision: &dynet_runtime::SelectionDecision,
 ) {
     fields.push(("decisionId", decision.decision_id.to_string()));
+    fields.push(("groupId", decision.group_id.to_string()));
+    if let Some(rule_id) = &decision.matched_rule_id {
+        fields.push(("matchedRuleId", rule_id.to_string()));
+    }
     fields.push(("nodeId", decision.node_id.to_string()));
     fields.push(("selectionReason", decision.reason.as_str().to_string()));
+    fields.push(("scheduler", decision.scheduler.as_str().to_string()));
+    fields.push(("candidateCount", decision.candidate_count.to_string()));
 }
 
 pub(crate) fn push_endpoint_fields(

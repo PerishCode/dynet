@@ -1,0 +1,53 @@
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: info
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+
+external-controller: 127.0.0.1:9090
+
+tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-redirect: true
+  auto-detect-interface: true
+  strict-route: true
+  mtu: 1500
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+  route-exclude-address:
+    - 192.168.5.0/24
+
+dns:
+  enable: true
+  listen: 127.0.0.1:53
+  ipv6: false
+  enhanced-mode: redir-host
+  default-nameserver:
+    - 192.168.5.2
+  nameserver:
+    - udp://192.168.5.2:1053
+  proxy-server-nameserver:
+    - 192.168.5.2
+
+proxies:
+  - name: dynet-socks5
+    type: socks5
+    server: 192.168.5.2
+    port: 1080
+    udp: true
+
+proxy-groups:
+  - name: LAB
+    type: select
+    proxies:
+      - dynet-socks5
+
+rules:
+  - IP-CIDR,192.168.5.0/24,DIRECT,no-resolve
+  - MATCH,LAB

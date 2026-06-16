@@ -8,7 +8,9 @@ use tokio::{
     sync::{mpsc, Semaphore},
 };
 
-use crate::outbound::{Outbound, OutboundError, TcpOutboundSession, UdpOutboundAssociation};
+use crate::outbound::{
+    Outbound, OutboundError, TcpOutboundSession, UdpDownstream, UdpOutboundAssociation,
+};
 use crate::{
     push_decision_fields, session_fields, IngressEventKind, TcpRelayConfig, UdpRelayConfig,
     DATAGRAM_LIMIT,
@@ -293,7 +295,7 @@ where
             peer,
             target,
             idle_timeout: config.idle_timeout,
-            downstream,
+            downstream: UdpDownstream::Raw(downstream),
             downstream_rx,
             decision: decision.clone(),
             runtime: runtime.clone(),

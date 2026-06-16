@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG="${ROOT}/target/dynet-ingress-smoke.log"
 CONFIG="${ROOT}/target/dynet-ingress-smoke.toml"
+RUNTIME_DB="${ROOT}/target/dynet-ingress-smoke.sqlite"
 TCP_HOST="${DYNET_SMOKE_TCP_HOST:-baidu.com}"
 TCP_PORT="${DYNET_SMOKE_TCP_PORT:-80}"
 TCP_CONCURRENCY="${DYNET_SMOKE_TCP_CONCURRENCY:-10}"
@@ -117,6 +118,10 @@ run_udp_smoke() {
   fi
 }
 
+run_socks5_smoke() {
+  curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:1080 "http://${TCP_HOST}/" >/dev/null
+}
+
 write_config() {
   cat >"${CONFIG}" <<EOF
 [ingress.tcp]
@@ -162,6 +167,15 @@ if len(tcp_accepts) < expected_tcp:
 tcp_sessions = {event.get("fields", {}).get("sessionId") for event in tcp_accepts}
 if len(tcp_sessions) < expected_tcp:
     raise SystemExit(f"expected at least {expected_tcp} TCP sessions, got {len(tcp_sessions)}")
+if not any(
+    event.get("kind") == "tcp-accept"
+    and event.get("fields", {}).get("sessionId")
+    and event.get("fields", {}).get("inbound") == "socks5"
+    and event.get("fields", {}).get("outbound") == "direct"
+    and event.get("fields", {}).get("targetIp")
+    for event in events
+):
+    raise SystemExit("missing SOCKS5 TCP session fields")
 if sys.argv[1] == "1" and not any(
     event.get("kind") == "udp-datagram"
     and event.get("fields", {}).get("sessionId")
@@ -188,13 +202,15 @@ fi
 curl -fsS --max-time 5 --connect-to "${TCP_HOST}:${TCP_PORT}:${TCP_IP}:${TCP_PORT}" "http://${TCP_HOST}/" >/dev/null
 
 write_config
-"${CARGO:-cargo}" run --locked -p dynet-cli -- --config "${CONFIG}" >"${LOG}" 2>&1 &
+rm -f "${RUNTIME_DB}" "${RUNTIME_DB}-shm" "${RUNTIME_DB}-wal"
+DYNET_RUNTIME_DB="${RUNTIME_DB}" "${CARGO:-cargo}" run --locked -p dynet-cli -- --config "${CONFIG}" >"${LOG}" 2>&1 &
 DYNET_PID="$!"
 wait_for_health
 
 run_dns_smoke
 run_tcp_smoke
 run_udp_smoke
+run_socks5_smoke
 validate_events
 
 echo "ingress smoke passed"
