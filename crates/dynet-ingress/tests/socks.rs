@@ -8,9 +8,9 @@ use std::{
 
 use dynet_ingress::{
     run_socks5, run_socks5_graph, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
-    Socks5IngressConfig,
+    Socks5IngressConfig, TrojanConfig,
 };
-use dynet_runtime::{DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState};
+use dynet_runtime::{IngressEventKind, RuntimeState};
 use support::{event_field, local_addr, unused_tcp_addr, wait_for_count, wait_for_event};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -94,7 +94,7 @@ async fn domain_connect_uses_dns() {
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
-    let runtime = runtime_with_dns(dns_addr);
+    let runtime = support::runtime_with_dns(dns_addr);
     let events = runtime.events().clone();
     tokio::spawn(run_socks5(
         Socks5IngressConfig {
@@ -228,6 +228,47 @@ async fn graph_chains_shadowsocks_direct() {
         .expect("ss server timeout")
         .expect("ss task");
     assert_ne!(salt, [0_u8; 32]);
+}
+
+#[tokio::test]
+async fn graph_chains_trojan_direct() {
+    let (trojan_addr, tls_task) = support::spawn_tcp_prefix_server::<1>().await;
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let mut outbounds = BTreeMap::new();
+    outbounds.insert(
+        "routed-node".to_string(),
+        OutboundConfig::Trojan(TrojanConfig {
+            server: trojan_addr.ip().to_string(),
+            port: trojan_addr.port(),
+            password: "secret".to_string(),
+            sni: None,
+            skip_cert_verify: true,
+        }),
+    );
+    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+
+    let prefix = time::timeout(Duration::from_secs(2), tls_task)
+        .await
+        .expect("trojan server timeout")
+        .expect("trojan task");
+    assert_eq!(prefix[0], 0x16);
 }
 
 #[tokio::test]
@@ -451,16 +492,4 @@ fn parse_socks_udp(packet: &[u8]) -> (SocketAddr, Vec<u8>) {
         }
         _ => panic!("unexpected udp address type"),
     }
-}
-
-fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
-    RuntimeState::single_node_with_dns(
-        "direct",
-        vec![DnsUpstream {
-            id: DnsUpstreamId::new("test"),
-            address: upstream,
-            enabled: true,
-            priority: 0,
-        }],
-    )
 }

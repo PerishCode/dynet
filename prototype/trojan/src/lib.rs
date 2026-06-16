@@ -94,12 +94,42 @@ impl Client {
         format!("{}:{}", self.server, self.port)
     }
 
+    pub fn server_host(&self) -> &str {
+        &self.server
+    }
+
+    pub fn server_port(&self) -> u16 {
+        self.port
+    }
+
     pub async fn relay_tcp(
         &self,
         downstream: TcpStream,
         target: SocketAddr,
     ) -> Result<TcpRelayOutcome, Error> {
         let (upstream_addr, mut upstream) = self.connect_tls().await?;
+        self.relay_tcp_with_tls(downstream, target, upstream_addr, &mut upstream)
+            .await
+    }
+
+    pub async fn relay_tcp_with_stream(
+        &self,
+        downstream: TcpStream,
+        target: SocketAddr,
+        tcp: TcpStream,
+    ) -> Result<TcpRelayOutcome, Error> {
+        let (upstream_addr, mut upstream) = self.connect_tls_with_stream(tcp).await?;
+        self.relay_tcp_with_tls(downstream, target, upstream_addr, &mut upstream)
+            .await
+    }
+
+    async fn relay_tcp_with_tls(
+        &self,
+        downstream: TcpStream,
+        target: SocketAddr,
+        upstream_addr: SocketAddr,
+        upstream: &mut TlsStream<TcpStream>,
+    ) -> Result<TcpRelayOutcome, Error> {
         upstream
             .write_all(&request_header(&self.password_hash, CMD_CONNECT, target))
             .await
@@ -112,7 +142,7 @@ impl Client {
 
         let mut downstream = downstream;
         let (client_to_upstream, upstream_to_client) =
-            io::copy_bidirectional(&mut downstream, &mut upstream)
+            io::copy_bidirectional(&mut downstream, &mut *upstream)
                 .await
                 .map_err(|error| {
                     Error::new("relay", format!("Trojan TCP relay failed: {error}"))
@@ -164,6 +194,13 @@ impl Client {
                     ),
                 )
             })?;
+        self.connect_tls_with_stream(tcp).await
+    }
+
+    async fn connect_tls_with_stream(
+        &self,
+        tcp: TcpStream,
+    ) -> Result<(SocketAddr, TlsStream<TcpStream>), Error> {
         let upstream_addr = tcp.peer_addr().map_err(|error| {
             Error::new(
                 "outbound-connect",

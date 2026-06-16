@@ -122,16 +122,15 @@ impl OutboundMedium {
     ) -> Result<TcpOutboundOutcome, OutboundError> {
         match self {
             Self::Shadowsocks(outbound) => outbound.handle_tcp_via_direct(session).await,
-            Self::Direct(_) | Self::Trojan(_) | Self::Vless(_) | Self::Vmess(_) => {
-                Err(OutboundError {
-                    stage: "outbound-select",
-                    upstream: None,
-                    message: format!(
-                        "TCP chained graph execution is not implemented for {}",
-                        self.tag()
-                    ),
-                })
-            }
+            Self::Trojan(outbound) => outbound.handle_tcp_via_direct(session).await,
+            Self::Direct(_) | Self::Vless(_) | Self::Vmess(_) => Err(OutboundError {
+                stage: "outbound-select",
+                upstream: None,
+                message: format!(
+                    "TCP chained graph execution is not implemented for {}",
+                    self.tag()
+                ),
+            }),
         }
     }
 }

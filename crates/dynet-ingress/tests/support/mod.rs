@@ -5,6 +5,7 @@ use std::{
     env,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -58,6 +59,20 @@ pub async fn spawn_ss_salt_server() -> (SocketAddr, JoinHandle<[u8; 32]>) {
         let mut salt = [0_u8; 32];
         stream.read_exact(&mut salt).await.expect("read ss salt");
         salt
+    });
+    (address, task)
+}
+
+pub async fn spawn_tcp_prefix_server<const N: usize>() -> (SocketAddr, JoinHandle<[u8; N]>) {
+    let listener = TcpListener::bind(local_addr())
+        .await
+        .expect("bind prefix server");
+    let address = listener.local_addr().expect("prefix server addr");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept prefix server");
+        let mut prefix = [0_u8; N];
+        stream.read_exact(&mut prefix).await.expect("read prefix");
+        prefix
     });
     (address, task)
 }
@@ -148,6 +163,18 @@ pub async fn runtime_from_seed(seed: RuntimeSeed) -> RuntimeState {
         .expect("runtime from seed")
 }
 
+pub fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
+    RuntimeState::single_node_with_dns(
+        "direct",
+        vec![DnsUpstream {
+            id: DnsUpstreamId::new("test"),
+            address: upstream,
+            enabled: true,
+            priority: 0,
+        }],
+    )
+}
+
 pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     RuntimeSeed {
         nodes: vec![
@@ -236,12 +263,15 @@ pub fn chained_route_seed(dns_addr: SocketAddr) -> RuntimeSeed {
 }
 
 fn temp_db_path(name: &str) -> PathBuf {
+    static NEXT_DB_ID: AtomicU64 = AtomicU64::new(0);
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
         .as_nanos();
+    let id = NEXT_DB_ID.fetch_add(1, Ordering::Relaxed);
     env::temp_dir().join(format!(
-        "dynet-ingress-{name}-{}-{now}.sqlite",
+        "dynet-ingress-{name}-{}-{now}-{id}.sqlite",
         std::process::id()
     ))
 }
