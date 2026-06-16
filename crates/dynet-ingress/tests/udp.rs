@@ -2,7 +2,8 @@ mod support;
 
 use std::time::Duration;
 
-use dynet_ingress::{run_udp, EventStore, IngressEventKind, UdpRelayConfig};
+use dynet_ingress::{run_udp, UdpRelayConfig};
+use dynet_runtime::{IngressEventKind, RuntimeState};
 use support::{
     count_kind, event_field, event_fields, event_kinds, local_addr, udp_roundtrip,
     udp_roundtrip_with, unused_udp_addr, wait_for_count, wait_for_event,
@@ -23,7 +24,8 @@ async fn relay_loop() {
     });
 
     let bind = unused_udp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_udp(
         UdpRelayConfig {
             bind,
@@ -31,7 +33,7 @@ async fn relay_loop() {
             idle_timeout: Duration::from_secs(2),
             ..UdpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -70,6 +72,19 @@ async fn relay_loop() {
         event_field(&events, IngressEventKind::UdpSessionStart, "targetIp"),
         upstream_addr.ip().to_string()
     );
+    assert_eq!(
+        event_field(&events, IngressEventKind::UdpSessionStart, "nodeId"),
+        "default"
+    );
+    assert_eq!(
+        event_field(
+            &events,
+            IngressEventKind::UdpSessionStart,
+            "selectionReason"
+        ),
+        "single-node"
+    );
+    assert!(!event_field(&events, IngressEventKind::UdpSessionStart, "decisionId").is_empty());
     assert!(!event_field(&events, IngressEventKind::UdpDatagram, "sessionId").is_empty());
 }
 
@@ -89,7 +104,8 @@ async fn multi_client_isolation() {
     });
 
     let bind = unused_udp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_udp(
         UdpRelayConfig {
             bind,
@@ -97,7 +113,7 @@ async fn multi_client_isolation() {
             idle_timeout: Duration::from_secs(2),
             ..UdpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -131,7 +147,8 @@ async fn same_client_reuse() {
     });
 
     let bind = unused_udp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_udp(
         UdpRelayConfig {
             bind,
@@ -139,7 +156,7 @@ async fn same_client_reuse() {
             idle_timeout: Duration::from_secs(2),
             ..UdpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -173,7 +190,8 @@ async fn idle_close_event() {
     });
 
     let bind = unused_udp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_udp(
         UdpRelayConfig {
             bind,
@@ -181,7 +199,7 @@ async fn idle_close_event() {
             idle_timeout: Duration::from_millis(25),
             ..UdpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -209,7 +227,8 @@ async fn max_sessions_capacity_error() {
     });
 
     let bind = unused_udp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_udp(
         UdpRelayConfig {
             bind,
@@ -217,7 +236,7 @@ async fn max_sessions_capacity_error() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 1,
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 

@@ -9,6 +9,7 @@ description = "Minimal dynet binary skeleton."
 [dependencies]
 dynet-api = { path = "../dynet-api" }
 dynet-ingress = { path = "../dynet-ingress" }
+dynet-runtime = { path = "../dynet-runtime" }
 dynet-state = { path = "../dynet-state" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 

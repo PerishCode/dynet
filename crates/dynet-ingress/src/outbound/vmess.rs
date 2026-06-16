@@ -11,7 +11,7 @@ use crate::{
         Outbound, OutboundError, TcpOutboundOutcome, TcpOutboundSession, UdpOutboundAssociation,
         UdpOutboundOutcome,
     },
-    session_fields, IngressEventKind, VmessConfig,
+    push_decision_fields, session_fields, IngressEventKind, VmessConfig,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -98,10 +98,12 @@ impl Outbound for VmessOutbound {
                         association.target,
                         parts.upstream,
                     );
+                    push_decision_fields(&mut fields, &association.decision);
                     fields.push(("direction", "upstream-to-client".to_string()));
                     fields.push(("bytes", payload.len().to_string()));
                     association
-                        .events
+                        .runtime
+                        .events()
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(VmessUdpStep::Closed) => {

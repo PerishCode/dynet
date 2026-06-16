@@ -8,7 +8,7 @@ description = "Control-plane API surface for dynet."
 
 [dependencies]
 axum = "0.8"
-dynet-ingress = { path = "../dynet-ingress" }
+dynet-runtime = { path = "../dynet-runtime" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["net"] }
 utoipa = "5"

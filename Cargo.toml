@@ -3,6 +3,7 @@ members = [
     "crates/dynet-api",
     "crates/dynet-cli",
     "crates/dynet-ingress",
+    "crates/dynet-runtime",
     "crates/dynet-state",
     "prototype/shadowsocks",
     "prototype/trojan",

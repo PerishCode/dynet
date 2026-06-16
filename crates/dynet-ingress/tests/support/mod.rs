@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
-use dynet_ingress::{EventStore, IngressEvent, IngressEventKind};
+use dynet_runtime::{EventStore, IngressEvent, IngressEventKind};
 use tokio::{
     net::{TcpListener, UdpSocket},
     time,
