@@ -7,11 +7,11 @@ use tower::ServiceExt;
 use utoipa::OpenApi;
 
 use dynet_api::{router, ApiDoc};
-use dynet_ingress::{EventStore, IngressEventKind};
+use dynet_runtime::{IngressEventKind, RuntimeState};
 
 #[tokio::test]
 async fn health_payload() {
-    let response = router(EventStore::default())
+    let response = router(RuntimeState::default())
         .oneshot(
             Request::builder()
                 .uri("/api/v1/health")
@@ -38,8 +38,8 @@ async fn health_payload() {
 
 #[tokio::test]
 async fn events_snapshot() {
-    let events = EventStore::default();
-    events.record(
+    let runtime = RuntimeState::default();
+    runtime.events().record(
         IngressEventKind::TcpAccept,
         [
             ("peer", "127.0.0.1:50000".to_string()),
@@ -47,7 +47,7 @@ async fn events_snapshot() {
         ],
     );
 
-    let response = router(events)
+    let response = router(runtime)
         .oneshot(
             Request::builder()
                 .uri("/api/v1/events")

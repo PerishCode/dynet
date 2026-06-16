@@ -402,7 +402,7 @@ name = "dynet-api"
 version = "0.1.0"
 dependencies = [
  "axum",
- "dynet-ingress",
+ "dynet-runtime",
  "serde",
  "serde_json",
  "tokio",
@@ -416,6 +416,7 @@ version = "0.1.0"
 dependencies = [
  "dynet-api",
  "dynet-ingress",
+ "dynet-runtime",
  "dynet-state",
  "tokio",
 ]
@@ -424,13 +425,20 @@ dependencies = [
 name = "dynet-ingress"
 version = "0.1.0"
 dependencies = [
- "serde",
+ "dynet-runtime",
  "shadowsocks-prototype",
  "tokio",
  "trojan-prototype",
- "utoipa",
  "vless-prototype",
  "vmess-prototype",
+]
+
+[[package]]
+name = "dynet-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "utoipa",
 ]
 
 [[package]]

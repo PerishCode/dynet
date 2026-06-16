@@ -1,5 +1,6 @@
 use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
+use dynet_runtime::{RuntimeState, SelectionDecision};
 use tokio::{
     io,
     net::{TcpStream, UdpSocket},
@@ -10,7 +11,7 @@ use tokio::{
 use shadowsocks_prototype::{Client as ShadowsocksClient, ClientConfig, Method, UdpSession};
 
 use crate::{
-    session_fields, EventStore, IngressEventKind, OutboundConfig, ShadowsocksConfig,
+    push_decision_fields, session_fields, IngressEventKind, OutboundConfig, ShadowsocksConfig,
     ShadowsocksMethod, DATAGRAM_LIMIT,
 };
 
@@ -55,7 +56,8 @@ pub(crate) struct UdpOutboundAssociation {
     pub idle_timeout: Duration,
     pub downstream: Arc<UdpSocket>,
     pub downstream_rx: mpsc::Receiver<Vec<u8>>,
-    pub events: EventStore,
+    pub decision: SelectionDecision,
+    pub runtime: RuntimeState,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -261,10 +263,12 @@ impl Outbound for DirectOutbound {
                         association.target,
                         association.target,
                     );
+                    push_decision_fields(&mut fields, &association.decision);
                     fields.push(("direction", "upstream-to-client".to_string()));
                     fields.push(("bytes", size.to_string()));
                     association
-                        .events
+                        .runtime
+                        .events()
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(UdpStep::Closed) => {
@@ -413,10 +417,12 @@ impl ShadowsocksOutbound {
             association.target,
             upstream,
         );
+        push_decision_fields(&mut fields, &association.decision);
         fields.push(("direction", "upstream-to-client".to_string()));
         fields.push(("bytes", payload.len().to_string()));
         association
-            .events
+            .runtime
+            .events()
             .record(IngressEventKind::UdpDatagram, fields);
         Ok(())
     }

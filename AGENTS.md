@@ -25,6 +25,10 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
 - `crates/dynet-ingress/` owns the fixed-upstream transparent DNS/TCP/UDP relay
   experiment and ingress event model. Keep protocol-specific parsing out unless
   a later phase explicitly needs it.
+- `crates/dynet-runtime/` owns the shared runtime facade, event store, node
+  metadata, DNS-map placeholder, selector-matrix placeholder, and outbound
+  selection decision boundary. Keep hot runtime state and future persistence
+  hooks here instead of hiding them inside ingress adapters.
 - `crates/dynet-state/` owns the current in-memory `AppState { config }` shape
   for cold-start ports and upstreams.
 - `scripts/smoke/` owns small local shell smoke checks. Keep it dependency-light

@@ -1,5 +1,5 @@
 use axum::{extract::State, routing::get, Json, Router};
-use dynet_ingress::{EventStore, IngressEvent};
+use dynet_runtime::{IngressEvent, RuntimeState};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use utoipa::{OpenApi, ToSchema};
@@ -17,7 +17,7 @@ pub struct ApiDoc;
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
-    events: EventStore,
+    runtime: RuntimeState,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
@@ -45,20 +45,20 @@ impl HealthResponse {
 }
 
 impl ApiState {
-    pub fn new(events: EventStore) -> Self {
-        Self { events }
+    pub fn new(runtime: RuntimeState) -> Self {
+        Self { runtime }
     }
 }
 
-pub fn router(event_store: EventStore) -> Router {
+pub fn router(runtime: RuntimeState) -> Router {
     Router::new()
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/health", get(health))
-        .with_state(ApiState::new(event_store))
+        .with_state(ApiState::new(runtime))
 }
 
-pub async fn serve(listener: TcpListener, event_store: EventStore) -> Result<(), std::io::Error> {
-    axum::serve(listener, router(event_store)).await
+pub async fn serve(listener: TcpListener, runtime: RuntimeState) -> Result<(), std::io::Error> {
+    axum::serve(listener, router(runtime)).await
 }
 
 #[utoipa::path(
@@ -71,7 +71,7 @@ pub async fn serve(listener: TcpListener, event_store: EventStore) -> Result<(),
 )]
 pub async fn list_events(State(state): State<ApiState>) -> Json<EventsResponse> {
     Json(EventsResponse {
-        events: state.events.snapshot(),
+        events: state.runtime.events().snapshot(),
     })
 }
 

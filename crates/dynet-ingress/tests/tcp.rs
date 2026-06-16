@@ -2,7 +2,8 @@ mod support;
 
 use std::time::Duration;
 
-use dynet_ingress::{run_tcp, EventStore, IngressEventKind, TcpRelayConfig};
+use dynet_ingress::{run_tcp, TcpRelayConfig};
+use dynet_runtime::{IngressEventKind, RuntimeState};
 use support::{
     count_kind, event_field, event_fields, local_addr, unused_tcp_addr, wait_for_count,
     wait_for_event,
@@ -31,14 +32,15 @@ async fn relay_loop() {
     });
 
     let bind = unused_tcp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_tcp(
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
             ..TcpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -78,6 +80,15 @@ async fn relay_loop() {
         event_field(&events, IngressEventKind::TcpAccept, "targetIp"),
         upstream_addr.ip().to_string()
     );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "nodeId"),
+        "default"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "selectionReason"),
+        "single-node"
+    );
+    assert!(!event_field(&events, IngressEventKind::TcpAccept, "decisionId").is_empty());
     let accept_session = event_field(&events, IngressEventKind::TcpAccept, "sessionId");
     let close_session = event_field(&events, IngressEventKind::TcpClose, "sessionId");
     assert!(!accept_session.is_empty());
@@ -101,14 +112,15 @@ async fn payload_transparency() {
     });
 
     let bind = unused_tcp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_tcp(
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
             ..TcpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -158,14 +170,15 @@ async fn concurrent_clients() {
     });
 
     let bind = unused_tcp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_tcp(
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
             ..TcpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -201,14 +214,15 @@ async fn concurrent_clients() {
 #[tokio::test]
 async fn upstream_error_event() {
     let bind = unused_tcp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_tcp(
         TcpRelayConfig {
             bind,
             upstream: unused_tcp_addr().await,
             ..TcpRelayConfig::default()
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 
@@ -241,14 +255,15 @@ async fn max_sessions_capacity_error() {
     });
 
     let bind = unused_tcp_addr().await;
-    let events = EventStore::default();
+    let runtime = RuntimeState::default();
+    let events = runtime.events().clone();
     tokio::spawn(run_tcp(
         TcpRelayConfig {
             bind,
             upstream: upstream_addr,
             max_sessions: 1,
         },
-        events.clone(),
+        runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
 

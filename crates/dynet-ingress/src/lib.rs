@@ -1,14 +1,12 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use dynet_runtime::{IngressEventKind, RuntimeState};
 use tokio::{net::UdpSocket, time};
 
 mod dns;
-mod event;
 mod inbound;
 mod outbound;
-
-pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -53,6 +51,18 @@ pub enum OutboundConfig {
     Trojan(TrojanConfig),
     Vless(VlessConfig),
     Vmess(VmessConfig),
+}
+
+impl OutboundConfig {
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Direct => outbound::DIRECT_OUTBOUND,
+            Self::Shadowsocks(_) => "ss",
+            Self::Trojan(_) => "trojan",
+            Self::Vless(_) => "vless",
+            Self::Vmess(_) => "vmess",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -135,7 +145,7 @@ impl Default for UdpRelayConfig {
     }
 }
 
-pub async fn run_dns(config: DnsRelayConfig, events: EventStore) -> Result<(), String> {
+pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<(), String> {
     let socket = UdpSocket::bind(config.bind)
         .await
         .map_err(|error| format!("failed to bind DNS relay {}: {error}", config.bind))?;
@@ -159,12 +169,12 @@ pub async fn run_dns(config: DnsRelayConfig, events: EventStore) -> Result<(), S
             fields.push(("queryName", info.query_name.clone()));
             fields.push(("queryType", info.query_type.clone()));
         }
-        events.record(IngressEventKind::DnsQuery, fields);
+        runtime.events().record(IngressEventKind::DnsQuery, fields);
         match resolve_dns(
             &query,
             config.upstream,
             config.timeout,
-            events.clone(),
+            runtime.clone(),
             peer,
         )
         .await
@@ -183,29 +193,29 @@ pub async fn run_dns(config: DnsRelayConfig, events: EventStore) -> Result<(), S
                 ];
                 push_endpoint_fields(&mut fields, "peer", peer);
                 push_endpoint_fields(&mut fields, "upstream", config.upstream);
-                events.record(IngressEventKind::DnsError, fields);
+                runtime.events().record(IngressEventKind::DnsError, fields);
             }
         }
     }
 }
 
-pub async fn run_tcp(config: TcpRelayConfig, events: EventStore) -> Result<(), String> {
-    run_tcp_with_outbound(config, OutboundConfig::Direct, events).await
+pub async fn run_tcp(config: TcpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
+    run_tcp_with_outbound(config, OutboundConfig::Direct, runtime).await
 }
 
-pub async fn run_udp(config: UdpRelayConfig, events: EventStore) -> Result<(), String> {
-    run_udp_with_outbound(config, OutboundConfig::Direct, events).await
+pub async fn run_udp(config: UdpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
+    run_udp_with_outbound(config, OutboundConfig::Direct, runtime).await
 }
 
 pub async fn run_tcp_with_outbound(
     config: TcpRelayConfig,
     outbound: OutboundConfig,
-    events: EventStore,
+    runtime: RuntimeState,
 ) -> Result<(), String> {
     inbound::run_tcp(
         config,
         outbound::OutboundMedium::try_from(outbound)?,
-        events,
+        runtime,
     )
     .await
 }
@@ -213,12 +223,12 @@ pub async fn run_tcp_with_outbound(
 pub async fn run_udp_with_outbound(
     config: UdpRelayConfig,
     outbound: OutboundConfig,
-    events: EventStore,
+    runtime: RuntimeState,
 ) -> Result<(), String> {
     inbound::run_udp(
         config,
         outbound::OutboundMedium::try_from(outbound)?,
-        events,
+        runtime,
     )
     .await
 }
@@ -227,7 +237,7 @@ async fn resolve_dns(
     query: &[u8],
     upstream: SocketAddr,
     timeout: Duration,
-    events: EventStore,
+    runtime: RuntimeState,
     peer: SocketAddr,
 ) -> Result<Vec<u8>, String> {
     let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
@@ -242,7 +252,7 @@ async fn resolve_dns(
         .await
         .map_err(|_| "timed out waiting for DNS upstream response".to_string())?
         .map_err(|error| format!("failed receiving DNS upstream response: {error}"))?;
-    events.record(
+    runtime.events().record(
         IngressEventKind::DnsResponse,
         dns_response_fields(peer, upstream, source, &response[..size]),
     );
@@ -300,6 +310,15 @@ pub(crate) fn session_fields(
     push_endpoint_fields(&mut fields, "target", target);
     push_endpoint_fields(&mut fields, "upstream", upstream);
     fields
+}
+
+pub(crate) fn push_decision_fields(
+    fields: &mut Vec<(&'static str, String)>,
+    decision: &dynet_runtime::SelectionDecision,
+) {
+    fields.push(("decisionId", decision.decision_id.to_string()));
+    fields.push(("nodeId", decision.node_id.to_string()));
+    fields.push(("selectionReason", decision.reason.as_str().to_string()));
 }
 
 pub(crate) fn push_endpoint_fields(

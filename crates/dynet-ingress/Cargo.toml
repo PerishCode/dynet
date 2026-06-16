@@ -7,10 +7,9 @@ repository.workspace = true
 description = "Transparent ingress relay experiments for dynet."
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+dynet-runtime = { path = "../dynet-runtime" }
 shadowsocks-prototype = { path = "../../prototype/shadowsocks" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 trojan-prototype = { path = "../../prototype/trojan" }
-utoipa = "5"
 vless-prototype = { path = "../../prototype/vless" }
 vmess-prototype = { path = "../../prototype/vmess" }
