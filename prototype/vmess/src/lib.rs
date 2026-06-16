@@ -116,12 +116,29 @@ impl Client {
         format!("{}:{}", self.server, self.port)
     }
 
+    pub fn server_host(&self) -> &str {
+        &self.server
+    }
+
+    pub fn server_port(&self) -> u16 {
+        self.port
+    }
+
     pub async fn relay_tcp(
         &self,
         downstream: TcpStream,
         target: SocketAddr,
     ) -> Result<TcpRelayOutcome, Error> {
-        let mut upstream = self.connect().await?;
+        self.relay_tcp_with_stream(downstream, target, self.connect().await?)
+            .await
+    }
+
+    pub async fn relay_tcp_with_stream(
+        &self,
+        downstream: TcpStream,
+        target: SocketAddr,
+        mut upstream: TcpStream,
+    ) -> Result<TcpRelayOutcome, Error> {
         let upstream_addr = upstream.peer_addr().map_err(|error| {
             Error::new(
                 "outbound-connect",
