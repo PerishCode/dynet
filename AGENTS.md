@@ -41,6 +41,10 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   should only adapt it behind the outbound boundary.
 - `prototype/trojan/tests/` owns Trojan wire-format integration tests against
   the prototype public API.
+- `prototype/vless/` owns the experimental VLESS Reality/Vision client protocol
+  implementation. Keep VLESS headers, Vision framing, REALITY transport, and
+  related wire-format tests here; `dynet-ingress` should only adapt it behind
+  the outbound boundary.
 - `prototype/vmess/` owns the experimental hand-written VMess client protocol
   implementation. Keep VMess AEAD/data chunk mechanics here; `dynet-ingress`
   should only adapt it behind the outbound boundary.

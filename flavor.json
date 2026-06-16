@@ -10,7 +10,16 @@
     "exclude": [
       "**/target/**",
       "**/.venv/**",
-      "**/__pycache__/**"
+      "**/__pycache__/**",
+      "prototype/vless/src/reality/**",
+      "prototype/vless/src/slide_buffer.rs",
+      "prototype/vless/src/tls_deframer.rs",
+      "prototype/vless/src/tls_fuzzy_deframer.rs",
+      "prototype/vless/src/tls_handshake_util.rs",
+      "prototype/vless/src/vision_filter.rs",
+      "prototype/vless/src/vision_pad.rs",
+      "prototype/vless/src/vision_stream.rs",
+      "prototype/vless/src/vision_unpad.rs"
     ]
   }
 }

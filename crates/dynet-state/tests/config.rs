@@ -298,6 +298,50 @@ udp = true
 }
 
 #[test]
+fn loads_vless_outbound() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_vless_outbound");
+    fs::write(
+        &config_path,
+        r#"
+[outbound]
+type = "vless"
+server = "demo.example"
+port = 443
+uuid = "11111111-2222-3333-4444-555555555555"
+servername = "www.example.com"
+flow = "xtls-rprx-vision"
+network = "tcp"
+tls = true
+udp = true
+
+[outbound.reality-opts]
+public-key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+short-id = "0123456789abcdef"
+"#,
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    let OutboundConfig::Vless(outbound) = config.outbound else {
+        panic!("expected vless outbound");
+    };
+    assert_eq!(outbound.server, "demo.example");
+    assert_eq!(outbound.port, 443);
+    assert_eq!(outbound.uuid, "11111111-2222-3333-4444-555555555555");
+    assert_eq!(outbound.server_name, "www.example.com");
+    assert_eq!(
+        outbound.public_key,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    );
+    assert_eq!(outbound.short_id, "0123456789abcdef");
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
 fn rejects_vmess_alter_id() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
