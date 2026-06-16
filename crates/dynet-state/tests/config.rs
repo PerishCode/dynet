@@ -266,6 +266,65 @@ udp = true
 }
 
 #[test]
+fn loads_vmess_outbound() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_vmess_outbound");
+    fs::write(
+        &config_path,
+        r#"
+[outbound]
+type = "vmess"
+server = "demo.example"
+port = 10086
+uuid = "11111111-2222-3333-4444-555555555555"
+alterId = 0
+cipher = "auto"
+udp = true
+"#,
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    let OutboundConfig::Vmess(outbound) = config.outbound else {
+        panic!("expected vmess outbound");
+    };
+    assert_eq!(outbound.server, "demo.example");
+    assert_eq!(outbound.port, 10086);
+    assert_eq!(outbound.uuid, "11111111-2222-3333-4444-555555555555");
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
+fn rejects_vmess_alter_id() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("rejects_vmess_nonzero_alter_id");
+    fs::write(
+        &config_path,
+        r#"
+[outbound]
+type = "vmess"
+server = "demo.example"
+port = 10086
+uuid = "11111111-2222-3333-4444-555555555555"
+alterId = 1
+cipher = "auto"
+udp = true
+"#,
+    )
+    .expect("write config");
+
+    let error = Config::from_config_path(Some(&config_path)).expect_err("alterId rejected");
+
+    assert!(error.contains("alterId"));
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
 fn rejects_udp_missing_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);

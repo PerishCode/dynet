@@ -1,0 +1,21 @@
+[package]
+name = "vmess-prototype"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Prototype hand-written VMess client protocol support for dynet."
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+crc32fast = "1"
+hmac = "0.12"
+md-5 = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+tokio = { version = "1", features = ["io-util", "net"] }
+uuid = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

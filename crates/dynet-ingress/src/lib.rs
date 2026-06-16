@@ -51,6 +51,7 @@ pub enum OutboundConfig {
     Direct,
     Shadowsocks(ShadowsocksConfig),
     Trojan(TrojanConfig),
+    Vmess(VmessConfig),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -68,6 +69,13 @@ pub struct TrojanConfig {
     pub password: String,
     pub sni: Option<String>,
     pub skip_cert_verify: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VmessConfig {
+    pub server: String,
+    pub port: u16,
+    pub uuid: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

@@ -6,6 +6,7 @@ members = [
     "crates/dynet-state",
     "prototype/shadowsocks",
     "prototype/trojan",
+    "prototype/vmess",
 ]
 resolver = "2"
 

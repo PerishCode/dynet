@@ -41,6 +41,11 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   should only adapt it behind the outbound boundary.
 - `prototype/trojan/tests/` owns Trojan wire-format integration tests against
   the prototype public API.
+- `prototype/vmess/` owns the experimental hand-written VMess client protocol
+  implementation. Keep VMess AEAD/data chunk mechanics here; `dynet-ingress`
+  should only adapt it behind the outbound boundary.
+- `prototype/vmess/tests/` owns VMess wire-format integration tests against
+  the prototype public API.
 - `flavor.json` owns the source shape scan for supported files.
 - When adding a new subtree, document its ownership here in the same change.
 

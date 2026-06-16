@@ -111,6 +111,20 @@ skip-cert-verify = true
 udp = true
 ```
 
+For the current VMess cold-start experiment, only raw TCP transport,
+`alterId = 0`, `cipher = "auto"`, and `udp = true` are accepted.
+
+```toml
+[outbound]
+type = "vmess"
+server = "node.example.com"
+port = 10086
+uuid = "11111111-2222-3333-4444-555555555555"
+alterId = 0
+cipher = "auto"
+udp = true
+```
+
 ## Development
 
 ```bash

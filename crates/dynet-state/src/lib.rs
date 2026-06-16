@@ -7,7 +7,7 @@ use std::{
 
 use dynet_ingress::{
     DnsRelayConfig, IngressConfig, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
-    TcpRelayConfig, TrojanConfig, UdpRelayConfig,
+    TcpRelayConfig, TrojanConfig, UdpRelayConfig, VmessConfig,
 };
 use serde::Deserialize;
 
@@ -295,6 +295,11 @@ struct FileOutboundConfig {
     port: Option<u16>,
     method: Option<String>,
     cipher: Option<String>,
+    #[serde(rename = "alterId")]
+    alter_id: Option<u16>,
+    uuid: Option<String>,
+    network: Option<String>,
+    tls: Option<bool>,
     password: Option<String>,
     sni: Option<String>,
     servername: Option<String>,
@@ -309,6 +314,7 @@ impl FileOutboundConfig {
             "direct" => Ok(OutboundConfig::Direct),
             "shadowsocks" | "ss" => self.load_shadowsocks(),
             "trojan" => self.load_trojan(),
+            "vmess" => self.load_vmess(),
             _ => Err(format!("outbound.type unsupported: {}", self.kind)),
         }
     }
@@ -372,6 +378,34 @@ impl FileOutboundConfig {
             sni,
             skip_cert_verify: self.skip_cert_verify.unwrap_or(false),
         }))
+    }
+
+    fn load_vmess(self) -> Result<OutboundConfig, String> {
+        if self.udp != Some(true) {
+            return Err("outbound.udp must be true for vmess cold start".to_string());
+        }
+        if self.alter_id != Some(0) {
+            return Err("outbound.alterId must be 0 for vmess cold start".to_string());
+        }
+        if self.cipher.as_deref() != Some("auto") {
+            return Err("outbound.cipher must be auto for vmess cold start".to_string());
+        }
+        if !matches!(self.network.as_deref(), None | Some("tcp")) {
+            return Err("outbound.network must be tcp for vmess cold start".to_string());
+        }
+        if self.tls == Some(true) {
+            return Err("outbound.tls is not supported for vmess cold start".to_string());
+        }
+        let server = self
+            .server
+            .ok_or_else(|| "outbound.server is required for vmess".to_string())?;
+        let port = self
+            .port
+            .ok_or_else(|| "outbound.port is required for vmess".to_string())?;
+        let uuid = self
+            .uuid
+            .ok_or_else(|| "outbound.uuid is required for vmess".to_string())?;
+        Ok(OutboundConfig::Vmess(VmessConfig { server, port, uuid }))
     }
 }
 
