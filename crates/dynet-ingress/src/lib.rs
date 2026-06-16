@@ -8,7 +8,6 @@ mod inbound;
 mod outbound;
 mod socks;
 
-const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DATAGRAM_LIMIT: usize = 65_535;
 pub const DEFAULT_TCP_MAX_SESSIONS: usize = 1024;
@@ -18,7 +17,6 @@ pub const DEFAULT_SOCKS5_MAX_SESSIONS: usize = 1024;
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DnsRelayConfig {
     pub bind: SocketAddr,
-    pub timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -126,7 +124,6 @@ impl Default for DnsRelayConfig {
     fn default() -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 1053)),
-            timeout: DNS_TIMEOUT,
         }
     }
 }
@@ -182,7 +179,7 @@ pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<()
             fields.push(("queryType", info.query_type.clone()));
         }
         runtime.events().record(IngressEventKind::DnsQuery, fields);
-        match runtime.resolve_dns_wire(query, config.timeout).await {
+        match runtime.resolve_dns_wire(query).await {
             Ok(resolution) => {
                 runtime.events().record(
                     IngressEventKind::DnsResponse,

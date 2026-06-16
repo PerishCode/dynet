@@ -3,7 +3,6 @@ bind = "127.0.0.1:9977"
 
 [ingress.dns]
 bind = "127.0.0.1:1053"
-timeout_ms = 5000
 
 [ingress.tcp]
 bind = "127.0.0.1:18080"

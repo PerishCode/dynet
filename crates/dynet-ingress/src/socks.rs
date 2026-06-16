@@ -434,7 +434,7 @@ async fn resolve_destination(
         SocksDestination::Socket(address) => Ok(TargetContext::external_context(*address, None)),
         SocksDestination::Domain { domain, port } => {
             let address = runtime
-                .resolve_domain_a(domain, *port, crate::DNS_TIMEOUT)
+                .resolve_domain_a(domain, *port)
                 .await
                 .map_err(|error| {
                     SocksError::new(

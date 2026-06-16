@@ -3,11 +3,13 @@ use std::net::SocketAddr;
 use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
 
 use crate::{
-    default_dns_upstreams, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId, OutboundGroup,
-    OutboundNode, RouteMatcher, RouteRule, RuleId, SchedulerPolicy,
+    default_dns_upstreams, DnsRacePolicy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId,
+    OutboundGroup, OutboundNode, RouteMatcher, RouteRule, RuleId, SchedulerPolicy,
 };
 
-use super::{RuntimeStore, RuntimeStoreError, SCHEMA_VERSION};
+use super::{
+    dns_policy::insert_default_dns_policy, RuntimeStore, RuntimeStoreError, SCHEMA_VERSION,
+};
 
 const DEFAULT_GROUP_ID: &str = "default";
 
@@ -19,6 +21,7 @@ pub(crate) struct RuntimeBootstrap {
     pub(crate) group_members: Vec<GroupMember>,
     pub(crate) route_rules: Vec<RouteRule>,
     pub(crate) dns_upstreams: Vec<DnsUpstream>,
+    pub(crate) dns_policy: DnsRacePolicy,
 }
 
 impl RuntimeStore {
@@ -85,6 +88,7 @@ impl RuntimeStore {
         .bind(group.id.as_str())
         .execute(&mut *transaction)
         .await?;
+        insert_default_dns_policy(&mut transaction).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -107,6 +111,7 @@ impl RuntimeStore {
         let group_members = self.load_group_members().await?;
         let route_rules = self.load_route_rules().await?;
         let dns_upstreams = self.load_dns_upstreams().await?;
+        let dns_policy = self.load_dns_policy().await?;
         validate_bootstrap(
             &nodes,
             &default_group_id,
@@ -114,6 +119,7 @@ impl RuntimeStore {
             &group_members,
             &route_rules,
             &dns_upstreams,
+            &dns_policy,
         )?;
         Ok(RuntimeBootstrap {
             nodes,
@@ -122,10 +128,11 @@ impl RuntimeStore {
             group_members,
             route_rules,
             dns_upstreams,
+            dns_policy,
         })
     }
 
-    async fn meta_value(&self, key: &str) -> Result<Option<String>, RuntimeStoreError> {
+    pub(super) async fn meta_value(&self, key: &str) -> Result<Option<String>, RuntimeStoreError> {
         let value = sqlx::query("select value from runtime_meta where key = ?1")
             .bind(key)
             .fetch_optional(&self.pool)
@@ -383,6 +390,7 @@ fn validate_bootstrap(
     group_members: &[GroupMember],
     route_rules: &[RouteRule],
     dns_upstreams: &[DnsUpstream],
+    dns_policy: &DnsRacePolicy,
 ) -> Result<(), RuntimeStoreError> {
     if nodes.is_empty() {
         return Err(RuntimeStoreError::InvalidBootstrap(
@@ -414,6 +422,11 @@ fn validate_bootstrap(
     if !dns_upstreams.iter().any(|upstream| upstream.enabled) {
         return Err(RuntimeStoreError::InvalidBootstrap(
             "at least one enabled DNS upstream is required".to_string(),
+        ));
+    }
+    if dns_policy.timeout.is_zero() {
+        return Err(RuntimeStoreError::InvalidBootstrap(
+            "dns_race_timeout_ms must be positive".to_string(),
         ));
     }
     Ok(())

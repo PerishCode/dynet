@@ -3,7 +3,9 @@ mod support;
 use std::{net::SocketAddr, time::Duration};
 
 use dynet_ingress::{run_dns, DnsRelayConfig};
-use dynet_runtime::{DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState};
+use dynet_runtime::{
+    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState,
+};
 use support::{event_field, event_kinds, local_addr, unused_udp_addr, wait_for_event};
 use tokio::{net::UdpSocket, time};
 
@@ -23,13 +25,7 @@ async fn relay_loop() {
     let bind = unused_udp_addr().await;
     let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
-    tokio::spawn(run_dns(
-        DnsRelayConfig {
-            bind,
-            timeout: Duration::from_secs(2),
-        },
-        runtime,
-    ));
+    tokio::spawn(run_dns(DnsRelayConfig { bind }, runtime));
     time::sleep(Duration::from_millis(25)).await;
 
     let client = UdpSocket::bind(local_addr()).await.expect("bind client");
@@ -67,13 +63,7 @@ async fn sniffs_answer_ip() {
     let bind = unused_udp_addr().await;
     let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
-    tokio::spawn(run_dns(
-        DnsRelayConfig {
-            bind,
-            timeout: Duration::from_secs(2),
-        },
-        runtime,
-    ));
+    tokio::spawn(run_dns(DnsRelayConfig { bind }, runtime));
     time::sleep(Duration::from_millis(25)).await;
 
     let client = UdpSocket::bind(local_addr()).await.expect("bind client");
@@ -117,13 +107,7 @@ async fn preserves_wire() {
     let bind = unused_udp_addr().await;
     let runtime = runtime_with_dns(upstream_addr);
     let events = runtime.events().clone();
-    tokio::spawn(run_dns(
-        DnsRelayConfig {
-            bind,
-            timeout: Duration::from_secs(2),
-        },
-        runtime,
-    ));
+    tokio::spawn(run_dns(DnsRelayConfig { bind }, runtime));
     time::sleep(Duration::from_millis(25)).await;
 
     let client = UdpSocket::bind(local_addr()).await.expect("bind client");
@@ -161,7 +145,11 @@ fn dns_a_response() -> Vec<u8> {
 }
 
 fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
-    RuntimeState::single_node_with_dns(
+    runtime_with_dns_timeout(upstream, Duration::from_secs(2))
+}
+
+fn runtime_with_dns_timeout(upstream: SocketAddr, timeout: Duration) -> RuntimeState {
+    RuntimeState::single_node_dns_policy(
         "direct",
         vec![DnsUpstream {
             id: DnsUpstreamId::new("test"),
@@ -169,21 +157,19 @@ fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
             enabled: true,
             priority: 0,
         }],
+        DnsRacePolicy {
+            timeout,
+            strategy: DnsRaceStrategy::Parallel,
+        },
     )
 }
 
 #[tokio::test]
 async fn timeout_event() {
     let bind = unused_udp_addr().await;
-    let runtime = runtime_with_dns(unused_udp_addr().await);
+    let runtime = runtime_with_dns_timeout(unused_udp_addr().await, Duration::from_millis(25));
     let events = runtime.events().clone();
-    tokio::spawn(run_dns(
-        DnsRelayConfig {
-            bind,
-            timeout: Duration::from_millis(25),
-        },
-        runtime,
-    ));
+    tokio::spawn(run_dns(DnsRelayConfig { bind }, runtime));
     time::sleep(Duration::from_millis(25)).await;
 
     let client = UdpSocket::bind(local_addr()).await.expect("bind client");
@@ -201,15 +187,9 @@ async fn timeout_event() {
 async fn recovers_after_timeout() {
     let upstream_addr = unused_udp_addr().await;
     let bind = unused_udp_addr().await;
-    let runtime = runtime_with_dns(upstream_addr);
+    let runtime = runtime_with_dns_timeout(upstream_addr, Duration::from_millis(25));
     let events = runtime.events().clone();
-    tokio::spawn(run_dns(
-        DnsRelayConfig {
-            bind,
-            timeout: Duration::from_millis(25),
-        },
-        runtime,
-    ));
+    tokio::spawn(run_dns(DnsRelayConfig { bind }, runtime));
     time::sleep(Duration::from_millis(25)).await;
 
     let client = UdpSocket::bind(local_addr()).await.expect("bind client");

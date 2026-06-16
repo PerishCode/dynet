@@ -17,7 +17,6 @@ fn env_overrides_config() {
     let _guard = EnvGuard::set(&[
         ("DYNET_CONTROL_BIND", "127.0.0.1:9001"),
         ("DYNET_DNS_BIND", "127.0.0.1:9002"),
-        ("DYNET_DNS_TIMEOUT_MS", "123"),
         ("DYNET_TCP_BIND", "127.0.0.1:9004"),
         ("DYNET_TCP_UPSTREAM", "127.0.0.1:9005"),
         ("DYNET_TCP_MAX_SESSIONS", "64"),
@@ -34,7 +33,6 @@ fn env_overrides_config() {
 
     assert_eq!(config.control.bind, socket("127.0.0.1:9001"));
     assert_eq!(config.ingress.dns.bind, socket("127.0.0.1:9002"));
-    assert_eq!(config.ingress.dns.timeout, Duration::from_millis(123));
     assert_eq!(config.ingress.tcp.bind, socket("127.0.0.1:9004"));
     assert_eq!(config.ingress.tcp.upstream, socket("127.0.0.1:9005"));
     assert_eq!(config.ingress.tcp.max_sessions, 64);
@@ -63,7 +61,6 @@ bind = "127.0.0.1:9101"
 
 [ingress.dns]
 bind = "127.0.0.1:9102"
-timeout_ms = 321
 
 [ingress.tcp]
 bind = "127.0.0.1:9104"
@@ -88,7 +85,6 @@ max_sessions = 34
 
     assert_eq!(config.control.bind, socket("127.0.0.1:9101"));
     assert_eq!(config.ingress.dns.bind, socket("127.0.0.1:9102"));
-    assert_eq!(config.ingress.dns.timeout, Duration::from_millis(321));
     assert_eq!(config.ingress.tcp.bind, socket("127.0.0.1:9104"));
     assert_eq!(config.ingress.tcp.upstream, socket("127.0.0.1:9105"));
     assert_eq!(config.ingress.tcp.max_sessions, 32);
@@ -456,7 +452,6 @@ impl EnvGuard {
 const ENV_KEYS: &[&str] = &[
     "DYNET_CONTROL_BIND",
     "DYNET_DNS_BIND",
-    "DYNET_DNS_TIMEOUT_MS",
     "DYNET_TCP_BIND",
     "DYNET_TCP_UPSTREAM",
     "DYNET_TCP_MAX_SESSIONS",

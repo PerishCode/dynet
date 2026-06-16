@@ -11,6 +11,7 @@ use crate::{
 };
 
 mod bootstrap;
+mod dns_policy;
 mod schema;
 mod sink;
 
@@ -19,7 +20,7 @@ pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {

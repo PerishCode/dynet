@@ -77,8 +77,6 @@ impl Config {
 fn apply_env(config: &mut Config) -> Result<(), String> {
     config.control.bind = env_socket("DYNET_CONTROL_BIND", config.control.bind)?;
     config.ingress.dns.bind = env_socket("DYNET_DNS_BIND", config.ingress.dns.bind)?;
-    config.ingress.dns.timeout =
-        env_duration_ms("DYNET_DNS_TIMEOUT_MS", config.ingress.dns.timeout)?;
     config.ingress.tcp.bind = env_socket("DYNET_TCP_BIND", config.ingress.tcp.bind)?;
     config.ingress.tcp.upstream = env_socket("DYNET_TCP_UPSTREAM", config.ingress.tcp.upstream)?;
     config.ingress.tcp.max_sessions =
@@ -222,16 +220,12 @@ impl FileIngressConfig {
 #[serde(deny_unknown_fields)]
 struct FileDnsRelayConfig {
     bind: Option<String>,
-    timeout_ms: Option<u64>,
 }
 
 impl FileDnsRelayConfig {
     fn apply(self, config: &mut DnsRelayConfig) -> Result<(), String> {
         if let Some(bind) = self.bind {
             config.bind = parse_socket("ingress.dns.bind", &bind)?;
-        }
-        if let Some(timeout_ms) = self.timeout_ms {
-            config.timeout = Duration::from_millis(timeout_ms);
         }
         Ok(())
     }

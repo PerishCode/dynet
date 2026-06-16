@@ -33,6 +33,8 @@ async fn seeds_default_bootstrap() {
         "default"
     );
     assert_eq!(runtime.dns_upstreams().snapshot().len(), 2);
+    assert_eq!(runtime.dns_policy().timeout, Duration::from_secs(2));
+    assert_eq!(runtime.dns_policy().strategy.as_str(), "parallel");
 }
 
 #[tokio::test]
@@ -192,6 +194,20 @@ impl StoreFixture {
         .execute(&self.inspector)
         .await
         .expect("insert default group meta");
+        sqlx::query(
+            "insert into runtime_meta (key, value)
+             values ('dns_race_strategy', 'parallel')",
+        )
+        .execute(&self.inspector)
+        .await
+        .expect("insert dns strategy meta");
+        sqlx::query(
+            "insert into runtime_meta (key, value)
+             values ('dns_race_timeout_ms', '2000')",
+        )
+        .execute(&self.inspector)
+        .await
+        .expect("insert dns timeout meta");
     }
 
     async fn insert_node_only(&self, tag: &str) {

@@ -3,6 +3,7 @@ use std::{
     fmt,
     net::{IpAddr, SocketAddr},
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 pub(crate) const DEFAULT_NODE_ID: &str = "default";
@@ -65,6 +66,17 @@ pub struct DnsUpstream {
     pub address: SocketAddr,
     pub enabled: bool,
     pub priority: u32,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DnsRacePolicy {
+    pub timeout: Duration,
+    pub strategy: DnsRaceStrategy,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DnsRaceStrategy {
+    Parallel,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -281,6 +293,23 @@ impl SchedulerPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SingleFirstEnabled => "single-first-enabled",
+        }
+    }
+}
+
+impl DnsRacePolicy {
+    pub(crate) fn default_parallel() -> Self {
+        Self {
+            timeout: Duration::from_secs(2),
+            strategy: DnsRaceStrategy::Parallel,
+        }
+    }
+}
+
+impl DnsRaceStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Parallel => "parallel",
         }
     }
 }

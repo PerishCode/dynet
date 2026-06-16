@@ -18,10 +18,10 @@ pub use dns::{
 };
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
-    DnsUpstream, DnsUpstreamId, GroupId, GroupMember, InboundKind, NodeId, ObservedDnsMap,
-    OutboundGroup, OutboundNode, RouteMatcher, RouteRule, RuleId, SchedulerPolicy,
-    SelectionContext, SelectionDecision, SelectionError, SelectionReason, SelectorMatrix,
-    TargetContext, TargetSource,
+    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, InboundKind,
+    NodeId, ObservedDnsMap, OutboundGroup, OutboundNode, RouteMatcher, RouteRule, RuleId,
+    SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError, SelectionReason,
+    SelectorMatrix, TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
@@ -40,6 +40,7 @@ struct RuntimeInner {
     groups: GroupStore,
     routes: RouteRuleStore,
     dns_upstreams: DnsUpstreamStore,
+    dns_policy: DnsRacePolicy,
     dns_map: ObservedDnsMap,
     selector_matrix: SelectorMatrix,
     observation_sink: Option<persistence::ObservationSink>,
@@ -58,6 +59,14 @@ impl RuntimeState {
     }
 
     pub fn single_node_with_dns(tag: impl Into<String>, dns_upstreams: Vec<DnsUpstream>) -> Self {
+        Self::single_node_dns_policy(tag, dns_upstreams, DnsRacePolicy::default_parallel())
+    }
+
+    pub fn single_node_dns_policy(
+        tag: impl Into<String>,
+        dns_upstreams: Vec<DnsUpstream>,
+        dns_policy: DnsRacePolicy,
+    ) -> Self {
         let node = OutboundNode {
             id: NodeId::new(DEFAULT_NODE_ID),
             tag: tag.into(),
@@ -73,6 +82,7 @@ impl RuntimeState {
                 groups: GroupStore::from_parts(group.id.clone(), vec![group], vec![member]),
                 routes: RouteRuleStore::default(),
                 dns_upstreams: DnsUpstreamStore::from_upstreams(dns_upstreams),
+                dns_policy,
                 dns_map: ObservedDnsMap::default(),
                 selector_matrix: SelectorMatrix,
                 observation_sink: None,
@@ -110,6 +120,7 @@ impl RuntimeState {
                 ),
                 routes: RouteRuleStore::from_rules(bootstrap.route_rules),
                 dns_upstreams: DnsUpstreamStore::from_upstreams(bootstrap.dns_upstreams),
+                dns_policy: bootstrap.dns_policy,
                 dns_map: ObservedDnsMap::default(),
                 selector_matrix: SelectorMatrix,
                 observation_sink,
@@ -136,6 +147,10 @@ impl RuntimeState {
 
     pub fn dns_upstreams(&self) -> &DnsUpstreamStore {
         &self.inner.dns_upstreams
+    }
+
+    pub fn dns_policy(&self) -> DnsRacePolicy {
+        self.inner.dns_policy
     }
 
     pub fn dns_map(&self) -> &ObservedDnsMap {

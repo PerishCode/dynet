@@ -41,7 +41,6 @@ Cold-start bind/upstream values can be overridden with environment variables:
 ```text
 DYNET_CONTROL_BIND
 DYNET_DNS_BIND
-DYNET_DNS_TIMEOUT_MS
 DYNET_TCP_BIND
 DYNET_TCP_UPSTREAM
 DYNET_TCP_MAX_SESSIONS      # default: 1024 active sessions
@@ -65,7 +64,6 @@ bind = "127.0.0.1:9977"
 
 [ingress.dns]
 bind = "127.0.0.1:1053"
-timeout_ms = 5000
 
 [ingress.tcp]
 bind = "127.0.0.1:18080"

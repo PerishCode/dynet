@@ -43,11 +43,8 @@ pub struct DnsResolveError {
 }
 
 impl RuntimeState {
-    pub async fn resolve_dns_wire(
-        &self,
-        query: Vec<u8>,
-        timeout: Duration,
-    ) -> Result<DnsResolution, DnsResolveError> {
+    pub async fn resolve_dns_wire(&self, query: Vec<u8>) -> Result<DnsResolution, DnsResolveError> {
+        let policy = self.dns_policy();
         let query_info = sniff_dns_query(&query);
         let upstreams = enabled_upstreams(self.dns_upstreams().snapshot());
         if upstreams.is_empty() {
@@ -62,13 +59,13 @@ impl RuntimeState {
             let query = query.clone();
             let query_info = query_info.clone();
             tokio::spawn(async move {
-                let result = query_upstream(upstream, query, query_info, timeout).await;
+                let result = query_upstream(upstream, query, query_info, policy.timeout).await;
                 let _ = tx.send(result).await;
             });
         }
         drop(tx);
 
-        let deadline = time::sleep(timeout);
+        let deadline = time::sleep(policy.timeout);
         tokio::pin!(deadline);
         let mut last_error = None;
         loop {
@@ -102,10 +99,9 @@ impl RuntimeState {
         &self,
         domain: &str,
         port: u16,
-        timeout: Duration,
     ) -> Result<SocketAddr, DnsResolveError> {
         let query = build_a_query(domain)?;
-        let resolution = self.resolve_dns_wire(query, timeout).await?;
+        let resolution = self.resolve_dns_wire(query).await?;
         let response_info = resolution
             .response_info
             .ok_or_else(|| DnsResolveError::new(format!("DNS response for {domain} is invalid")))?;
