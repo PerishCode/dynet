@@ -39,15 +39,16 @@ impl RuntimeStore {
     }
 }
 
-pub(super) async fn insert_default_dns_policy(
+pub(super) async fn insert_dns_policy(
     transaction: &mut Transaction<'_, Sqlite>,
+    policy: DnsRacePolicy,
 ) -> Result<(), RuntimeStoreError> {
     sqlx::query(
         "insert into runtime_meta (key, value)
          values ('dns_race_strategy', ?1)
          on conflict(key) do update set value = excluded.value",
     )
-    .bind(DnsRaceStrategy::Parallel.as_str())
+    .bind(policy.strategy.as_str())
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
@@ -55,7 +56,7 @@ pub(super) async fn insert_default_dns_policy(
          values ('dns_race_timeout_ms', ?1)
          on conflict(key) do update set value = excluded.value",
     )
-    .bind("2000")
+    .bind(policy.timeout.as_millis().to_string())
     .execute(&mut **transaction)
     .await?;
     Ok(())

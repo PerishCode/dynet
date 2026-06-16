@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId, OutboundGroup, OutboundNode,
-    RouteRule, TargetContext, DEFAULT_NODE_ID,
+    OutboundRef, RouteRule, TargetContext, DEFAULT_NODE_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -60,6 +60,7 @@ pub(crate) struct RouteMatch {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct GroupSelection {
     pub(crate) node_id: NodeId,
+    pub(crate) outbound: OutboundRef,
     pub(crate) scheduler: crate::SchedulerPolicy,
     pub(crate) candidate_count: usize,
 }
@@ -191,6 +192,7 @@ impl GroupStore {
         let selected = candidates.first()?;
         Some(GroupSelection {
             node_id: selected.node_id.clone(),
+            outbound: group.outbound.clone(),
             scheduler: group.scheduler,
             candidate_count: candidates.len(),
         })

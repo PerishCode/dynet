@@ -1,7 +1,9 @@
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use dynet_runtime::{
-    InboundKind, IngressEventKind, RuntimeState, RuntimeStore, SelectionContext, TargetContext,
+    GroupId, GroupMember, InboundKind, IngressEventKind, NodeId, OutboundGroup, OutboundNode,
+    OutboundRef, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy, SelectionContext,
+    TargetContext,
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -14,9 +16,10 @@ use tokio::time;
 async fn seeds_default_bootstrap() {
     let fixture = StoreFixture::open().await;
 
-    let runtime = RuntimeState::from_store_seed(fixture.store.clone(), "ss")
-        .await
-        .expect("runtime state");
+    let runtime =
+        RuntimeState::from_store_seed(fixture.store.clone(), RuntimeSeed::single_node("ss"))
+            .await
+            .expect("runtime state");
 
     assert_eq!(fixture.count_rows("runtime_nodes").await, 1);
     assert_eq!(fixture.count_rows("runtime_outbound_groups").await, 1);
@@ -25,12 +28,13 @@ async fn seeds_default_bootstrap() {
     assert_eq!(fixture.count_rows("runtime_route_rules").await, 0);
     let nodes = runtime.nodes().snapshot();
     assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0].id.as_str(), "default");
+    assert_eq!(nodes[0].id.as_str(), "default-node");
     assert_eq!(nodes[0].tag, "ss");
     assert_eq!(runtime.groups().snapshot()[0].id.as_str(), "default");
+    assert_eq!(runtime.groups().snapshot()[0].outbound.label(), "direct");
     assert_eq!(
         runtime.groups().member_snapshot()[0].node_id.as_str(),
-        "default"
+        "default-node"
     );
     assert_eq!(runtime.dns_upstreams().snapshot().len(), 2);
     assert_eq!(runtime.dns_policy().timeout, Duration::from_secs(2));
@@ -42,9 +46,12 @@ async fn hydrates_existing_bootstrap() {
     let fixture = StoreFixture::open().await;
     fixture.insert_complete_bootstrap("persisted").await;
 
-    let runtime = RuntimeState::from_store_seed(fixture.store.clone(), "config-changed")
-        .await
-        .expect("runtime state");
+    let runtime = RuntimeState::from_store_seed(
+        fixture.store.clone(),
+        RuntimeSeed::single_node("config-changed"),
+    )
+    .await
+    .expect("runtime state");
 
     assert_eq!(fixture.count_rows("runtime_nodes").await, 1);
     let nodes = runtime.nodes().snapshot();
@@ -55,13 +62,19 @@ async fn hydrates_existing_bootstrap() {
 #[tokio::test]
 async fn restart_keeps_store_node() {
     let fixture = StoreFixture::open().await;
-    RuntimeState::from_store_seed(fixture.store.clone(), "first-config")
-        .await
-        .expect("initial runtime state");
+    RuntimeState::from_store_seed(
+        fixture.store.clone(),
+        RuntimeSeed::single_node("first-config"),
+    )
+    .await
+    .expect("initial runtime state");
 
-    let runtime = RuntimeState::from_store_seed(fixture.store.clone(), "changed-config")
-        .await
-        .expect("restarted runtime state");
+    let runtime = RuntimeState::from_store_seed(
+        fixture.store.clone(),
+        RuntimeSeed::single_node("changed-config"),
+    )
+    .await
+    .expect("restarted runtime state");
 
     assert_eq!(fixture.count_rows("runtime_nodes").await, 1);
     let nodes = runtime.nodes().snapshot();
@@ -74,9 +87,10 @@ async fn rejects_partial_old_shape() {
     let fixture = StoreFixture::open().await;
     fixture.insert_node_only("partial").await;
 
-    let error = RuntimeState::from_store_seed(fixture.store.clone(), "config")
-        .await
-        .expect_err("partial bootstrap rejected");
+    let error =
+        RuntimeState::from_store_seed(fixture.store.clone(), RuntimeSeed::single_node("config"))
+            .await
+            .expect_err("partial bootstrap rejected");
 
     assert!(
         error.to_string().contains("bootstrap is invalid"),
@@ -87,9 +101,10 @@ async fn rejects_partial_old_shape() {
 #[tokio::test]
 async fn persists_observations() {
     let fixture = StoreFixture::open().await;
-    let runtime = RuntimeState::from_store_seed(fixture.store.clone(), "direct")
-        .await
-        .expect("runtime state");
+    let runtime =
+        RuntimeState::from_store_seed(fixture.store.clone(), RuntimeSeed::single_node("direct"))
+            .await
+            .expect("runtime state");
 
     runtime.events().record(
         IngressEventKind::TcpAccept,
@@ -103,12 +118,40 @@ async fn persists_observations() {
     fixture.wait_for_count("selection_decisions", 1).await;
     let decision = fixture.selection_decision().await;
     assert_eq!(decision.group_id, "default");
-    assert_eq!(decision.node_id, "default");
+    assert_eq!(decision.node_id, "default-node");
+    assert_eq!(decision.outbound, "direct");
     assert_eq!(decision.reason, "single-node");
     assert_eq!(decision.scheduler, "single-first-enabled");
     assert_eq!(decision.candidate_count, 1);
     assert_eq!(runtime.persistence_stats().dropped_observations, 0);
     assert_eq!(runtime.persistence_stats().sink_errors, 0);
+}
+
+#[tokio::test]
+async fn seeds_group_outbound_graph() {
+    let fixture = StoreFixture::open().await;
+
+    let runtime = RuntimeState::from_store_seed(fixture.store.clone(), tunnel_seed())
+        .await
+        .expect("runtime state");
+
+    let groups = runtime.groups().snapshot();
+    let tunnel = groups
+        .iter()
+        .find(|group| group.id.as_str() == "Tunnel")
+        .expect("Tunnel group");
+    let private = groups
+        .iter()
+        .find(|group| group.id.as_str() == "Private")
+        .expect("Private group");
+    assert_eq!(tunnel.outbound.label(), "Private");
+    assert_eq!(private.outbound.label(), "direct");
+
+    let row = sqlx::query("select outbound from runtime_outbound_groups where id = 'Tunnel'")
+        .fetch_one(&fixture.inspector)
+        .await
+        .expect("stored Tunnel group");
+    assert_eq!(row.get::<String, _>("outbound"), "Private");
 }
 
 #[tokio::test]
@@ -165,8 +208,8 @@ impl StoreFixture {
     async fn insert_complete_bootstrap(&self, tag: &str) {
         self.insert_node_only(tag).await;
         sqlx::query(
-            "insert into runtime_outbound_groups (id, enabled, scheduler, updated_at_unix_ms)
-             values ('default', 1, 'single-first-enabled', 1)",
+            "insert into runtime_outbound_groups (id, enabled, scheduler, outbound, updated_at_unix_ms)
+             values ('default', 1, 'single-first-enabled', 'direct', 1)",
         )
         .execute(&self.inspector)
         .await
@@ -175,7 +218,7 @@ impl StoreFixture {
             "insert into runtime_group_members (
                 group_id, node_id, enabled, priority, updated_at_unix_ms
              )
-             values ('default', 'default', 1, 0, 1)",
+             values ('default', 'default-node', 1, 0, 1)",
         )
         .execute(&self.inspector)
         .await
@@ -213,7 +256,7 @@ impl StoreFixture {
     async fn insert_node_only(&self, tag: &str) {
         sqlx::query(
             "insert into runtime_nodes (id, tag, enabled, updated_at_unix_ms)
-             values ('default', ?1, 1, 1)",
+             values ('default-node', ?1, 1, 1)",
         )
         .bind(tag)
         .execute(&self.inspector)
@@ -223,7 +266,7 @@ impl StoreFixture {
 
     async fn selection_decision(&self) -> PersistedSelectionDecision {
         let row = sqlx::query(
-            "select group_id, node_id, reason, scheduler, candidate_count
+            "select group_id, node_id, outbound, reason, scheduler, candidate_count
              from selection_decisions",
         )
         .fetch_one(&self.inspector)
@@ -232,6 +275,7 @@ impl StoreFixture {
         PersistedSelectionDecision {
             group_id: row.get("group_id"),
             node_id: row.get("node_id"),
+            outbound: row.get("outbound"),
             reason: row.get("reason"),
             scheduler: row.get("scheduler"),
             candidate_count: row.get("candidate_count"),
@@ -243,9 +287,59 @@ impl StoreFixture {
 struct PersistedSelectionDecision {
     group_id: String,
     node_id: String,
+    outbound: String,
     reason: String,
     scheduler: String,
     candidate_count: i64,
+}
+
+fn tunnel_seed() -> RuntimeSeed {
+    RuntimeSeed {
+        nodes: vec![
+            OutboundNode {
+                id: NodeId::new("airport-us-01"),
+                tag: "ss".to_string(),
+                enabled: true,
+            },
+            OutboundNode {
+                id: NodeId::new("private-fixed-ip"),
+                tag: "ss".to_string(),
+                enabled: true,
+            },
+        ],
+        default_group_id: GroupId::new("Tunnel"),
+        groups: vec![
+            OutboundGroup {
+                id: GroupId::new("Tunnel"),
+                enabled: true,
+                scheduler: SchedulerPolicy::SingleFirstEnabled,
+                outbound: OutboundRef::named("Private"),
+            },
+            OutboundGroup {
+                id: GroupId::new("Private"),
+                enabled: true,
+                scheduler: SchedulerPolicy::SingleFirstEnabled,
+                outbound: OutboundRef::direct_audit_outlet(),
+            },
+        ],
+        group_members: vec![
+            GroupMember {
+                group_id: GroupId::new("Tunnel"),
+                node_id: NodeId::new("airport-us-01"),
+                enabled: true,
+                priority: 0,
+            },
+            GroupMember {
+                group_id: GroupId::new("Private"),
+                node_id: NodeId::new("private-fixed-ip"),
+                enabled: true,
+                priority: 0,
+            },
+        ],
+        route_rules: Vec::new(),
+        dns_upstreams: RuntimeSeed::single_node("direct").dns_upstreams,
+        dns_policy: RuntimeSeed::single_node("direct").dns_policy,
+    }
 }
 
 async fn open_inspector(path: PathBuf) -> SqlitePool {

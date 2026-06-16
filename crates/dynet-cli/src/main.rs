@@ -18,11 +18,12 @@ async fn run() -> Result<(), String> {
     let args = Args::parse(env::args_os().skip(1))?;
     let state = AppState::from_config_path(args.config.as_deref())?;
     let ingress = state.config.ingress;
-    let outbound = state.config.outbound;
+    let outbound = state.config.outbound.execution_outbound.clone();
+    let runtime_seed = state.config.outbound.seed;
     let store = RuntimeStore::open(runtime_db_path()?)
         .await
         .map_err(|error| format!("failed to open runtime store: {error}"))?;
-    let runtime = RuntimeState::from_store_seed(store, outbound.tag())
+    let runtime = RuntimeState::from_store_seed(store, runtime_seed)
         .await
         .map_err(|error| format!("failed to initialize runtime state: {error}"))?;
     spawn_ingress(ingress, outbound, runtime.clone());

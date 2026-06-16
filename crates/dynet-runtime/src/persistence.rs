@@ -14,13 +14,14 @@ mod bootstrap;
 mod dns_policy;
 mod schema;
 mod sink;
+mod validation;
 
 pub(crate) use bootstrap::RuntimeBootstrap;
 pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "3";
+const SCHEMA_VERSION: &str = "4";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {
@@ -104,11 +105,12 @@ impl RuntimeStore {
                 group_id,
                 matched_rule_id,
                 node_id,
+                outbound,
                 reason,
                 scheduler,
                 candidate_count
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )
         .bind(u64_to_i64(decision.decision_id))
         .bind(u128_to_i64(observed_at_unix_ms))
@@ -120,6 +122,7 @@ impl RuntimeStore {
         .bind(decision.group_id.as_str())
         .bind(decision.matched_rule_id.as_ref().map(|id| id.as_str()))
         .bind(decision.node_id.as_str())
+        .bind(decision.outbound.label())
         .bind(decision.reason.as_str())
         .bind(decision.scheduler.as_str())
         .bind(usize_to_i64(decision.candidate_count))

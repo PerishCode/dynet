@@ -3,15 +3,15 @@ use std::net::SocketAddr;
 use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
 
 use crate::{
-    default_dns_upstreams, DnsRacePolicy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId,
-    OutboundGroup, OutboundNode, RouteMatcher, RouteRule, RuleId, SchedulerPolicy,
+    DnsRacePolicy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId, OutboundGroup,
+    OutboundNode, OutboundRef, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
 };
 
 use super::{
-    dns_policy::insert_default_dns_policy, RuntimeStore, RuntimeStoreError, SCHEMA_VERSION,
+    dns_policy::insert_dns_policy,
+    validation::{validate_bootstrap, validate_seed},
+    RuntimeStore, RuntimeStoreError, SCHEMA_VERSION,
 };
-
-const DEFAULT_GROUP_ID: &str = "default";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct RuntimeBootstrap {
@@ -27,7 +27,7 @@ pub(crate) struct RuntimeBootstrap {
 impl RuntimeStore {
     pub async fn load_nodes(&self) -> Result<Vec<OutboundNode>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, tag, enabled from runtime_nodes order by case when id = 'default' then 0 else 1 end, id",
+            "select id, tag, enabled from runtime_nodes order by case when id = 'default-node' then 0 else 1 end, id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -36,10 +36,11 @@ impl RuntimeStore {
 
     pub(crate) async fn load_or_seed_bootstrap(
         &self,
-        node: OutboundNode,
+        seed: RuntimeSeed,
     ) -> Result<RuntimeBootstrap, RuntimeStoreError> {
         if self.bootstrap_is_empty().await? {
-            self.seed_bootstrap(node).await?;
+            validate_seed(&seed)?;
+            self.seed_bootstrap(seed).await?;
         }
         self.load_bootstrap().await
     }
@@ -61,34 +62,32 @@ impl RuntimeStore {
         Ok(row.get::<i64, _>("count"))
     }
 
-    async fn seed_bootstrap(&self, node: OutboundNode) -> Result<(), RuntimeStoreError> {
-        let group = OutboundGroup {
-            id: GroupId::new(DEFAULT_GROUP_ID),
-            enabled: true,
-            scheduler: SchedulerPolicy::SingleFirstEnabled,
-        };
-        let member = GroupMember {
-            group_id: group.id.clone(),
-            node_id: node.id.clone(),
-            enabled: true,
-            priority: 0,
-        };
+    async fn seed_bootstrap(&self, seed: RuntimeSeed) -> Result<(), RuntimeStoreError> {
         let mut transaction = self.pool.begin().await?;
-        insert_node(&mut transaction, &node).await?;
-        insert_group(&mut transaction, &group).await?;
-        insert_group_member(&mut transaction, &member).await?;
-        for upstream in default_dns_upstreams() {
-            insert_dns_upstream(&mut transaction, &upstream).await?;
+        for node in &seed.nodes {
+            insert_node(&mut transaction, node).await?;
+        }
+        for group in &seed.groups {
+            insert_group(&mut transaction, group).await?;
+        }
+        for member in &seed.group_members {
+            insert_group_member(&mut transaction, member).await?;
+        }
+        for rule in &seed.route_rules {
+            insert_route_rule(&mut transaction, rule).await?;
+        }
+        for upstream in &seed.dns_upstreams {
+            insert_dns_upstream(&mut transaction, upstream).await?;
         }
         sqlx::query(
             "insert into runtime_meta (key, value)
              values ('default_group_id', ?1)
              on conflict(key) do update set value = excluded.value",
         )
-        .bind(group.id.as_str())
+        .bind(seed.default_group_id.as_str())
         .execute(&mut *transaction)
         .await?;
-        insert_default_dns_policy(&mut transaction).await?;
+        insert_dns_policy(&mut transaction, seed.dns_policy).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -142,10 +141,11 @@ impl RuntimeStore {
     }
 
     async fn load_groups(&self) -> Result<Vec<OutboundGroup>, RuntimeStoreError> {
-        let rows =
-            sqlx::query("select id, enabled, scheduler from runtime_outbound_groups order by id")
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(
+            "select id, enabled, scheduler, outbound from runtime_outbound_groups order by id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(row_to_group).collect()
     }
 
@@ -212,6 +212,7 @@ fn row_to_group(row: SqliteRow) -> Result<OutboundGroup, RuntimeStoreError> {
         id: GroupId::new(id),
         enabled,
         scheduler,
+        outbound: OutboundRef::named(row.get::<String, _>("outbound")),
     })
 }
 
@@ -329,12 +330,45 @@ async fn insert_group(
 ) -> Result<(), RuntimeStoreError> {
     let enabled = if group.enabled { 1_i64 } else { 0_i64 };
     sqlx::query(
-        "insert into runtime_outbound_groups (id, enabled, scheduler, updated_at_unix_ms)
-         values (?1, ?2, ?3, ?4)",
+        "insert into runtime_outbound_groups (
+            id, enabled, scheduler, outbound, updated_at_unix_ms
+         )
+         values (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(group.id.as_str())
     .bind(enabled)
     .bind(group.scheduler.as_str())
+    .bind(group.outbound.label())
+    .bind(super::unix_ms_i64())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn insert_route_rule(
+    transaction: &mut Transaction<'_, Sqlite>,
+    rule: &RouteRule,
+) -> Result<(), RuntimeStoreError> {
+    let enabled = if rule.enabled { 1_i64 } else { 0_i64 };
+    let (matcher_kind, matcher_value) = match &rule.matcher {
+        RouteMatcher::DomainExact(value) => ("domain-exact", value.clone()),
+        RouteMatcher::DomainSuffix(value) => ("domain-suffix", value.clone()),
+        RouteMatcher::IpExact(value) => ("ip-exact", value.to_string()),
+        RouteMatcher::IpCidr(value) => ("ip-cidr", value.clone()),
+    };
+    sqlx::query(
+        "insert into runtime_route_rules (
+            id, priority, enabled, matcher_kind, matcher_value, group_id,
+            updated_at_unix_ms
+         )
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(rule.id.as_str())
+    .bind(rule.priority)
+    .bind(enabled)
+    .bind(matcher_kind)
+    .bind(matcher_value)
+    .bind(rule.group_id.as_str())
     .bind(super::unix_ms_i64())
     .execute(&mut **transaction)
     .await?;
@@ -380,86 +414,6 @@ async fn insert_dns_upstream(
     .bind(super::unix_ms_i64())
     .execute(&mut **transaction)
     .await?;
-    Ok(())
-}
-
-fn validate_bootstrap(
-    nodes: &[OutboundNode],
-    default_group_id: &GroupId,
-    groups: &[OutboundGroup],
-    group_members: &[GroupMember],
-    route_rules: &[RouteRule],
-    dns_upstreams: &[DnsUpstream],
-    dns_policy: &DnsRacePolicy,
-) -> Result<(), RuntimeStoreError> {
-    if nodes.is_empty() {
-        return Err(RuntimeStoreError::InvalidBootstrap(
-            "at least one node is required".to_string(),
-        ));
-    }
-    let group = groups
-        .iter()
-        .find(|group| &group.id == default_group_id)
-        .ok_or_else(|| {
-            RuntimeStoreError::InvalidBootstrap(format!(
-                "default group {default_group_id} is missing"
-            ))
-        })?;
-    if !group.enabled {
-        return Err(RuntimeStoreError::InvalidBootstrap(format!(
-            "default group {default_group_id} is disabled"
-        )));
-    }
-    if !group_members
-        .iter()
-        .any(|member| member.group_id == *default_group_id && member.enabled)
-    {
-        return Err(RuntimeStoreError::InvalidBootstrap(format!(
-            "default group {default_group_id} has no enabled member"
-        )));
-    }
-    validate_references(nodes, groups, group_members, route_rules)?;
-    if !dns_upstreams.iter().any(|upstream| upstream.enabled) {
-        return Err(RuntimeStoreError::InvalidBootstrap(
-            "at least one enabled DNS upstream is required".to_string(),
-        ));
-    }
-    if dns_policy.timeout.is_zero() {
-        return Err(RuntimeStoreError::InvalidBootstrap(
-            "dns_race_timeout_ms must be positive".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_references(
-    nodes: &[OutboundNode],
-    groups: &[OutboundGroup],
-    group_members: &[GroupMember],
-    route_rules: &[RouteRule],
-) -> Result<(), RuntimeStoreError> {
-    for member in group_members {
-        if !groups.iter().any(|group| group.id == member.group_id) {
-            return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "group member references missing group {}",
-                member.group_id
-            )));
-        }
-        if !nodes.iter().any(|node| node.id == member.node_id) {
-            return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "group member references missing node {}",
-                member.node_id
-            )));
-        }
-    }
-    for rule in route_rules {
-        if !groups.iter().any(|group| group.id == rule.group_id) {
-            return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "route rule {} references missing group {}",
-                rule.id, rule.group_id
-            )));
-        }
-    }
     Ok(())
 }
 

@@ -128,7 +128,16 @@ write_config() {
 upstream = "${TCP_IP}:${TCP_PORT}"
 
 [outbound]
+default_group = "default"
+
+[[outbound.nodes]]
+id = "direct-node"
 type = "direct"
+
+[[outbound.groups]]
+id = "default"
+mode = "smart"
+members = ["direct-node"]
 EOF
 }
 

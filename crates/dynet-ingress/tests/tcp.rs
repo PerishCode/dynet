@@ -82,7 +82,7 @@ async fn relay_loop() {
     );
     assert_eq!(
         event_field(&events, IngressEventKind::TcpAccept, "nodeId"),
-        "default"
+        "default-node"
     );
     assert_eq!(
         event_field(&events, IngressEventKind::TcpAccept, "selectionReason"),

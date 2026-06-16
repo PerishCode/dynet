@@ -81,9 +81,10 @@ needed because a SOCKS5 UDP ASSOCIATE reply must advertise an address reachable
 from the VM; advertising host `127.0.0.1` would make Mihomo send UDP packets to
 the VM loopback instead of host-side `dynet`.
 
-The sample `dynet-lab.toml` uses direct outbound. For provider-node tests, copy
-the file to untracked `dynet.toml` and replace only the `[outbound]` section
-with the local node under test.
+The sample `dynet-lab.toml` uses a graph-shaped outbound config with one
+direct audit outlet node in the default smart group. For provider-node tests,
+copy the file to untracked `dynet.toml` and replace the outbound graph with
+the local nodes/groups under test.
 
 ## VM Setup
 

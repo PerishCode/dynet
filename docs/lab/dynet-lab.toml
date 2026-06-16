@@ -22,4 +22,13 @@ udp_idle_timeout_ms = 30000
 max_sessions = 1024
 
 [outbound]
+default_group = "default"
+
+[[outbound.nodes]]
+id = "direct-node"
 type = "direct"
+
+[[outbound.groups]]
+id = "default"
+mode = "smart"
+members = ["direct-node"]

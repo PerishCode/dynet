@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub(crate) const DEFAULT_NODE_ID: &str = "default";
+pub(crate) const DEFAULT_NODE_ID: &str = "default-node";
 pub(crate) const DEFAULT_GROUP_ID: &str = "default";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -33,6 +33,7 @@ pub struct OutboundGroup {
     pub id: GroupId,
     pub enabled: bool,
     pub scheduler: SchedulerPolicy,
+    pub outbound: OutboundRef,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -84,6 +85,12 @@ pub enum SchedulerPolicy {
     SingleFirstEnabled,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum OutboundRef {
+    DirectAuditOutlet,
+    Named(String),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ObservedDnsMap {
     inner: Arc<RwLock<BTreeMap<String, Vec<IpAddr>>>>,
@@ -120,11 +127,23 @@ pub struct SelectionContext {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RuntimeSeed {
+    pub nodes: Vec<OutboundNode>,
+    pub default_group_id: GroupId,
+    pub groups: Vec<OutboundGroup>,
+    pub group_members: Vec<GroupMember>,
+    pub route_rules: Vec<RouteRule>,
+    pub dns_upstreams: Vec<DnsUpstream>,
+    pub dns_policy: DnsRacePolicy,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SelectionDecision {
     pub decision_id: u64,
     pub group_id: GroupId,
     pub matched_rule_id: Option<RuleId>,
     pub node_id: NodeId,
+    pub outbound: OutboundRef,
     pub reason: SelectionReason,
     pub scheduler: SchedulerPolicy,
     pub candidate_count: usize,
@@ -210,6 +229,7 @@ impl OutboundGroup {
             id: GroupId::new(DEFAULT_GROUP_ID),
             enabled: true,
             scheduler: SchedulerPolicy::SingleFirstEnabled,
+            outbound: OutboundRef::DirectAuditOutlet,
         }
     }
 }
@@ -270,6 +290,27 @@ impl TargetContext {
     }
 }
 
+impl RuntimeSeed {
+    pub fn single_node(tag: impl Into<String>) -> Self {
+        let node = OutboundNode {
+            id: NodeId::new(DEFAULT_NODE_ID),
+            tag: tag.into(),
+            enabled: true,
+        };
+        let group = OutboundGroup::default_group();
+        let member = GroupMember::default_member(node.id.clone(), group.id.clone());
+        Self {
+            nodes: vec![node],
+            default_group_id: group.id.clone(),
+            groups: vec![group],
+            group_members: vec![member],
+            route_rules: Vec::new(),
+            dns_upstreams: default_dns_upstreams(),
+            dns_policy: DnsRacePolicy::default_parallel(),
+        }
+    }
+}
+
 impl ObservedDnsMap {
     pub(crate) fn record(&self, domain: impl Into<String>, answers: Vec<IpAddr>) {
         if answers.is_empty() {
@@ -293,6 +334,30 @@ impl SchedulerPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SingleFirstEnabled => "single-first-enabled",
+        }
+    }
+}
+
+impl OutboundRef {
+    pub const DIRECT_AUDIT_OUTLET: &'static str = "direct";
+
+    pub fn direct_audit_outlet() -> Self {
+        Self::DirectAuditOutlet
+    }
+
+    pub fn named(value: impl Into<String>) -> Self {
+        let value = value.into();
+        if value == Self::DIRECT_AUDIT_OUTLET {
+            Self::DirectAuditOutlet
+        } else {
+            Self::Named(value)
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::DirectAuditOutlet => Self::DIRECT_AUDIT_OUTLET,
+            Self::Named(value) => value,
         }
     }
 }

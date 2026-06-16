@@ -324,6 +324,7 @@ pub(crate) fn push_decision_fields(
         fields.push(("matchedRuleId", rule_id.to_string()));
     }
     fields.push(("nodeId", decision.node_id.to_string()));
+    fields.push(("groupOutbound", decision.outbound.label().to_string()));
     fields.push(("selectionReason", decision.reason.as_str().to_string()));
     fields.push(("scheduler", decision.scheduler.as_str().to_string()));
     fields.push(("candidateCount", decision.candidate_count.to_string()));

@@ -11,7 +11,7 @@ fn selects_default_node() {
         .select(selection_context(1))
         .expect("selection succeeds");
 
-    assert_eq!(decision.node_id.as_str(), "default");
+    assert_eq!(decision.node_id.as_str(), "default-node");
     assert_eq!(decision.group_id.as_str(), "default");
     assert_eq!(decision.matched_rule_id, None);
     assert_eq!(decision.reason, SelectionReason::SingleNode);
@@ -22,7 +22,7 @@ fn selects_default_node() {
     assert_eq!(runtime.groups().snapshot()[0].id.as_str(), "default");
     assert_eq!(
         runtime.groups().member_snapshot()[0].node_id.as_str(),
-        "default"
+        "default-node"
     );
     assert_eq!(runtime.dns_upstreams().snapshot().len(), 2);
 }

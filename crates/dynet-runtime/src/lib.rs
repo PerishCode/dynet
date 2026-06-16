@@ -19,9 +19,9 @@ pub use dns::{
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
     DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, InboundKind,
-    NodeId, ObservedDnsMap, OutboundGroup, OutboundNode, RouteMatcher, RouteRule, RuleId,
-    SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError, SelectionReason,
-    SelectorMatrix, TargetContext, TargetSource,
+    NodeId, ObservedDnsMap, OutboundGroup, OutboundNode, OutboundRef, RouteMatcher, RouteRule,
+    RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
+    SelectionReason, SelectorMatrix, TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
@@ -93,14 +93,9 @@ impl RuntimeState {
 
     pub async fn from_store_seed(
         store: RuntimeStore,
-        tag: impl Into<String>,
+        seed: RuntimeSeed,
     ) -> Result<Self, RuntimeStoreError> {
-        let seed_node = OutboundNode {
-            id: NodeId::new(DEFAULT_NODE_ID),
-            tag: tag.into(),
-            enabled: true,
-        };
-        let bootstrap = store.load_or_seed_bootstrap(seed_node).await?;
+        let bootstrap = store.load_or_seed_bootstrap(seed).await?;
         let observation_sink = store.spawn_observation_sink();
         Ok(Self::from_bootstrap(bootstrap, Some(observation_sink)))
     }
@@ -191,6 +186,7 @@ impl RuntimeState {
             group_id,
             matched_rule_id: route_match.rule_id,
             node_id: selection.node_id,
+            outbound: selection.outbound,
             reason: SelectionReason::SingleNode,
             scheduler: selection.scheduler,
             candidate_count: selection.candidate_count,
