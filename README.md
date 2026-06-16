@@ -92,6 +92,10 @@ password = "local-secret"
 udp = true
 ```
 
+Supported prototype Shadowsocks methods are `aes-256-gcm` and
+`2022-blake3-aes-128-gcm`. For `2022-blake3-aes-128-gcm`, `password` must be
+the node's base64-encoded 16-byte pre-shared key.
+
 ## Development
 
 ```bash
