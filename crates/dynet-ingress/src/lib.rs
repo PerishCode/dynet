@@ -50,6 +50,7 @@ pub enum OutboundConfig {
     #[default]
     Direct,
     Shadowsocks(ShadowsocksConfig),
+    Trojan(TrojanConfig),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -58,6 +59,15 @@ pub struct ShadowsocksConfig {
     pub port: u16,
     pub method: ShadowsocksMethod,
     pub password: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TrojanConfig {
+    pub server: String,
+    pub port: u16,
+    pub password: String,
+    pub sni: Option<String>,
+    pub skip_cert_verify: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

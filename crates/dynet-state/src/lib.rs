@@ -7,7 +7,7 @@ use std::{
 
 use dynet_ingress::{
     DnsRelayConfig, IngressConfig, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
-    TcpRelayConfig, UdpRelayConfig,
+    TcpRelayConfig, TrojanConfig, UdpRelayConfig,
 };
 use serde::Deserialize;
 
@@ -296,6 +296,10 @@ struct FileOutboundConfig {
     method: Option<String>,
     cipher: Option<String>,
     password: Option<String>,
+    sni: Option<String>,
+    servername: Option<String>,
+    #[serde(rename = "skip-cert-verify")]
+    skip_cert_verify: Option<bool>,
     udp: Option<bool>,
 }
 
@@ -304,6 +308,7 @@ impl FileOutboundConfig {
         match self.kind.as_str() {
             "direct" => Ok(OutboundConfig::Direct),
             "shadowsocks" | "ss" => self.load_shadowsocks(),
+            "trojan" => self.load_trojan(),
             _ => Err(format!("outbound.type unsupported: {}", self.kind)),
         }
     }
@@ -336,6 +341,36 @@ impl FileOutboundConfig {
             port,
             method: parse_shadowsocks_method(&method)?,
             password,
+        }))
+    }
+
+    fn load_trojan(self) -> Result<OutboundConfig, String> {
+        if self.udp != Some(true) {
+            return Err("outbound.udp must be true for trojan cold start".to_string());
+        }
+        let server = self
+            .server
+            .ok_or_else(|| "outbound.server is required for trojan".to_string())?;
+        let port = self
+            .port
+            .ok_or_else(|| "outbound.port is required for trojan".to_string())?;
+        let password = self
+            .password
+            .ok_or_else(|| "outbound.password is required for trojan".to_string())?;
+        let sni = match (self.sni, self.servername) {
+            (Some(sni), None) | (None, Some(sni)) => Some(sni),
+            (Some(sni), Some(servername)) if sni == servername => Some(sni),
+            (Some(_), Some(_)) => {
+                return Err("outbound.sni and outbound.servername disagree".to_string());
+            }
+            (None, None) => None,
+        };
+        Ok(OutboundConfig::Trojan(TrojanConfig {
+            server,
+            port,
+            password,
+            sni,
+            skip_cert_verify: self.skip_cert_verify.unwrap_or(false),
         }))
     }
 }

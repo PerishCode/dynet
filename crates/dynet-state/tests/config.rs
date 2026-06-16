@@ -202,6 +202,70 @@ udp = true
 }
 
 #[test]
+fn loads_trojan_outbound() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_trojan_outbound");
+    fs::write(
+        &config_path,
+        r#"
+[outbound]
+type = "trojan"
+server = "demo.example"
+port = 443
+password = "fake-password"
+sni = "sni.example"
+skip-cert-verify = true
+udp = true
+"#,
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    let OutboundConfig::Trojan(outbound) = config.outbound else {
+        panic!("expected trojan outbound");
+    };
+    assert_eq!(outbound.server, "demo.example");
+    assert_eq!(outbound.port, 443);
+    assert_eq!(outbound.password, "fake-password");
+    assert_eq!(outbound.sni.as_deref(), Some("sni.example"));
+    assert!(outbound.skip_cert_verify);
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
+fn loads_trojan_servername_alias() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_trojan_servername_alias");
+    fs::write(
+        &config_path,
+        r#"
+[outbound]
+type = "trojan"
+server = "demo.example"
+port = 443
+password = "fake-password"
+servername = "sni.example"
+udp = true
+"#,
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    let OutboundConfig::Trojan(outbound) = config.outbound else {
+        panic!("expected trojan outbound");
+    };
+    assert_eq!(outbound.sni.as_deref(), Some("sni.example"));
+    assert!(!outbound.skip_cert_verify);
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
 fn rejects_udp_missing_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);

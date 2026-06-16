@@ -14,6 +14,10 @@ use crate::{
     ShadowsocksMethod, DATAGRAM_LIMIT,
 };
 
+mod trojan;
+
+use trojan::TrojanOutbound;
+
 pub(crate) const DIRECT_OUTBOUND: &str = "direct";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -81,6 +85,7 @@ pub(crate) trait Outbound: Clone + Send + Sync + 'static {
 pub(crate) enum OutboundMedium {
     Direct(DirectOutbound),
     Shadowsocks(ShadowsocksOutbound),
+    Trojan(TrojanOutbound),
 }
 
 impl TryFrom<OutboundConfig> for OutboundMedium {
@@ -92,6 +97,7 @@ impl TryFrom<OutboundConfig> for OutboundMedium {
             OutboundConfig::Shadowsocks(config) => {
                 Ok(Self::Shadowsocks(ShadowsocksOutbound::new(config)?))
             }
+            OutboundConfig::Trojan(config) => Ok(Self::Trojan(TrojanOutbound::new(config))),
         }
     }
 }
@@ -119,6 +125,7 @@ impl Outbound for OutboundMedium {
         match self {
             Self::Direct(outbound) => outbound.tag(),
             Self::Shadowsocks(outbound) => outbound.tag(),
+            Self::Trojan(outbound) => outbound.tag(),
         }
     }
 
@@ -129,6 +136,7 @@ impl Outbound for OutboundMedium {
         match self {
             Self::Direct(outbound) => outbound.handle_tcp(session).await,
             Self::Shadowsocks(outbound) => outbound.handle_tcp(session).await,
+            Self::Trojan(outbound) => outbound.handle_tcp(session).await,
         }
     }
 
@@ -139,6 +147,7 @@ impl Outbound for OutboundMedium {
         match self {
             Self::Direct(outbound) => outbound.handle_udp(association).await,
             Self::Shadowsocks(outbound) => outbound.handle_udp(association).await,
+            Self::Trojan(outbound) => outbound.handle_udp(association).await,
         }
     }
 }
