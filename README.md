@@ -19,6 +19,7 @@ The first reintroduced surface is a minimal local control plane under
 ```text
 GET /api/v1/health
 GET /api/v1/events
+GET /api/v1/dns/observed
 ```
 
 The first ingress experiment is a fixed-upstream TCP/UDP relay set plus a DNS
