@@ -9,17 +9,30 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use dynet_runtime::{
     DnsUpstream, DnsUpstreamId, EventStore, GroupId, GroupMember, IngressEvent, IngressEventKind,
     NodeId, OutboundGroup, OutboundNode, OutboundRef, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
     RuntimeState, RuntimeStore, SchedulerPolicy,
 };
+use hkdf::Hkdf;
+use md5::{Digest, Md5};
+use sha1::Sha1;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, UdpSocket},
     task::JoinHandle,
     time,
 };
+
+const SS_AES_256_GCM_KEY_SIZE: usize = 32;
+const SS_AES_256_GCM_SALT_SIZE: usize = 32;
+const SS_AEAD_NONCE_SIZE: usize = 12;
+const SS_AEAD_TAG_SIZE: usize = 16;
+const SS_SUBKEY_INFO: &[u8] = b"ss-subkey";
 
 pub fn local_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 0))
@@ -63,6 +76,35 @@ pub async fn spawn_ss_salt_server() -> (SocketAddr, JoinHandle<[u8; 32]>) {
     (address, task)
 }
 
+pub async fn spawn_ss_header_server(password: &'static str) -> (SocketAddr, JoinHandle<Vec<u8>>) {
+    let listener = TcpListener::bind(local_addr())
+        .await
+        .expect("bind ss server");
+    let address = listener.local_addr().expect("ss server addr");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept ss server");
+        let mut salt = [0_u8; SS_AES_256_GCM_SALT_SIZE];
+        stream.read_exact(&mut salt).await.expect("read ss salt");
+
+        let mut encrypted_length = [0_u8; 2 + SS_AEAD_TAG_SIZE];
+        stream
+            .read_exact(&mut encrypted_length)
+            .await
+            .expect("read ss header length");
+        let mut reader = SsAeadReader::new(password, &salt);
+        let length = reader.decrypt(&encrypted_length);
+        let length = u16::from_be_bytes([length[0], length[1]]) as usize;
+
+        let mut encrypted_header = vec![0_u8; length + SS_AEAD_TAG_SIZE];
+        stream
+            .read_exact(&mut encrypted_header)
+            .await
+            .expect("read ss header");
+        reader.decrypt(&encrypted_header)
+    });
+    (address, task)
+}
+
 pub async fn spawn_tcp_prefix_server<const N: usize>() -> (SocketAddr, JoinHandle<[u8; N]>) {
     let listener = TcpListener::bind(local_addr())
         .await
@@ -75,6 +117,62 @@ pub async fn spawn_tcp_prefix_server<const N: usize>() -> (SocketAddr, JoinHandl
         prefix
     });
     (address, task)
+}
+
+struct SsAeadReader {
+    cipher: Aes256Gcm,
+    nonce: [u8; SS_AEAD_NONCE_SIZE],
+}
+
+impl SsAeadReader {
+    fn new(password: &str, salt: &[u8]) -> Self {
+        Self {
+            cipher: Aes256Gcm::new_from_slice(&ss_derive_subkey(password, salt)).unwrap(),
+            nonce: [0_u8; SS_AEAD_NONCE_SIZE],
+        }
+    }
+
+    fn decrypt(&mut self, ciphertext: &[u8]) -> Vec<u8> {
+        let nonce = self.nonce;
+        let plaintext = self
+            .cipher
+            .decrypt(Nonce::from_slice(&nonce), ciphertext)
+            .unwrap();
+        increment_ss_nonce(&mut self.nonce);
+        plaintext
+    }
+}
+
+fn ss_derive_subkey(password: &str, salt: &[u8]) -> Vec<u8> {
+    let mut subkey = vec![0_u8; SS_AES_256_GCM_KEY_SIZE];
+    Hkdf::<Sha1>::new(Some(salt), &ss_evp_key(password))
+        .expand(SS_SUBKEY_INFO, &mut subkey)
+        .unwrap();
+    subkey
+}
+
+fn ss_evp_key(password: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(SS_AES_256_GCM_KEY_SIZE);
+    let mut previous = Vec::<u8>::new();
+    while key.len() < SS_AES_256_GCM_KEY_SIZE {
+        let mut hasher = Md5::new();
+        hasher.update(&previous);
+        hasher.update(password.as_bytes());
+        previous = hasher.finalize().to_vec();
+        key.extend_from_slice(&previous);
+    }
+    key.truncate(SS_AES_256_GCM_KEY_SIZE);
+    key
+}
+
+fn increment_ss_nonce(nonce: &mut [u8; SS_AEAD_NONCE_SIZE]) {
+    for byte in nonce {
+        let (next, carry) = byte.overflowing_add(1);
+        *byte = next;
+        if !carry {
+            break;
+        }
+    }
 }
 
 pub fn event_kinds(events: &EventStore) -> Vec<IngressEventKind> {

@@ -192,7 +192,7 @@ async fn graph_routes_node() {
 
 #[tokio::test]
 async fn graph_chains_shadowsocks_direct() {
-    let (ss_addr, ss_task) = support::spawn_ss_salt_server().await;
+    let (ss_addr, ss_task) = support::spawn_ss_header_server("fake-password").await;
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
@@ -223,11 +223,11 @@ async fn graph_chains_shadowsocks_direct() {
     let mut client = socks_connect_domain(bind, "routed.example", 80).await;
     client.write_all(b"chain").await.expect("write payload");
 
-    let salt = time::timeout(Duration::from_secs(2), ss_task)
+    let header = time::timeout(Duration::from_secs(2), ss_task)
         .await
         .expect("ss server timeout")
         .expect("ss task");
-    assert_ne!(salt, [0_u8; 32]);
+    assert_eq!(header, vec![1, 127, 0, 0, 1, 0, 80]);
 }
 
 #[tokio::test]
