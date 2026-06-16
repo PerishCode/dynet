@@ -156,6 +156,25 @@ Then inspect host-side events:
 curl -fsS http://127.0.0.1:9977/api/v1/events | jq '.events[-20:]'
 ```
 
+For repeatable black-box validation with `dynet` and Mihomo already running:
+
+```bash
+scripts/smoke/lab-blackbox.sh
+```
+
+Optional environment overrides:
+
+```bash
+DYNET_LAB_DOMAINS="example.com example.org cloudflare.com" \
+DYNET_LAB_TCP_URLS="http://example.com/ http://example.org/" \
+DYNET_LAB_UDP_HOST=1.1.1.1 \
+DYNET_LAB_UDP_PORT=443 \
+scripts/smoke/lab-blackbox.sh
+```
+
+Use `DYNET_LAB_GUEST_CONTROL_URL` if the VM reaches the host at an address
+other than Lima's default `http://192.168.5.2:9977`.
+
 Expected event evidence:
 
 - `dns-query` and `dns-response` for VM name resolution.
