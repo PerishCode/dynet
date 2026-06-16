@@ -185,18 +185,29 @@ fn validate_group_outbound_reference(
     if outbound == OutboundRef::DIRECT_AUDIT_OUTLET {
         return Ok(());
     }
-    let references_node = nodes.iter().any(|node| node.id.as_str() == outbound);
-    let references_group = groups
-        .iter()
-        .any(|candidate| candidate.id.as_str() == outbound);
-    if references_node || references_group {
-        Ok(())
-    } else {
-        Err(RuntimeStoreError::InvalidBootstrap(format!(
-            "group {} outbound {outbound:?} references no declared outbound",
-            group.id
-        )))
+    if let Some(node) = nodes.iter().find(|node| node.id.as_str() == outbound) {
+        return node.enabled.then_some(()).ok_or_else(|| {
+            RuntimeStoreError::InvalidBootstrap(format!(
+                "group {} outbound {outbound:?} references a disabled node",
+                group.id
+            ))
+        });
     }
+    if let Some(referenced_group) = groups
+        .iter()
+        .find(|candidate| candidate.id.as_str() == outbound)
+    {
+        return referenced_group.enabled.then_some(()).ok_or_else(|| {
+            RuntimeStoreError::InvalidBootstrap(format!(
+                "group {} outbound {outbound:?} references a disabled group",
+                group.id
+            ))
+        });
+    }
+    Err(RuntimeStoreError::InvalidBootstrap(format!(
+        "group {} outbound {outbound:?} references no declared outbound",
+        group.id
+    )))
 }
 
 fn validate_group_outbound_cycle(

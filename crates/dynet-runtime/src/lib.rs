@@ -21,7 +21,8 @@ pub use model::{
     DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, InboundKind,
     NodeId, ObservedDnsMap, OutboundGroup, OutboundNode, OutboundRef, RouteMatcher, RouteRule,
     RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
-    SelectionReason, SelectorMatrix, TargetContext, TargetSource,
+    SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix, TargetContext,
+    TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
@@ -175,18 +176,20 @@ impl RuntimeState {
         let selection = self
             .inner
             .groups
-            .select_node(&group_id, &self.inner.nodes)
-            .ok_or_else(|| {
-                SelectionError::new(format!(
-                    "no enabled outbound node is available in group {group_id}"
-                ))
-            })?;
+            .select_graph(&group_id, &self.inner.nodes)
+            .map_err(SelectionError::new)?;
+        let first_hop = selection
+            .trace
+            .first()
+            .expect("selection graph has at least one hop");
         let decision = SelectionDecision {
             decision_id: self.inner.next_decision_id.fetch_add(1, Ordering::SeqCst) + 1,
             group_id,
             matched_rule_id: route_match.rule_id,
-            node_id: selection.node_id,
-            outbound: selection.outbound,
+            node_id: first_hop.node_id.clone(),
+            outbound: first_hop.outbound.clone(),
+            trace: selection.trace,
+            terminal: selection.terminal,
             reason: SelectionReason::SingleNode,
             scheduler: selection.scheduler,
             candidate_count: selection.candidate_count,

@@ -85,6 +85,18 @@ async fn relay_loop() {
         "default-node"
     );
     assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "selectionTrace"),
+        "default:default-node->direct"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "terminalOutbound"),
+        "direct"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "terminalKind"),
+        "direct"
+    );
+    assert_eq!(
         event_field(&events, IngressEventKind::TcpAccept, "selectionReason"),
         "single-node"
     );

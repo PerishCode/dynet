@@ -152,6 +152,21 @@ async fn seeds_group_outbound_graph() {
         .await
         .expect("stored Tunnel group");
     assert_eq!(row.get::<String, _>("outbound"), "Private");
+
+    let decision = runtime
+        .select(selection_context(1))
+        .expect("graph selection succeeds");
+    assert_eq!(decision.group_id.as_str(), "Tunnel");
+    assert_eq!(decision.node_id.as_str(), "airport-us-01");
+    assert_eq!(decision.outbound.label(), "Private");
+    assert_eq!(decision.trace.len(), 2);
+    assert_eq!(decision.trace[0].label(), "Tunnel:airport-us-01->Private");
+    assert_eq!(
+        decision.trace[1].label(),
+        "Private:private-fixed-ip->direct"
+    );
+    assert_eq!(decision.terminal.kind(), "direct");
+    assert_eq!(decision.terminal.label(), "direct");
 }
 
 #[tokio::test]

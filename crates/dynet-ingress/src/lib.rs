@@ -325,6 +325,35 @@ pub(crate) fn push_decision_fields(
     }
     fields.push(("nodeId", decision.node_id.to_string()));
     fields.push(("groupOutbound", decision.outbound.label().to_string()));
+    fields.push((
+        "selectionTrace",
+        decision
+            .trace
+            .iter()
+            .map(|hop| hop.label())
+            .collect::<Vec<_>>()
+            .join("|"),
+    ));
+    fields.push((
+        "selectionGroups",
+        decision
+            .trace
+            .iter()
+            .map(|hop| hop.group_id.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    ));
+    fields.push((
+        "selectionNodes",
+        decision
+            .trace
+            .iter()
+            .map(|hop| hop.node_id.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    ));
+    fields.push(("terminalOutbound", decision.terminal.label().to_string()));
+    fields.push(("terminalKind", decision.terminal.kind().to_string()));
     fields.push(("selectionReason", decision.reason.as_str().to_string()));
     fields.push(("scheduler", decision.scheduler.as_str().to_string()));
     fields.push(("candidateCount", decision.candidate_count.to_string()));

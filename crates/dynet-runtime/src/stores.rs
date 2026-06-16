@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId, OutboundGroup, OutboundNode,
-    OutboundRef, RouteRule, TargetContext, DEFAULT_NODE_ID,
+    OutboundRef, RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -59,8 +59,8 @@ pub(crate) struct RouteMatch {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct GroupSelection {
-    pub(crate) node_id: NodeId,
-    pub(crate) outbound: OutboundRef,
+    pub(crate) trace: Vec<SelectionTraceHop>,
+    pub(crate) terminal: SelectionTerminal,
     pub(crate) scheduler: crate::SchedulerPolicy,
     pub(crate) candidate_count: usize,
 }
@@ -110,6 +110,15 @@ impl NodeStore {
             .nodes
             .get(node_id)
             .is_some_and(|node| node.enabled)
+    }
+
+    fn enabled_node_id(&self, id: &str) -> Option<NodeId> {
+        self.inner
+            .read()
+            .expect("node store lock poisoned")
+            .nodes
+            .get(&NodeId::new(id))
+            .and_then(|node| node.enabled.then(|| node.id.clone()))
     }
 
     pub fn snapshot(&self) -> Vec<OutboundNode> {
@@ -174,28 +183,46 @@ impl GroupStore {
             .clone()
     }
 
-    pub(crate) fn select_node(
+    pub(crate) fn select_graph(
         &self,
         group_id: &GroupId,
         nodes: &NodeStore,
-    ) -> Option<GroupSelection> {
+    ) -> Result<GroupSelection, String> {
         let store = self.inner.read().expect("group store lock poisoned");
-        let group = store.groups.get(group_id)?;
-        if !group.enabled {
-            return None;
+        let mut current = group_id.clone();
+        let mut seen = BTreeMap::<GroupId, ()>::new();
+        let mut trace = Vec::new();
+        loop {
+            if seen.insert(current.clone(), ()).is_some() {
+                return Err(format!("group outbound cycle includes {current}"));
+            }
+            let hop = select_group_hop(&store, &current, nodes)?;
+            let outbound = hop.outbound.clone();
+            trace.push(hop);
+            match outbound {
+                OutboundRef::DirectAuditOutlet => {
+                    let first = trace.first().expect("selection trace has at least one hop");
+                    return Ok(GroupSelection {
+                        terminal: SelectionTerminal::DirectAuditOutlet,
+                        scheduler: first.scheduler,
+                        candidate_count: first.candidate_count,
+                        trace,
+                    });
+                }
+                OutboundRef::Named(name) => {
+                    if let Some(node_id) = nodes.enabled_node_id(&name) {
+                        let first = trace.first().expect("selection trace has at least one hop");
+                        return Ok(GroupSelection {
+                            terminal: SelectionTerminal::Node(node_id),
+                            scheduler: first.scheduler,
+                            candidate_count: first.candidate_count,
+                            trace,
+                        });
+                    }
+                    current = GroupId::new(name);
+                }
+            }
         }
-        let members = store.members.get(group_id)?;
-        let candidates = members
-            .iter()
-            .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
-            .collect::<Vec<_>>();
-        let selected = candidates.first()?;
-        Some(GroupSelection {
-            node_id: selected.node_id.clone(),
-            outbound: group.outbound.clone(),
-            scheduler: group.scheduler,
-            candidate_count: candidates.len(),
-        })
     }
 
     pub fn snapshot(&self) -> Vec<OutboundGroup> {
@@ -217,6 +244,38 @@ impl GroupStore {
             .flat_map(|members| members.iter().cloned())
             .collect()
     }
+}
+
+fn select_group_hop(
+    store: &GroupStoreInner,
+    group_id: &GroupId,
+    nodes: &NodeStore,
+) -> Result<SelectionTraceHop, String> {
+    let group = store
+        .groups
+        .get(group_id)
+        .ok_or_else(|| format!("outbound group {group_id} is missing"))?;
+    if !group.enabled {
+        return Err(format!("outbound group {group_id} is disabled"));
+    }
+    let members = store
+        .members
+        .get(group_id)
+        .ok_or_else(|| format!("outbound group {group_id} has no enabled node"))?;
+    let candidates = members
+        .iter()
+        .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
+        .collect::<Vec<_>>();
+    let selected = candidates
+        .first()
+        .ok_or_else(|| format!("outbound group {group_id} has no enabled node"))?;
+    Ok(SelectionTraceHop {
+        group_id: group.id.clone(),
+        node_id: selected.node_id.clone(),
+        outbound: group.outbound.clone(),
+        scheduler: group.scheduler,
+        candidate_count: candidates.len(),
+    })
 }
 
 impl RouteRuleStore {

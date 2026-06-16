@@ -144,9 +144,26 @@ pub struct SelectionDecision {
     pub matched_rule_id: Option<RuleId>,
     pub node_id: NodeId,
     pub outbound: OutboundRef,
+    pub trace: Vec<SelectionTraceHop>,
+    pub terminal: SelectionTerminal,
     pub reason: SelectionReason,
     pub scheduler: SchedulerPolicy,
     pub candidate_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SelectionTraceHop {
+    pub group_id: GroupId,
+    pub node_id: NodeId,
+    pub outbound: OutboundRef,
+    pub scheduler: SchedulerPolicy,
+    pub candidate_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SelectionTerminal {
+    DirectAuditOutlet,
+    Node(NodeId),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -383,6 +400,33 @@ impl SelectionReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SingleNode => "single-node",
+        }
+    }
+}
+
+impl SelectionTraceHop {
+    pub fn label(&self) -> String {
+        format!(
+            "{}:{}->{}",
+            self.group_id,
+            self.node_id,
+            self.outbound.label()
+        )
+    }
+}
+
+impl SelectionTerminal {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::DirectAuditOutlet => "direct",
+            Self::Node(_) => "node",
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::DirectAuditOutlet => OutboundRef::DIRECT_AUDIT_OUTLET,
+            Self::Node(node_id) => node_id.as_str(),
         }
     }
 }

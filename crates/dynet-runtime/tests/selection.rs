@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
 use dynet_runtime::{
-    InboundKind, RuntimeState, SchedulerPolicy, SelectionContext, SelectionReason, TargetContext,
+    InboundKind, RuntimeState, SchedulerPolicy, SelectionContext, SelectionReason,
+    SelectionTerminal, TargetContext,
 };
 
 #[test]
@@ -17,6 +18,11 @@ fn selects_default_node() {
     assert_eq!(decision.reason, SelectionReason::SingleNode);
     assert_eq!(decision.scheduler, SchedulerPolicy::SingleFirstEnabled);
     assert_eq!(decision.candidate_count, 1);
+    assert_eq!(decision.trace.len(), 1);
+    assert_eq!(decision.trace[0].group_id.as_str(), "default");
+    assert_eq!(decision.trace[0].node_id.as_str(), "default-node");
+    assert_eq!(decision.trace[0].outbound.label(), "direct");
+    assert_eq!(decision.terminal, SelectionTerminal::DirectAuditOutlet);
     assert_eq!(decision.decision_id, 1);
     assert_eq!(runtime.nodes().snapshot()[0].tag, "ss");
     assert_eq!(runtime.groups().snapshot()[0].id.as_str(), "default");
