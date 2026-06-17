@@ -73,7 +73,7 @@ async fn relay_loop() {
         "tcp"
     );
     assert_eq!(
-        event_field(&events, IngressEventKind::TcpAccept, "outbound"),
+        event_field(&events, IngressEventKind::TcpAccept, "nodeProtocol"),
         "direct"
     );
     assert_eq!(
@@ -89,7 +89,7 @@ async fn relay_loop() {
         "default:default-node->direct"
     );
     assert_eq!(
-        event_field(&events, IngressEventKind::TcpAccept, "terminalOutbound"),
+        event_field(&events, IngressEventKind::TcpAccept, "terminalEgress"),
         "direct"
     );
     assert_eq!(
@@ -249,7 +249,7 @@ async fn upstream_error_event() {
         "outbound-connect"
     );
     assert_eq!(
-        event_field(&events, IngressEventKind::TcpError, "outbound"),
+        event_field(&events, IngressEventKind::TcpError, "nodeProtocol"),
         "direct"
     );
 }

@@ -13,7 +13,7 @@ Linux app in VM
   -> Mihomo TUN capture
   -> Mihomo DNS module -> host dynet DNS 127.0.0.1:1053
   -> Mihomo SOCKS5 proxy -> host dynet SOCKS5 127.0.0.1:1080
-  -> dynet outbound
+  -> dynet forwarding
 ```
 
 Lima's default user-mode network exposes the macOS host loopback to the guest
@@ -81,9 +81,9 @@ needed because a SOCKS5 UDP ASSOCIATE reply must advertise an address reachable
 from the VM; advertising host `127.0.0.1` would make Mihomo send UDP packets to
 the VM loopback instead of host-side `dynet`.
 
-The sample `dynet-lab.toml` uses a graph-shaped outbound config with one
+The sample `dynet-lab.toml` uses a graph-shaped forwarding config with one
 direct audit outlet node in the default smart group. For provider-node tests,
-copy the file to untracked `dynet.toml` and replace the outbound graph with
+copy the file to untracked `dynet.toml` and replace the forwarding graph with
 the local nodes/groups under test.
 
 ## VM Setup

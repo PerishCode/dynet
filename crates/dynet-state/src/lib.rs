@@ -12,10 +12,10 @@ use dynet_ingress::{
 use dynet_runtime::RuntimeSeed;
 use serde::Deserialize;
 
+mod forwarding_config;
 mod method_config;
-mod outbound_config;
 mod socks_config;
-use outbound_config::FileOutboundConfig;
+use forwarding_config::FileForwardingConfig;
 use socks_config::FileSocks5IngressConfig;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
@@ -27,7 +27,7 @@ pub struct AppState {
 pub struct Config {
     pub control: ControlConfig,
     pub ingress: IngressConfig,
-    pub outbound: OutboundGraphConfig,
+    pub forwarding: ForwardingConfig,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -36,9 +36,9 @@ pub struct ControlConfig {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OutboundGraphConfig {
+pub struct ForwardingConfig {
     pub seed: RuntimeSeed,
-    pub execution_outbounds: BTreeMap<String, OutboundConfig>,
+    pub execution_nodes: BTreeMap<String, OutboundConfig>,
 }
 
 impl Default for Config {
@@ -48,18 +48,18 @@ impl Default for Config {
                 bind: SocketAddr::from(([127, 0, 0, 1], 9977)),
             },
             ingress: IngressConfig::default(),
-            outbound: OutboundGraphConfig::default(),
+            forwarding: ForwardingConfig::default(),
         }
     }
 }
 
-impl Default for OutboundGraphConfig {
+impl Default for ForwardingConfig {
     fn default() -> Self {
-        let mut execution_outbounds = BTreeMap::new();
-        execution_outbounds.insert("default-node".to_string(), OutboundConfig::Direct);
+        let mut execution_nodes = BTreeMap::new();
+        execution_nodes.insert("default-node".to_string(), OutboundConfig::Direct);
         Self {
             seed: RuntimeSeed::single_node("direct"),
-            execution_outbounds,
+            execution_nodes,
         }
     }
 }
@@ -175,7 +175,7 @@ fn env_positive_usize(name: &str, fallback: usize) -> Result<usize, String> {
 struct FileConfig {
     control: Option<FileControlConfig>,
     ingress: Option<FileIngressConfig>,
-    outbound: Option<FileOutboundConfig>,
+    forwarding: Option<FileForwardingConfig>,
 }
 
 impl FileConfig {
@@ -186,8 +186,8 @@ impl FileConfig {
         if let Some(ingress) = self.ingress {
             ingress.apply(&mut config.ingress)?;
         }
-        if let Some(outbound) = self.outbound {
-            config.outbound = outbound.load()?;
+        if let Some(forwarding) = self.forwarding {
+            config.forwarding = forwarding.load()?;
         }
         Ok(())
     }

@@ -335,7 +335,7 @@ fn dns_response_fields(
 pub(crate) fn session_fields(
     session_id: u64,
     inbound: &'static str,
-    outbound: &'static str,
+    node_protocol: &'static str,
     peer: SocketAddr,
     target: SocketAddr,
     upstream: SocketAddr,
@@ -343,7 +343,7 @@ pub(crate) fn session_fields(
     let mut fields = vec![
         ("sessionId", session_id.to_string()),
         ("inbound", inbound.to_string()),
-        ("outbound", outbound.to_string()),
+        ("nodeProtocol", node_protocol.to_string()),
         ("peer", peer.to_string()),
         ("target", target.to_string()),
         ("upstream", upstream.to_string()),
@@ -364,7 +364,7 @@ pub(crate) fn push_decision_fields(
         fields.push(("matchedRuleId", rule_id.to_string()));
     }
     fields.push(("nodeId", decision.node_id.to_string()));
-    fields.push(("groupOutbound", decision.outbound.label().to_string()));
+    fields.push(("groupEgress", decision.egress.label().to_string()));
     fields.push((
         "selectionTrace",
         decision
@@ -392,7 +392,7 @@ pub(crate) fn push_decision_fields(
             .collect::<Vec<_>>()
             .join(","),
     ));
-    fields.push(("terminalOutbound", decision.terminal.label().to_string()));
+    fields.push(("terminalEgress", decision.terminal.label().to_string()));
     fields.push(("terminalKind", decision.terminal.kind().to_string()));
     fields.push(("selectionReason", decision.reason.as_str().to_string()));
     fields.push(("scheduler", decision.scheduler.as_str().to_string()));

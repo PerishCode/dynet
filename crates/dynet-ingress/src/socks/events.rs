@@ -13,19 +13,26 @@ pub(super) const SOCKS5_INBOUND: &str = "socks5";
 
 pub(super) fn socks_session_fields(
     session_id: u64,
-    outbound: &'static str,
+    node_protocol: &'static str,
     peer: SocketAddr,
     target: SocketAddr,
     destination: &SocksDestination,
 ) -> Vec<(&'static str, String)> {
-    let mut fields = session_fields(session_id, SOCKS5_INBOUND, outbound, peer, target, target);
+    let mut fields = session_fields(
+        session_id,
+        SOCKS5_INBOUND,
+        node_protocol,
+        peer,
+        target,
+        target,
+    );
     push_destination_fields(&mut fields, destination);
     fields
 }
 
 pub(super) fn outbound_error_fields(
     session_id: u64,
-    outbound: &'static str,
+    node_protocol: &'static str,
     peer: SocketAddr,
     target: SocketAddr,
     destination: &SocksDestination,
@@ -33,7 +40,14 @@ pub(super) fn outbound_error_fields(
     decision: Option<&dynet_runtime::SelectionDecision>,
 ) -> Vec<(&'static str, String)> {
     let upstream = error.upstream.unwrap_or(target);
-    let mut fields = session_fields(session_id, SOCKS5_INBOUND, outbound, peer, target, upstream);
+    let mut fields = session_fields(
+        session_id,
+        SOCKS5_INBOUND,
+        node_protocol,
+        peer,
+        target,
+        upstream,
+    );
     push_destination_fields(&mut fields, destination);
     if let Some(decision) = decision {
         push_decision_fields(&mut fields, decision);
@@ -58,13 +72,13 @@ pub(super) fn record_socks_error(
 
 pub(super) fn base_socks_fields(
     session_id: u64,
-    outbound: &'static str,
+    node_protocol: &'static str,
     peer: SocketAddr,
 ) -> Vec<(&'static str, String)> {
     let mut fields = vec![
         ("sessionId", session_id.to_string()),
         ("inbound", SOCKS5_INBOUND.to_string()),
-        ("outbound", outbound.to_string()),
+        ("nodeProtocol", node_protocol.to_string()),
         ("peer", peer.to_string()),
     ];
     push_endpoint_fields(&mut fields, "peer", peer);

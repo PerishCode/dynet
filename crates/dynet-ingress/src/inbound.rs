@@ -297,7 +297,7 @@ where
                 let mut fields = session_fields(
                     session_id,
                     UDP_INBOUND,
-                    outbound.tag(),
+                    outbound_tag,
                     peer,
                     target,
                     outcome.upstream,

@@ -127,14 +127,14 @@ write_config() {
 [ingress.tcp]
 upstream = "${TCP_IP}:${TCP_PORT}"
 
-[outbound]
+[forwarding]
 default_group = "default"
 
-[[outbound.nodes]]
+[[forwarding.nodes]]
 id = "direct-node"
 type = "direct"
 
-[[outbound.groups]]
+[[forwarding.groups]]
 id = "default"
 mode = "smart"
 members = ["direct-node"]
@@ -164,12 +164,12 @@ tcp_accepts = [
     if event.get("kind") == "tcp-accept"
     and event.get("fields", {}).get("sessionId")
     and event.get("fields", {}).get("inbound") == "tcp"
-    and event.get("fields", {}).get("outbound") == "direct"
+    and event.get("fields", {}).get("nodeProtocol") == "direct"
     and event.get("fields", {}).get("targetIp")
     and event.get("fields", {}).get("upstreamIp")
 ]
 if not tcp_accepts:
-    raise SystemExit("missing TCP inbound/outbound session fields")
+    raise SystemExit("missing TCP inbound/node protocol session fields")
 expected_tcp = int(sys.argv[2])
 if len(tcp_accepts) < expected_tcp:
     raise SystemExit(f"expected at least {expected_tcp} TCP accept events, got {len(tcp_accepts)}")
@@ -180,7 +180,7 @@ if not any(
     event.get("kind") == "tcp-accept"
     and event.get("fields", {}).get("sessionId")
     and event.get("fields", {}).get("inbound") == "socks5"
-    and event.get("fields", {}).get("outbound") == "direct"
+    and event.get("fields", {}).get("nodeProtocol") == "direct"
     and event.get("fields", {}).get("targetIp")
     for event in events
 ):
@@ -189,12 +189,12 @@ if sys.argv[1] == "1" and not any(
     event.get("kind") == "udp-datagram"
     and event.get("fields", {}).get("sessionId")
     and event.get("fields", {}).get("inbound") == "udp"
-    and event.get("fields", {}).get("outbound") == "direct"
+    and event.get("fields", {}).get("nodeProtocol") == "direct"
     and event.get("fields", {}).get("targetIp")
     and event.get("fields", {}).get("upstreamIp")
     for event in events
 ):
-    raise SystemExit("missing UDP inbound/outbound session fields")
+    raise SystemExit("missing UDP inbound/node protocol session fields")
 PY
 }
 

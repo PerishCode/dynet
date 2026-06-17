@@ -18,11 +18,11 @@ pub use dns::{
 };
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
-    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, InboundKind,
-    NodeId, ObservedDnsMap, OutboundGroup, OutboundNode, OutboundRef, RouteMatcher, RouteRule,
-    RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
-    SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix, TargetContext,
-    TargetSource,
+    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, EgressRef, ForwardGroup,
+    ForwardNode, GroupId, GroupMember, InboundKind, NodeId, ObservedDnsMap, RouteMatcher,
+    RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision,
+    SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix,
+    TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
@@ -68,12 +68,12 @@ impl RuntimeState {
         dns_upstreams: Vec<DnsUpstream>,
         dns_policy: DnsRacePolicy,
     ) -> Self {
-        let node = OutboundNode {
+        let node = ForwardNode {
             id: NodeId::new(DEFAULT_NODE_ID),
             tag: tag.into(),
             enabled: true,
         };
-        let group = OutboundGroup::default_group();
+        let group = ForwardGroup::default_group();
         let member = GroupMember::default_member(node.id.clone(), group.id.clone());
         let nodes = NodeStore::single_node(node);
         Self {
@@ -172,7 +172,7 @@ impl RuntimeState {
         let group_id = route_match
             .group_id
             .or_else(|| self.inner.groups.default_group_id())
-            .ok_or_else(|| SelectionError::new("no default outbound group is available"))?;
+            .ok_or_else(|| SelectionError::new("no default forwarding group is available"))?;
         let selection = self
             .inner
             .groups
@@ -187,7 +187,7 @@ impl RuntimeState {
             group_id,
             matched_rule_id: route_match.rule_id,
             node_id: first_hop.node_id.clone(),
-            outbound: first_hop.outbound.clone(),
+            egress: first_hop.egress.clone(),
             trace: selection.trace,
             terminal: selection.terminal,
             reason: SelectionReason::SingleNode,

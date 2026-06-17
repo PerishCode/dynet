@@ -84,8 +84,17 @@ udp_advertise_ip = "192.168.5.2"
 udp_idle_timeout_ms = 30000
 max_sessions = 1024
 
-[outbound]
+[forwarding]
+default_group = "default"
+
+[[forwarding.nodes]]
+id = "default-node"
 type = "direct"
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["default-node"]
 ```
 
 For a local Linux VM capture experiment using Mihomo TUN as the external
@@ -95,13 +104,22 @@ For the first protocol-backed experiment, `dynet.toml` can hold a local
 dual-protocol Shadowsocks node. Keep `dynet.toml` uncommitted.
 
 ```toml
-[outbound]
+[forwarding]
+default_group = "default"
+
+[[forwarding.nodes]]
+id = "default-node"
 type = "shadowsocks"
 server = "node.example.com"
 port = 8388
 method = "aes-256-gcm"
 password = "local-secret"
 udp = true
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["default-node"]
 ```
 
 Supported prototype Shadowsocks methods are `aes-256-gcm` and
@@ -113,7 +131,11 @@ when it matches `server`; `skip-cert-verify` is available for local experiment
 nodes that require it.
 
 ```toml
-[outbound]
+[forwarding]
+default_group = "default"
+
+[[forwarding.nodes]]
+id = "default-node"
 type = "trojan"
 server = "node.example.com"
 port = 443
@@ -121,13 +143,22 @@ password = "local-secret"
 sni = "node.example.com"
 skip-cert-verify = true
 udp = true
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["default-node"]
 ```
 
 For the current VMess cold-start experiment, only raw TCP transport,
 `alterId = 0`, `cipher = "auto"`, and `udp = true` are accepted.
 
 ```toml
-[outbound]
+[forwarding]
+default_group = "default"
+
+[[forwarding.nodes]]
+id = "default-node"
 type = "vmess"
 server = "node.example.com"
 port = 10086
@@ -135,6 +166,11 @@ uuid = "11111111-2222-3333-4444-555555555555"
 alterId = 0
 cipher = "auto"
 udp = true
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["default-node"]
 ```
 
 ## Development

@@ -11,10 +11,10 @@ use dynet_state::Config;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn loads_shadowsocks_outbound() {
+fn loads_shadowsocks_forwarding_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_shadowsocks_outbound");
+    let config_path = temp_config_path("loads_shadowsocks_forwarding_node");
     fs::write(
         &config_path,
         graph_config(
@@ -32,8 +32,9 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Shadowsocks(outbound) = node_outbound(&config, "default-node") else {
-        panic!("expected shadowsocks outbound");
+    let OutboundConfig::Shadowsocks(outbound) = node_execution_config(&config, "default-node")
+    else {
+        panic!("expected shadowsocks node config");
     };
     assert_eq!(outbound.server, "demo.example");
     assert_eq!(outbound.port, 8388);
@@ -44,10 +45,10 @@ udp = true
 }
 
 #[test]
-fn loads_shadowsocks_2022_outbound() {
+fn loads_ss2022_forwarding_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_shadowsocks_2022_outbound");
+    let config_path = temp_config_path("loads_ss2022_forwarding_node");
     fs::write(
         &config_path,
         graph_config(
@@ -65,8 +66,9 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Shadowsocks(outbound) = node_outbound(&config, "default-node") else {
-        panic!("expected shadowsocks outbound");
+    let OutboundConfig::Shadowsocks(outbound) = node_execution_config(&config, "default-node")
+    else {
+        panic!("expected shadowsocks node config");
     };
     assert_eq!(outbound.method, ShadowsocksMethod::Blake3Aes128Gcm2022);
     assert_eq!(outbound.password, "AQIDBAUGBwgJCgsMDQ4PEA==");
@@ -75,10 +77,10 @@ udp = true
 }
 
 #[test]
-fn loads_trojan_outbound() {
+fn loads_trojan_forwarding_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_trojan_outbound");
+    let config_path = temp_config_path("loads_trojan_forwarding_node");
     fs::write(
         &config_path,
         graph_config(
@@ -97,8 +99,8 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Trojan(outbound) = node_outbound(&config, "default-node") else {
-        panic!("expected trojan outbound");
+    let OutboundConfig::Trojan(outbound) = node_execution_config(&config, "default-node") else {
+        panic!("expected trojan node config");
     };
     assert_eq!(outbound.server, "demo.example");
     assert_eq!(outbound.port, 443);
@@ -131,8 +133,8 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Trojan(outbound) = node_outbound(&config, "default-node") else {
-        panic!("expected trojan outbound");
+    let OutboundConfig::Trojan(outbound) = node_execution_config(&config, "default-node") else {
+        panic!("expected trojan node config");
     };
     assert_eq!(outbound.sni.as_deref(), Some("sni.example"));
     assert!(!outbound.skip_cert_verify);
@@ -141,10 +143,10 @@ udp = true
 }
 
 #[test]
-fn loads_vmess_outbound() {
+fn loads_vmess_forwarding_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_vmess_outbound");
+    let config_path = temp_config_path("loads_vmess_forwarding_node");
     fs::write(
         &config_path,
         graph_config(
@@ -163,8 +165,8 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Vmess(outbound) = node_outbound(&config, "default-node") else {
-        panic!("expected vmess outbound");
+    let OutboundConfig::Vmess(outbound) = node_execution_config(&config, "default-node") else {
+        panic!("expected vmess node config");
     };
     assert_eq!(outbound.server, "demo.example");
     assert_eq!(outbound.port, 10086);
@@ -174,10 +176,10 @@ udp = true
 }
 
 #[test]
-fn loads_vless_outbound() {
+fn loads_vless_forwarding_node() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_vless_outbound");
+    let config_path = temp_config_path("loads_vless_forwarding_node");
     fs::write(
         &config_path,
         graph_config(
@@ -192,7 +194,7 @@ network = "tcp"
 tls = true
 udp = true
 
-[outbound.nodes.reality-opts]
+[forwarding.nodes.reality-opts]
 public-key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 short-id = "0123456789abcdef"
 "#,
@@ -202,8 +204,8 @@ short-id = "0123456789abcdef"
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Vless(outbound) = node_outbound(&config, "default-node") else {
-        panic!("expected vless outbound");
+    let OutboundConfig::Vless(outbound) = node_execution_config(&config, "default-node") else {
+        panic!("expected vless node config");
     };
     assert_eq!(outbound.server, "demo.example");
     assert_eq!(outbound.port, 443);
@@ -219,36 +221,36 @@ short-id = "0123456789abcdef"
 }
 
 #[test]
-fn loads_group_outbound_graph() {
+fn loads_group_egress_graph() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_group_outbound_graph");
+    let config_path = temp_config_path("loads_group_egress_graph");
     fs::write(
         &config_path,
         r#"
-[outbound]
+[forwarding]
 default_group = "Tunnel"
 
-[[outbound.nodes]]
+[[forwarding.nodes]]
 id = "airport-us-01"
 type = "direct"
 
-[[outbound.nodes]]
+[[forwarding.nodes]]
 id = "private-fixed-ip"
 type = "direct"
 
-[[outbound.groups]]
+[[forwarding.groups]]
 id = "Tunnel"
 mode = "smart"
-outbound = "Private"
+egress = "Private"
 members = ["airport-us-01"]
 
-[[outbound.groups]]
+[[forwarding.groups]]
 id = "Private"
 mode = "smart"
 members = ["private-fixed-ip"]
 
-[[outbound.rules]]
+[[forwarding.rules]]
 id = "tunnel-example"
 priority = 100
 match = "domain-suffix"
@@ -260,16 +262,16 @@ group = "Tunnel"
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    assert_eq!(config.outbound.seed.default_group_id.as_str(), "Tunnel");
+    assert_eq!(config.forwarding.seed.default_group_id.as_str(), "Tunnel");
     let tunnel = config
-        .outbound
+        .forwarding
         .seed
         .groups
         .iter()
         .find(|group| group.id.as_str() == "Tunnel")
         .expect("Tunnel group");
-    assert_eq!(tunnel.outbound.label(), "Private");
-    assert_eq!(config.outbound.seed.route_rules.len(), 1);
+    assert_eq!(tunnel.egress.label(), "Private");
+    assert_eq!(config.forwarding.seed.route_rules.len(), 1);
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -323,7 +325,7 @@ password = "fake-password"
 
     let error = Config::from_config_path(Some(&config_path)).expect_err("udp missing rejected");
 
-    assert!(error.contains("outbound.udp"));
+    assert!(error.contains("forwarding.nodes[].udp"));
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -331,14 +333,14 @@ password = "fake-password"
 fn graph_config(node_body: &str) -> String {
     format!(
         r#"
-[outbound]
+[forwarding]
 default_group = "default"
 
-[[outbound.nodes]]
+[[forwarding.nodes]]
 id = "default-node"
 {node_body}
 
-[[outbound.groups]]
+[[forwarding.groups]]
 id = "default"
 mode = "smart"
 members = ["default-node"]
@@ -346,12 +348,12 @@ members = ["default-node"]
     )
 }
 
-fn node_outbound<'a>(config: &'a Config, id: &str) -> &'a OutboundConfig {
+fn node_execution_config<'a>(config: &'a Config, id: &str) -> &'a OutboundConfig {
     config
-        .outbound
-        .execution_outbounds
+        .forwarding
+        .execution_nodes
         .get(id)
-        .unwrap_or_else(|| panic!("missing outbound node {id}"))
+        .unwrap_or_else(|| panic!("missing forwarding node {id}"))
 }
 
 struct EnvGuard {

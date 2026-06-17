@@ -26,7 +26,7 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   experiment and ingress event model. Keep protocol-specific parsing out unless
   a later phase explicitly needs it.
 - `crates/dynet-runtime/` owns the shared runtime facade, event store, node
-  metadata, DNS-map placeholder, selector-matrix placeholder, and outbound
+  metadata, DNS-map placeholder, selector-matrix placeholder, and forwarding
   selection decision boundary. Keep hot runtime state and future persistence
   hooks here instead of hiding them inside ingress adapters.
 - `crates/dynet-state/` owns the current in-memory `AppState { config }` shape
@@ -38,23 +38,23 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   and do not rebuild the old Python/VM experiment system here.
 - `prototype/shadowsocks/` owns the experimental hand-written Shadowsocks
   client protocol implementation. Keep protocol mechanics here; `dynet-ingress`
-  should only adapt it behind the outbound boundary.
+  should only adapt it behind the egress/dial boundary.
 - `prototype/shadowsocks/src/aead2022/` owns Shadowsocks 2022 crypto and UDP
   session internals.
 - `prototype/shadowsocks/tests/` owns Shadowsocks wire-format integration
   tests against the prototype public API.
 - `prototype/trojan/` owns the experimental hand-written Trojan client
   protocol implementation. Keep TLS/protocol mechanics here; `dynet-ingress`
-  should only adapt it behind the outbound boundary.
+  should only adapt it behind the egress/dial boundary.
 - `prototype/trojan/tests/` owns Trojan wire-format integration tests against
   the prototype public API.
 - `prototype/vless/` owns the experimental VLESS Reality/Vision client protocol
   implementation. Keep VLESS headers, Vision framing, REALITY transport, and
   related wire-format tests here; `dynet-ingress` should only adapt it behind
-  the outbound boundary.
+  the egress/dial boundary.
 - `prototype/vmess/` owns the experimental hand-written VMess client protocol
   implementation. Keep VMess AEAD/data chunk mechanics here; `dynet-ingress`
-  should only adapt it behind the outbound boundary.
+  should only adapt it behind the egress/dial boundary.
 - `prototype/vmess/tests/` owns VMess wire-format integration tests against
   the prototype public API.
 - `flavor.json` owns the source shape scan for supported files.

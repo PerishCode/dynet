@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
 
 use crate::{
-    DnsRacePolicy, DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId, OutboundGroup,
-    OutboundNode, OutboundRef, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
+    DnsRacePolicy, DnsUpstream, DnsUpstreamId, EgressRef, ForwardGroup, ForwardNode, GroupId,
+    GroupMember, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
 };
 
 use super::{
@@ -15,9 +15,9 @@ use super::{
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct RuntimeBootstrap {
-    pub(crate) nodes: Vec<OutboundNode>,
+    pub(crate) nodes: Vec<ForwardNode>,
     pub(crate) default_group_id: GroupId,
-    pub(crate) groups: Vec<OutboundGroup>,
+    pub(crate) groups: Vec<ForwardGroup>,
     pub(crate) group_members: Vec<GroupMember>,
     pub(crate) route_rules: Vec<RouteRule>,
     pub(crate) dns_upstreams: Vec<DnsUpstream>,
@@ -25,7 +25,7 @@ pub(crate) struct RuntimeBootstrap {
 }
 
 impl RuntimeStore {
-    pub async fn load_nodes(&self) -> Result<Vec<OutboundNode>, RuntimeStoreError> {
+    pub async fn load_nodes(&self) -> Result<Vec<ForwardNode>, RuntimeStoreError> {
         let rows = sqlx::query(
             "select id, tag, enabled from runtime_nodes order by case when id = 'default-node' then 0 else 1 end, id",
         )
@@ -48,7 +48,7 @@ impl RuntimeStore {
     async fn bootstrap_is_empty(&self) -> Result<bool, RuntimeStoreError> {
         let table_counts = [
             self.count_rows("runtime_nodes").await?,
-            self.count_rows("runtime_outbound_groups").await?,
+            self.count_rows("runtime_forward_groups").await?,
             self.count_rows("runtime_group_members").await?,
             self.count_rows("runtime_dns_upstreams").await?,
             self.count_rows("runtime_route_rules").await?,
@@ -140,9 +140,9 @@ impl RuntimeStore {
         Ok(value)
     }
 
-    async fn load_groups(&self) -> Result<Vec<OutboundGroup>, RuntimeStoreError> {
+    async fn load_groups(&self) -> Result<Vec<ForwardGroup>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, enabled, scheduler, outbound from runtime_outbound_groups order by id",
+            "select id, enabled, scheduler, egress from runtime_forward_groups order by id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -177,7 +177,7 @@ impl RuntimeStore {
     }
 }
 
-fn row_to_node(row: SqliteRow) -> Result<OutboundNode, RuntimeStoreError> {
+fn row_to_node(row: SqliteRow) -> Result<ForwardNode, RuntimeStoreError> {
     let id = row.get::<String, _>("id");
     let tag = row.get::<String, _>("tag");
     let enabled = row.get::<i64, _>("enabled");
@@ -187,14 +187,14 @@ fn row_to_node(row: SqliteRow) -> Result<OutboundNode, RuntimeStoreError> {
             message: format!("enabled must be 0 or 1, got {enabled}"),
         });
     }
-    Ok(OutboundNode {
+    Ok(ForwardNode {
         id: NodeId::new(id),
         tag,
         enabled: enabled == 1,
     })
 }
 
-fn row_to_group(row: SqliteRow) -> Result<OutboundGroup, RuntimeStoreError> {
+fn row_to_group(row: SqliteRow) -> Result<ForwardGroup, RuntimeStoreError> {
     let id = row.get::<String, _>("id");
     let enabled = bool_from_i64(row.get::<i64, _>("enabled")).ok_or_else(|| {
         RuntimeStoreError::InvalidGroup {
@@ -208,11 +208,11 @@ fn row_to_group(row: SqliteRow) -> Result<OutboundGroup, RuntimeStoreError> {
             message: "scheduler is unsupported".to_string(),
         }
     })?;
-    Ok(OutboundGroup {
+    Ok(ForwardGroup {
         id: GroupId::new(id),
         enabled,
         scheduler,
-        outbound: OutboundRef::named(row.get::<String, _>("outbound")),
+        egress: EgressRef::named(row.get::<String, _>("egress")),
     })
 }
 
@@ -308,7 +308,7 @@ fn row_to_dns_upstream(row: SqliteRow) -> Result<DnsUpstream, RuntimeStoreError>
 
 async fn insert_node(
     transaction: &mut Transaction<'_, Sqlite>,
-    node: &OutboundNode,
+    node: &ForwardNode,
 ) -> Result<(), RuntimeStoreError> {
     let enabled = if node.enabled { 1_i64 } else { 0_i64 };
     sqlx::query(
@@ -326,19 +326,19 @@ async fn insert_node(
 
 async fn insert_group(
     transaction: &mut Transaction<'_, Sqlite>,
-    group: &OutboundGroup,
+    group: &ForwardGroup,
 ) -> Result<(), RuntimeStoreError> {
     let enabled = if group.enabled { 1_i64 } else { 0_i64 };
     sqlx::query(
-        "insert into runtime_outbound_groups (
-            id, enabled, scheduler, outbound, updated_at_unix_ms
+        "insert into runtime_forward_groups (
+            id, enabled, scheduler, egress, updated_at_unix_ms
          )
          values (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(group.id.as_str())
     .bind(enabled)
     .bind(group.scheduler.as_str())
-    .bind(group.outbound.label())
+    .bind(group.egress.label())
     .bind(super::unix_ms_i64())
     .execute(&mut **transaction)
     .await?;

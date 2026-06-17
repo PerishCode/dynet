@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DnsRacePolicy, DnsUpstream, GroupId, GroupMember, OutboundGroup, OutboundNode, OutboundRef,
+    DnsRacePolicy, DnsUpstream, EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember,
     RouteRule, RuntimeSeed,
 };
 
@@ -20,9 +20,9 @@ pub(super) fn validate_seed(seed: &RuntimeSeed) -> Result<(), RuntimeStoreError>
 }
 
 pub(super) fn validate_bootstrap(
-    nodes: &[OutboundNode],
+    nodes: &[ForwardNode],
     default_group_id: &GroupId,
-    groups: &[OutboundGroup],
+    groups: &[ForwardGroup],
     group_members: &[GroupMember],
     route_rules: &[RouteRule],
     dns_upstreams: &[DnsUpstream],
@@ -70,8 +70,8 @@ pub(super) fn validate_bootstrap(
 }
 
 fn validate_references(
-    nodes: &[OutboundNode],
-    groups: &[OutboundGroup],
+    nodes: &[ForwardNode],
+    groups: &[ForwardGroup],
     group_members: &[GroupMember],
     route_rules: &[RouteRule],
 ) -> Result<(), RuntimeStoreError> {
@@ -97,39 +97,39 @@ fn validate_references(
             )));
         }
     }
-    validate_group_outbounds(nodes, groups)
+    validate_group_egresses(nodes, groups)
 }
 
 fn validate_unique_ids(
-    nodes: &[OutboundNode],
-    groups: &[OutboundGroup],
+    nodes: &[ForwardNode],
+    groups: &[ForwardGroup],
     route_rules: &[RouteRule],
     dns_upstreams: &[DnsUpstream],
 ) -> Result<(), RuntimeStoreError> {
-    let mut outbound_names = BTreeSet::new();
+    let mut forwarding_names = BTreeSet::new();
     for node in nodes {
         let id = node.id.as_str();
-        if id == OutboundRef::DIRECT_AUDIT_OUTLET {
+        if id == EgressRef::DIRECT_AUDIT_OUTLET {
             return Err(RuntimeStoreError::InvalidBootstrap(
                 "node id 'direct' is reserved".to_string(),
             ));
         }
-        if !outbound_names.insert(id.to_string()) {
+        if !forwarding_names.insert(id.to_string()) {
             return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "outbound name {id:?} is duplicated"
+                "forwarding name {id:?} is duplicated"
             )));
         }
     }
     for group in groups {
         let id = group.id.as_str();
-        if id == OutboundRef::DIRECT_AUDIT_OUTLET {
+        if id == EgressRef::DIRECT_AUDIT_OUTLET {
             return Err(RuntimeStoreError::InvalidBootstrap(
                 "group id 'direct' is reserved".to_string(),
             ));
         }
-        if !outbound_names.insert(id.to_string()) {
+        if !forwarding_names.insert(id.to_string()) {
             return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "outbound name {id:?} is duplicated"
+                "forwarding name {id:?} is duplicated"
             )));
         }
     }
@@ -163,56 +163,56 @@ fn validate_unique_dns_ids(dns_upstreams: &[DnsUpstream]) -> Result<(), RuntimeS
     Ok(())
 }
 
-fn validate_group_outbounds(
-    nodes: &[OutboundNode],
-    groups: &[OutboundGroup],
+fn validate_group_egresses(
+    nodes: &[ForwardNode],
+    groups: &[ForwardGroup],
 ) -> Result<(), RuntimeStoreError> {
     for group in groups {
-        validate_group_outbound_reference(nodes, groups, group)?;
+        validate_group_egress_reference(nodes, groups, group)?;
     }
     for group in groups {
-        validate_group_outbound_cycle(nodes, groups, group.id.as_str())?;
+        validate_group_egress_cycle(nodes, groups, group.id.as_str())?;
     }
     Ok(())
 }
 
-fn validate_group_outbound_reference(
-    nodes: &[OutboundNode],
-    groups: &[OutboundGroup],
-    group: &OutboundGroup,
+fn validate_group_egress_reference(
+    nodes: &[ForwardNode],
+    groups: &[ForwardGroup],
+    group: &ForwardGroup,
 ) -> Result<(), RuntimeStoreError> {
-    let outbound = group.outbound.label();
-    if outbound == OutboundRef::DIRECT_AUDIT_OUTLET {
+    let egress = group.egress.label();
+    if egress == EgressRef::DIRECT_AUDIT_OUTLET {
         return Ok(());
     }
-    if let Some(node) = nodes.iter().find(|node| node.id.as_str() == outbound) {
+    if let Some(node) = nodes.iter().find(|node| node.id.as_str() == egress) {
         return node.enabled.then_some(()).ok_or_else(|| {
             RuntimeStoreError::InvalidBootstrap(format!(
-                "group {} outbound {outbound:?} references a disabled node",
+                "group {} egress {egress:?} references a disabled node",
                 group.id
             ))
         });
     }
     if let Some(referenced_group) = groups
         .iter()
-        .find(|candidate| candidate.id.as_str() == outbound)
+        .find(|candidate| candidate.id.as_str() == egress)
     {
         return referenced_group.enabled.then_some(()).ok_or_else(|| {
             RuntimeStoreError::InvalidBootstrap(format!(
-                "group {} outbound {outbound:?} references a disabled group",
+                "group {} egress {egress:?} references a disabled group",
                 group.id
             ))
         });
     }
     Err(RuntimeStoreError::InvalidBootstrap(format!(
-        "group {} outbound {outbound:?} references no declared outbound",
+        "group {} egress {egress:?} references no declared forwarding node or group",
         group.id
     )))
 }
 
-fn validate_group_outbound_cycle(
-    nodes: &[OutboundNode],
-    groups: &[OutboundGroup],
+fn validate_group_egress_cycle(
+    nodes: &[ForwardNode],
+    groups: &[ForwardGroup],
     start: &str,
 ) -> Result<(), RuntimeStoreError> {
     let mut seen = BTreeSet::new();
@@ -220,7 +220,7 @@ fn validate_group_outbound_cycle(
     loop {
         if !seen.insert(current.to_string()) {
             return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "group outbound cycle includes {current:?}"
+                "group egress cycle includes {current:?}"
             )));
         }
         let Some(group) = groups
@@ -229,14 +229,14 @@ fn validate_group_outbound_cycle(
         else {
             break;
         };
-        let outbound = group.outbound.label();
-        if outbound == OutboundRef::DIRECT_AUDIT_OUTLET {
+        let egress = group.egress.label();
+        if egress == EgressRef::DIRECT_AUDIT_OUTLET {
             break;
         }
-        if nodes.iter().any(|node| node.id.as_str() == outbound) {
+        if nodes.iter().any(|node| node.id.as_str() == egress) {
             break;
         }
-        current = outbound;
+        current = egress;
     }
     Ok(())
 }

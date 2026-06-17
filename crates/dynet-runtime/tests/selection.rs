@@ -21,7 +21,7 @@ fn selects_default_node() {
     assert_eq!(decision.trace.len(), 1);
     assert_eq!(decision.trace[0].group_id.as_str(), "default");
     assert_eq!(decision.trace[0].node_id.as_str(), "default-node");
-    assert_eq!(decision.trace[0].outbound.label(), "direct");
+    assert_eq!(decision.trace[0].egress.label(), "direct");
     assert_eq!(decision.terminal, SelectionTerminal::DirectAuditOutlet);
     assert_eq!(decision.decision_id, 1);
     assert_eq!(runtime.nodes().snapshot()[0].tag, "ss");

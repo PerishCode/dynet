@@ -14,9 +14,9 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use dynet_runtime::{
-    DnsUpstream, DnsUpstreamId, EventStore, GroupId, GroupMember, IngressEvent, IngressEventKind,
-    NodeId, OutboundGroup, OutboundNode, OutboundRef, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
-    RuntimeState, RuntimeStore, SchedulerPolicy,
+    DnsUpstream, DnsUpstreamId, EgressRef, EventStore, ForwardGroup, ForwardNode, GroupId,
+    GroupMember, IngressEvent, IngressEventKind, NodeId, RouteMatcher, RouteRule, RuleId,
+    RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
 };
 use hkdf::Hkdf;
 use md5::{Digest, Md5};
@@ -276,12 +276,12 @@ pub fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
 pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     RuntimeSeed {
         nodes: vec![
-            OutboundNode {
+            ForwardNode {
                 id: NodeId::new("default-node"),
                 tag: "direct".to_string(),
                 enabled: true,
             },
-            OutboundNode {
+            ForwardNode {
                 id: NodeId::new("routed-node"),
                 tag: "direct".to_string(),
                 enabled: true,
@@ -289,17 +289,17 @@ pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
         ],
         default_group_id: GroupId::new("default"),
         groups: vec![
-            OutboundGroup {
+            ForwardGroup {
                 id: GroupId::new("default"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
-                outbound: OutboundRef::direct_audit_outlet(),
+                egress: EgressRef::direct_audit_outlet(),
             },
-            OutboundGroup {
+            ForwardGroup {
                 id: GroupId::new("routed"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
-                outbound: OutboundRef::direct_audit_outlet(),
+                egress: EgressRef::direct_audit_outlet(),
             },
         ],
         group_members: vec![
@@ -337,19 +337,19 @@ pub fn chained_route_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     let mut seed = route_selected_seed(dns_addr);
     for group in &mut seed.groups {
         if group.id.as_str() == "routed" {
-            group.outbound = OutboundRef::named("egress");
+            group.egress = EgressRef::named("egress");
         }
     }
-    seed.nodes.push(OutboundNode {
+    seed.nodes.push(ForwardNode {
         id: NodeId::new("egress-node"),
         tag: "direct".to_string(),
         enabled: true,
     });
-    seed.groups.push(OutboundGroup {
+    seed.groups.push(ForwardGroup {
         id: GroupId::new("egress"),
         enabled: true,
         scheduler: SchedulerPolicy::SingleFirstEnabled,
-        outbound: OutboundRef::direct_audit_outlet(),
+        egress: EgressRef::direct_audit_outlet(),
     });
     seed.group_members.push(GroupMember {
         group_id: GroupId::new("egress"),

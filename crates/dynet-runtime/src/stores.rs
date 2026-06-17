@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    DnsUpstream, DnsUpstreamId, GroupId, GroupMember, NodeId, OutboundGroup, OutboundNode,
-    OutboundRef, RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
+    DnsUpstream, DnsUpstreamId, EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember, NodeId,
+    RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -16,7 +16,7 @@ pub struct NodeStore {
 #[derive(Debug, Default)]
 struct NodeStoreInner {
     default_node: Option<NodeId>,
-    nodes: BTreeMap<NodeId, OutboundNode>,
+    nodes: BTreeMap<NodeId, ForwardNode>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -27,7 +27,7 @@ pub struct GroupStore {
 #[derive(Debug, Default)]
 struct GroupStoreInner {
     default_group: Option<GroupId>,
-    groups: BTreeMap<GroupId, OutboundGroup>,
+    groups: BTreeMap<GroupId, ForwardGroup>,
     members: BTreeMap<GroupId, Vec<GroupMember>>,
 }
 
@@ -66,7 +66,7 @@ pub(crate) struct GroupSelection {
 }
 
 impl NodeStore {
-    pub fn single_node(node: OutboundNode) -> Self {
+    pub fn single_node(node: ForwardNode) -> Self {
         let default_node = Some(node.id.clone());
         let mut nodes = BTreeMap::new();
         nodes.insert(node.id.clone(), node);
@@ -78,7 +78,7 @@ impl NodeStore {
         }
     }
 
-    pub fn from_nodes(nodes: Vec<OutboundNode>) -> Self {
+    pub fn from_nodes(nodes: Vec<ForwardNode>) -> Self {
         let default_node = nodes
             .iter()
             .find(|node| node.id.as_str() == DEFAULT_NODE_ID && node.enabled)
@@ -121,7 +121,7 @@ impl NodeStore {
             .and_then(|node| node.enabled.then(|| node.id.clone()))
     }
 
-    pub fn snapshot(&self) -> Vec<OutboundNode> {
+    pub fn snapshot(&self) -> Vec<ForwardNode> {
         self.inner
             .read()
             .expect("node store lock poisoned")
@@ -135,7 +135,7 @@ impl NodeStore {
 impl GroupStore {
     pub fn from_parts(
         default_group: GroupId,
-        groups: Vec<OutboundGroup>,
+        groups: Vec<ForwardGroup>,
         members: Vec<GroupMember>,
     ) -> Self {
         let groups = groups
@@ -194,13 +194,13 @@ impl GroupStore {
         let mut trace = Vec::new();
         loop {
             if seen.insert(current.clone(), ()).is_some() {
-                return Err(format!("group outbound cycle includes {current}"));
+                return Err(format!("group egress cycle includes {current}"));
             }
             let hop = select_group_hop(&store, &current, nodes)?;
-            let outbound = hop.outbound.clone();
+            let egress = hop.egress.clone();
             trace.push(hop);
-            match outbound {
-                OutboundRef::DirectAuditOutlet => {
+            match egress {
+                EgressRef::DirectAuditOutlet => {
                     let first = trace.first().expect("selection trace has at least one hop");
                     return Ok(GroupSelection {
                         terminal: SelectionTerminal::DirectAuditOutlet,
@@ -209,7 +209,7 @@ impl GroupStore {
                         trace,
                     });
                 }
-                OutboundRef::Named(name) => {
+                EgressRef::Named(name) => {
                     if let Some(node_id) = nodes.enabled_node_id(&name) {
                         let first = trace.first().expect("selection trace has at least one hop");
                         return Ok(GroupSelection {
@@ -225,7 +225,7 @@ impl GroupStore {
         }
     }
 
-    pub fn snapshot(&self) -> Vec<OutboundGroup> {
+    pub fn snapshot(&self) -> Vec<ForwardGroup> {
         self.inner
             .read()
             .expect("group store lock poisoned")
@@ -254,25 +254,25 @@ fn select_group_hop(
     let group = store
         .groups
         .get(group_id)
-        .ok_or_else(|| format!("outbound group {group_id} is missing"))?;
+        .ok_or_else(|| format!("forwarding group {group_id} is missing"))?;
     if !group.enabled {
-        return Err(format!("outbound group {group_id} is disabled"));
+        return Err(format!("forwarding group {group_id} is disabled"));
     }
     let members = store
         .members
         .get(group_id)
-        .ok_or_else(|| format!("outbound group {group_id} has no enabled node"))?;
+        .ok_or_else(|| format!("forwarding group {group_id} has no enabled node"))?;
     let candidates = members
         .iter()
         .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
         .collect::<Vec<_>>();
     let selected = candidates
         .first()
-        .ok_or_else(|| format!("outbound group {group_id} has no enabled node"))?;
+        .ok_or_else(|| format!("forwarding group {group_id} has no enabled node"))?;
     Ok(SelectionTraceHop {
         group_id: group.id.clone(),
         node_id: selected.node_id.clone(),
-        outbound: group.outbound.clone(),
+        egress: group.egress.clone(),
         scheduler: group.scheduler,
         candidate_count: candidates.len(),
     })

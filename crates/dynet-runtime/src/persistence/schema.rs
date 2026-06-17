@@ -33,11 +33,11 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
     .execute(pool)
     .await?;
     sqlx::query(
-        "create table if not exists runtime_outbound_groups (
+        "create table if not exists runtime_forward_groups (
             id text primary key,
             enabled integer not null,
             scheduler text not null,
-            outbound text not null,
+            egress text not null,
             updated_at_unix_ms integer not null
         )",
     )
@@ -92,7 +92,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
             group_id text not null,
             matched_rule_id text,
             node_id text not null,
-            outbound text not null,
+            egress text not null,
             reason text not null,
             scheduler text not null,
             candidate_count integer not null

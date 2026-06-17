@@ -22,18 +22,18 @@ pub struct RuleId(String);
 pub struct DnsUpstreamId(String);
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OutboundNode {
+pub struct ForwardNode {
     pub id: NodeId,
     pub tag: String,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OutboundGroup {
+pub struct ForwardGroup {
     pub id: GroupId,
     pub enabled: bool,
     pub scheduler: SchedulerPolicy,
-    pub outbound: OutboundRef,
+    pub egress: EgressRef,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -86,7 +86,7 @@ pub enum SchedulerPolicy {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum OutboundRef {
+pub enum EgressRef {
     DirectAuditOutlet,
     Named(String),
 }
@@ -128,9 +128,9 @@ pub struct SelectionContext {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeSeed {
-    pub nodes: Vec<OutboundNode>,
+    pub nodes: Vec<ForwardNode>,
     pub default_group_id: GroupId,
-    pub groups: Vec<OutboundGroup>,
+    pub groups: Vec<ForwardGroup>,
     pub group_members: Vec<GroupMember>,
     pub route_rules: Vec<RouteRule>,
     pub dns_upstreams: Vec<DnsUpstream>,
@@ -143,7 +143,7 @@ pub struct SelectionDecision {
     pub group_id: GroupId,
     pub matched_rule_id: Option<RuleId>,
     pub node_id: NodeId,
-    pub outbound: OutboundRef,
+    pub egress: EgressRef,
     pub trace: Vec<SelectionTraceHop>,
     pub terminal: SelectionTerminal,
     pub reason: SelectionReason,
@@ -155,7 +155,7 @@ pub struct SelectionDecision {
 pub struct SelectionTraceHop {
     pub group_id: GroupId,
     pub node_id: NodeId,
-    pub outbound: OutboundRef,
+    pub egress: EgressRef,
     pub scheduler: SchedulerPolicy,
     pub candidate_count: usize,
 }
@@ -240,13 +240,13 @@ impl fmt::Display for DnsUpstreamId {
     }
 }
 
-impl OutboundGroup {
+impl ForwardGroup {
     pub(crate) fn default_group() -> Self {
         Self {
             id: GroupId::new(DEFAULT_GROUP_ID),
             enabled: true,
             scheduler: SchedulerPolicy::SingleFirstEnabled,
-            outbound: OutboundRef::DirectAuditOutlet,
+            egress: EgressRef::DirectAuditOutlet,
         }
     }
 }
@@ -309,12 +309,12 @@ impl TargetContext {
 
 impl RuntimeSeed {
     pub fn single_node(tag: impl Into<String>) -> Self {
-        let node = OutboundNode {
+        let node = ForwardNode {
             id: NodeId::new(DEFAULT_NODE_ID),
             tag: tag.into(),
             enabled: true,
         };
-        let group = OutboundGroup::default_group();
+        let group = ForwardGroup::default_group();
         let member = GroupMember::default_member(node.id.clone(), group.id.clone());
         Self {
             nodes: vec![node],
@@ -355,7 +355,7 @@ impl SchedulerPolicy {
     }
 }
 
-impl OutboundRef {
+impl EgressRef {
     pub const DIRECT_AUDIT_OUTLET: &'static str = "direct";
 
     pub fn direct_audit_outlet() -> Self {
@@ -410,7 +410,7 @@ impl SelectionTraceHop {
             "{}:{}->{}",
             self.group_id,
             self.node_id,
-            self.outbound.label()
+            self.egress.label()
         )
     }
 }
@@ -425,7 +425,7 @@ impl SelectionTerminal {
 
     pub fn label(&self) -> &str {
         match self {
-            Self::DirectAuditOutlet => OutboundRef::DIRECT_AUDIT_OUTLET,
+            Self::DirectAuditOutlet => EgressRef::DIRECT_AUDIT_OUTLET,
             Self::Node(node_id) => node_id.as_str(),
         }
     }
