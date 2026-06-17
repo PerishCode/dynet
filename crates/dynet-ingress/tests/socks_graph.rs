@@ -9,7 +9,7 @@ use dynet_ingress::{
 use dynet_runtime::IngressEventKind;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     time,
 };
 
@@ -95,6 +95,58 @@ async fn graph_chains_vless_direct() {
 }
 
 #[tokio::test]
+async fn graph_chains_direct_dialer() {
+    let upstream = TcpListener::bind(support::local_addr())
+        .await
+        .expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await.expect("accept upstream");
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .await
+            .expect("read request");
+        stream.write_all(&request).await.expect("write response");
+    });
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut outbounds = BTreeMap::new();
+    outbounds.insert("routed-node".to_string(), OutboundConfig::Direct);
+    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        outbounds,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", upstream_addr.port()).await;
+    client.write_all(b"chain").await.expect("write payload");
+    client.shutdown().await.expect("shutdown payload");
+    let mut response = Vec::new();
+    time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("read response");
+
+    assert_eq!(response, b"chain");
+    let _ = support::wait_for_event(&events, IngressEventKind::TcpClose).await;
+    assert_eq!(
+        support::event_field(&events, IngressEventKind::TcpAccept, "selectionGroups"),
+        "routed,egress"
+    );
+}
+
+#[tokio::test]
 async fn rejects_protocol_tail() {
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
@@ -141,7 +193,7 @@ async fn rejects_protocol_tail() {
     );
     assert!(
         support::event_field(&events, IngressEventKind::TcpError, "error")
-            .contains("non-direct node egress-node")
+            .contains("node egress-node without TCP dialer")
     );
 }
 

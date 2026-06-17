@@ -272,49 +272,6 @@ async fn graph_chains_trojan_direct() {
 }
 
 #[tokio::test]
-async fn graph_chain_fails_tcp() {
-    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
-
-    let bind = unused_tcp_addr().await;
-    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
-    let events = runtime.events().clone();
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert("routed-node".to_string(), OutboundConfig::Direct);
-    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
-    tokio::spawn(run_socks5_graph(
-        Socks5IngressConfig {
-            bind,
-            udp_advertise_ip: None,
-            idle_timeout: Duration::from_secs(2),
-            max_sessions: 16,
-        },
-        outbounds,
-        runtime,
-    ));
-    time::sleep(Duration::from_millis(25)).await;
-
-    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
-    client.write_all(b"chain").await.expect("write payload");
-    let mut response = Vec::new();
-    let read = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
-        .await
-        .expect("read timeout")
-        .expect("read response");
-
-    assert_eq!(read, 0);
-    let _ = wait_for_event(&events, IngressEventKind::TcpError).await;
-    assert_eq!(
-        event_field(&events, IngressEventKind::TcpError, "errorStage"),
-        "outbound-select"
-    );
-    assert!(event_field(&events, IngressEventKind::TcpError, "error").contains("TCP chained graph"));
-    assert_eq!(
-        event_field(&events, IngressEventKind::TcpError, "selectionGroups"),
-        "routed,egress"
-    );
-}
-
-#[tokio::test]
 async fn udp_associate() {
     let upstream = UdpSocket::bind(local_addr()).await.expect("bind upstream");
     let upstream_addr = upstream.local_addr().expect("upstream addr");

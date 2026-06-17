@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::{io, net::TcpStream, sync::mpsc, time};
+use tokio::{io, sync::mpsc, time};
 
 use vless_prototype::{
     Client as VlessClient, ClientConfig as VlessClientConfig, UdpReader as VlessUdpReader,
@@ -8,8 +8,8 @@ use vless_prototype::{
 
 use crate::{
     outbound::{
-        Outbound, OutboundError, TcpOutboundOutcome, TcpOutboundSession, UdpOutboundAssociation,
-        UdpOutboundOutcome,
+        DirectOutbound, Outbound, OutboundError, TcpDialTarget, TcpDialer, TcpOutboundOutcome,
+        TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, VlessConfig,
 };
@@ -38,20 +38,20 @@ impl VlessOutbound {
         "vless"
     }
 
-    pub(super) async fn handle_tcp_via_direct(
+    pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
         mut session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
-        let upstream = TcpStream::connect((self.client.server_host(), self.client.server_port()))
-            .await
-            .map_err(|error| OutboundError {
-                stage: "outbound-connect",
-                upstream: None,
-                message: format!(
-                    "failed connecting VLESS Reality server {} through direct dialer: {error}",
-                    self.client.server_endpoint()
-                ),
-            })?;
+        dialer: &D,
+    ) -> Result<TcpOutboundOutcome, OutboundError>
+    where
+        D: TcpDialer,
+    {
+        let upstream = dialer
+            .dial_tcp(TcpDialTarget::host(
+                self.client.server_host(),
+                self.client.server_port(),
+            ))
+            .await?;
         let (parts, mut upstream) = self
             .client
             .connect_tcp_with_stream(session.target, upstream)
@@ -81,27 +81,9 @@ impl Outbound for VlessOutbound {
 
     async fn handle_tcp(
         &self,
-        mut session: TcpOutboundSession,
+        session: TcpOutboundSession,
     ) -> Result<TcpOutboundOutcome, OutboundError> {
-        let (parts, mut upstream) = self
-            .client
-            .connect_tcp_stream(session.target)
-            .await
-            .map_err(|error| vless_error(error, None))?;
-        let (client_to_upstream, upstream_to_client) =
-            io::copy_bidirectional(&mut session.downstream, &mut upstream)
-                .await
-                .map_err(|error| OutboundError {
-                    stage: "relay",
-                    upstream: Some(parts.upstream),
-                    message: format!("VLESS TCP relay failed: {error}"),
-                })?;
-        Ok(TcpOutboundOutcome {
-            upstream: parts.upstream,
-            client_to_upstream_bytes: client_to_upstream,
-            upstream_to_client_bytes: upstream_to_client,
-            close_reason: "normal",
-        })
+        self.handle_tcp_via_dialer(session, &DirectOutbound).await
     }
 
     async fn handle_udp(

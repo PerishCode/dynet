@@ -31,6 +31,12 @@ pub(crate) const DIRECT_OUTBOUND: &str = "direct";
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct DirectOutbound;
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) enum TcpDialTarget {
+    Socket(SocketAddr),
+    Host { host: String, port: u16 },
+}
+
 #[derive(Debug)]
 pub(crate) struct TcpOutboundSession {
     pub target: SocketAddr,
@@ -90,6 +96,13 @@ pub(crate) trait Outbound: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<UdpOutboundOutcome, OutboundError>> + Send;
 }
 
+pub(crate) trait TcpDialer: Send + Sync {
+    fn dial_tcp(
+        &self,
+        target: TcpDialTarget,
+    ) -> impl Future<Output = Result<TcpStream, OutboundError>> + Send;
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum OutboundMedium {
     Direct(DirectOutbound),
@@ -116,27 +129,27 @@ impl TryFrom<OutboundConfig> for OutboundMedium {
 }
 
 impl OutboundMedium {
-    pub(super) fn is_direct(&self) -> bool {
-        matches!(self, Self::Direct(_))
+    pub(super) fn tcp_dialer(&self) -> Option<&DirectOutbound> {
+        match self {
+            Self::Direct(dialer) => Some(dialer),
+            Self::Shadowsocks(_) | Self::Trojan(_) | Self::Vless(_) | Self::Vmess(_) => None,
+        }
     }
 
-    pub(super) async fn handle_tcp_direct(
+    pub(super) async fn handle_tcp_with_dialer<D>(
         &self,
         session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
+        dialer: &D,
+    ) -> Result<TcpOutboundOutcome, OutboundError>
+    where
+        D: TcpDialer,
+    {
         match self {
-            Self::Shadowsocks(outbound) => outbound.handle_tcp_via_direct(session).await,
-            Self::Trojan(outbound) => outbound.handle_tcp_via_direct(session).await,
-            Self::Vless(outbound) => outbound.handle_tcp_via_direct(session).await,
-            Self::Vmess(outbound) => outbound.handle_tcp_via_direct(session).await,
-            Self::Direct(_) => Err(OutboundError {
-                stage: "outbound-select",
-                upstream: None,
-                message: format!(
-                    "TCP chained graph execution is not implemented for {}",
-                    self.tag()
-                ),
-            }),
+            Self::Direct(outbound) => outbound.handle_tcp_with_dialer(session, dialer).await,
+            Self::Shadowsocks(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
+            Self::Trojan(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
+            Self::Vless(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
+            Self::Vmess(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
         }
     }
 }
@@ -186,30 +199,9 @@ impl Outbound for DirectOutbound {
 
     async fn handle_tcp(
         &self,
-        mut session: TcpOutboundSession,
+        session: TcpOutboundSession,
     ) -> Result<TcpOutboundOutcome, OutboundError> {
-        let mut upstream =
-            TcpStream::connect(session.target)
-                .await
-                .map_err(|error| OutboundError {
-                    stage: "outbound-connect",
-                    upstream: Some(session.target),
-                    message: format!("failed connecting TCP target {}: {error}", session.target),
-                })?;
-        let (client_to_upstream, upstream_to_client) =
-            io::copy_bidirectional(&mut session.downstream, &mut upstream)
-                .await
-                .map_err(|error| OutboundError {
-                    stage: "relay",
-                    upstream: Some(session.target),
-                    message: format!("TCP relay failed: {error}"),
-                })?;
-        Ok(TcpOutboundOutcome {
-            upstream: session.target,
-            client_to_upstream_bytes: client_to_upstream,
-            upstream_to_client_bytes: upstream_to_client,
-            close_reason: "normal",
-        })
+        self.handle_tcp_with_dialer(session, self).await
     }
 
     async fn handle_udp(
@@ -301,6 +293,77 @@ impl Outbound for DirectOutbound {
                     });
                 }
             }
+        }
+    }
+}
+
+impl DirectOutbound {
+    async fn handle_tcp_with_dialer<D>(
+        &self,
+        mut session: TcpOutboundSession,
+        dialer: &D,
+    ) -> Result<TcpOutboundOutcome, OutboundError>
+    where
+        D: TcpDialer,
+    {
+        let mut upstream = dialer
+            .dial_tcp(TcpDialTarget::Socket(session.target))
+            .await?;
+        let (client_to_upstream, upstream_to_client) =
+            io::copy_bidirectional(&mut session.downstream, &mut upstream)
+                .await
+                .map_err(|error| OutboundError {
+                    stage: "relay",
+                    upstream: Some(session.target),
+                    message: format!("TCP relay failed: {error}"),
+                })?;
+        Ok(TcpOutboundOutcome {
+            upstream: session.target,
+            client_to_upstream_bytes: client_to_upstream,
+            upstream_to_client_bytes: upstream_to_client,
+            close_reason: "normal",
+        })
+    }
+}
+
+impl TcpDialer for DirectOutbound {
+    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpStream, OutboundError> {
+        let upstream = target.upstream();
+        let label = target.label();
+        target.connect().await.map_err(|error| OutboundError {
+            stage: "outbound-connect",
+            upstream,
+            message: format!("failed dialing TCP target {label}: {error}"),
+        })
+    }
+}
+
+impl TcpDialTarget {
+    pub(crate) fn host(host: impl Into<String>, port: u16) -> Self {
+        Self::Host {
+            host: host.into(),
+            port,
+        }
+    }
+
+    fn upstream(&self) -> Option<SocketAddr> {
+        match self {
+            Self::Socket(address) => Some(*address),
+            Self::Host { .. } => None,
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Socket(address) => address.to_string(),
+            Self::Host { host, port } => format!("{host}:{port}"),
+        }
+    }
+
+    async fn connect(self) -> Result<TcpStream, std::io::Error> {
+        match self {
+            Self::Socket(address) => TcpStream::connect(address).await,
+            Self::Host { host, port } => TcpStream::connect((host.as_str(), port)).await,
         }
     }
 }

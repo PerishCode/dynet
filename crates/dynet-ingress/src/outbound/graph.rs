@@ -5,8 +5,8 @@ use dynet_runtime::SelectionDecision;
 use crate::OutboundConfig;
 
 use super::{
-    Outbound, OutboundError, OutboundMedium, TcpOutboundOutcome, TcpOutboundSession,
-    UdpOutboundAssociation, UdpOutboundOutcome,
+    DirectOutbound, Outbound, OutboundError, OutboundMedium, TcpOutboundOutcome,
+    TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -51,21 +51,34 @@ impl GraphOutbound {
         })
     }
 
-    fn validate_direct_tail(&self, decision: &SelectionDecision) -> Result<(), OutboundError> {
+    fn tcp_dialer_for_tail(
+        &self,
+        decision: &SelectionDecision,
+    ) -> Result<&DirectOutbound, OutboundError> {
         for hop in decision.trace.iter().skip(1) {
             let outbound = self.outbound_for_node(hop.node_id.as_str())?;
-            if !outbound.is_direct() {
+            if outbound.tcp_dialer().is_none() {
                 return Err(OutboundError {
                     stage: "outbound-select",
                     upstream: None,
                     message: format!(
-                        "TCP chained graph execution through non-direct node {} is not implemented",
+                        "TCP chained graph execution through node {} without TCP dialer is not implemented",
                         hop.node_id
                     ),
                 });
             }
         }
-        Ok(())
+        let tail = decision.trace.last().ok_or_else(|| chained_error("TCP"))?;
+        self.outbound_for_node(tail.node_id.as_str())?
+            .tcp_dialer()
+            .ok_or_else(|| OutboundError {
+                stage: "outbound-select",
+                upstream: None,
+                message: format!(
+                    "TCP chained graph tail node {} has no TCP dialer",
+                    tail.node_id
+                ),
+            })
     }
 }
 
@@ -89,8 +102,8 @@ impl Outbound for GraphOutbound {
             return outbound.handle_tcp(session).await;
         }
         if session.decision.terminal.kind() == "direct" {
-            self.validate_direct_tail(&session.decision)?;
-            return outbound.handle_tcp_direct(session).await;
+            let dialer = self.tcp_dialer_for_tail(&session.decision)?;
+            return outbound.handle_tcp_with_dialer(session, dialer).await;
         }
         Err(chained_error("TCP"))
     }

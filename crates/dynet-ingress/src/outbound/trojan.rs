@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::{net::TcpStream, sync::mpsc, time};
+use tokio::{sync::mpsc, time};
 
 use trojan_prototype::{
     Client as TrojanClient, ClientConfig as TrojanClientConfig, UdpReader as TrojanUdpReader,
@@ -8,8 +8,8 @@ use trojan_prototype::{
 
 use crate::{
     outbound::{
-        Outbound, OutboundError, TcpOutboundOutcome, TcpOutboundSession, UdpOutboundAssociation,
-        UdpOutboundOutcome,
+        DirectOutbound, Outbound, OutboundError, TcpDialTarget, TcpDialer, TcpOutboundOutcome,
+        TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, TrojanConfig,
 };
@@ -36,20 +36,20 @@ impl TrojanOutbound {
         "trojan"
     }
 
-    pub(super) async fn handle_tcp_via_direct(
+    pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
         session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
-        let upstream = TcpStream::connect((self.client.server_host(), self.client.server_port()))
-            .await
-            .map_err(|error| OutboundError {
-                stage: "outbound-connect",
-                upstream: None,
-                message: format!(
-                    "failed connecting Trojan server {} through direct dialer: {error}",
-                    self.client.server_endpoint()
-                ),
-            })?;
+        dialer: &D,
+    ) -> Result<TcpOutboundOutcome, OutboundError>
+    where
+        D: TcpDialer,
+    {
+        let upstream = dialer
+            .dial_tcp(TcpDialTarget::host(
+                self.client.server_host(),
+                self.client.server_port(),
+            ))
+            .await?;
         let outcome = self
             .client
             .relay_tcp_with_stream(session.downstream, session.target, upstream)
@@ -73,17 +73,7 @@ impl Outbound for TrojanOutbound {
         &self,
         session: TcpOutboundSession,
     ) -> Result<TcpOutboundOutcome, OutboundError> {
-        let outcome = self
-            .client
-            .relay_tcp(session.downstream, session.target)
-            .await
-            .map_err(|error| trojan_error(error, None))?;
-        Ok(TcpOutboundOutcome {
-            upstream: outcome.upstream,
-            client_to_upstream_bytes: outcome.client_to_upstream_bytes,
-            upstream_to_client_bytes: outcome.upstream_to_client_bytes,
-            close_reason: "normal",
-        })
+        self.handle_tcp_via_dialer(session, &DirectOutbound).await
     }
 
     async fn handle_udp(
