@@ -1,0 +1,38 @@
+minimumLimaVersion: "2.0.0"
+
+base:
+  - template:ubuntu-24.04
+
+vmType: "vz"
+cpus: 2
+memory: "2GiB"
+disk: "10GiB"
+
+containerd:
+  system: false
+  user: false
+
+hostResolver:
+  enabled: true
+
+mounts:
+  - location: "~"
+    writable: false
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+      install -d -m 0755 /etc/mihomo
+
+message: |
+  dynet lab VM is ready.
+
+  Host loopback services are reachable from the guest at 192.168.5.2 or
+  host.lima.internal on Lima's default user-mode network.
+
+  Next steps:
+    limactl copy docs/lab/mihomo-dynet.yaml dynet-lab:/tmp/mihomo-dynet.yaml
+    limactl shell dynet-lab sudo install -m 0644 /tmp/mihomo-dynet.yaml /etc/mihomo/dynet.yaml
+    limactl shell dynet-lab sudo mihomo -d /etc/mihomo -f /etc/mihomo/dynet.yaml

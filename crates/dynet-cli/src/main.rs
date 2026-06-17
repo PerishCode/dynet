@@ -1,7 +1,7 @@
-use std::{env, path::PathBuf};
+use std::{collections::BTreeMap, env, path::PathBuf};
 
 use dynet_cli::Args;
-use dynet_ingress::{IngressConfig, OutboundConfig};
+use dynet_ingress::{EgressNodeConfig, IngressConfig};
 use dynet_runtime::{RuntimeState, RuntimeStore};
 use dynet_state::AppState;
 use tokio::net::TcpListener;
@@ -18,14 +18,15 @@ async fn run() -> Result<(), String> {
     let args = Args::parse(env::args_os().skip(1))?;
     let state = AppState::from_config_path(args.config.as_deref())?;
     let ingress = state.config.ingress;
-    let outbound = state.config.outbound;
+    let execution_nodes = state.config.forwarding.execution_nodes.clone();
+    let runtime_seed = state.config.forwarding.seed;
     let store = RuntimeStore::open(runtime_db_path()?)
         .await
         .map_err(|error| format!("failed to open runtime store: {error}"))?;
-    let runtime = RuntimeState::from_store_seed(store, outbound.tag())
+    let runtime = RuntimeState::from_store_seed(store, runtime_seed)
         .await
         .map_err(|error| format!("failed to initialize runtime state: {error}"))?;
-    spawn_ingress(ingress, outbound, runtime.clone());
+    spawn_ingress(ingress, execution_nodes, runtime.clone());
     let listener = TcpListener::bind(state.config.control.bind)
         .await
         .map_err(|error| {
@@ -39,8 +40,8 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("failed to read control plane address: {error}"))?;
     eprintln!("dynet: control plane listening on http://{local_addr}/api/v1");
     eprintln!(
-        "dynet: ingress listening on dns={} tcp={} udp={}",
-        ingress.dns.bind, ingress.tcp.bind, ingress.udp.bind
+        "dynet: ingress listening on dns={} tcp={} udp={} socks5={}",
+        ingress.dns.bind, ingress.tcp.bind, ingress.udp.bind, ingress.socks5.bind
     );
     dynet_api::serve(listener, runtime)
         .await
@@ -59,14 +60,25 @@ fn runtime_db_path() -> Result<PathBuf, String> {
     }
 }
 
-fn spawn_ingress(config: IngressConfig, outbound: OutboundConfig, runtime: RuntimeState) {
+fn spawn_ingress(
+    config: IngressConfig,
+    execution_nodes: BTreeMap<String, EgressNodeConfig>,
+    runtime: RuntimeState,
+) {
     tokio::spawn(dynet_ingress::run_dns(config.dns, runtime.clone()));
-    tokio::spawn(dynet_ingress::run_tcp_with_outbound(
-        config.tcp,
-        outbound.clone(),
+    tokio::spawn(dynet_ingress::run_socks5_graph(
+        config.socks5,
+        execution_nodes.clone(),
         runtime.clone(),
     ));
-    tokio::spawn(dynet_ingress::run_udp_with_outbound(
-        config.udp, outbound, runtime,
+    tokio::spawn(dynet_ingress::run_tcp_graph(
+        config.tcp,
+        execution_nodes.clone(),
+        runtime.clone(),
+    ));
+    tokio::spawn(dynet_ingress::run_udp_graph(
+        config.udp,
+        execution_nodes,
+        runtime,
     ));
 }

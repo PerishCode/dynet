@@ -8,7 +8,7 @@ use tokio::{
     sync::{mpsc, Semaphore},
 };
 
-use crate::outbound::{Outbound, OutboundError, TcpOutboundSession, UdpOutboundAssociation};
+use crate::egress::{EgressError, EgressNode, TcpRelaySession, UdpDownstream, UdpRelayAssociation};
 use crate::{
     push_decision_fields, session_fields, IngressEventKind, TcpRelayConfig, UdpRelayConfig,
     DATAGRAM_LIMIT,
@@ -20,11 +20,11 @@ const UDP_CHANNEL_DEPTH: usize = 64;
 
 pub async fn run_tcp<O>(
     config: TcpRelayConfig,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
 ) -> Result<(), String>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     let listener = TcpListener::bind(config.bind)
         .await
@@ -38,14 +38,8 @@ where
         let Ok(permit) = capacity.clone().try_acquire_owned() else {
             let session_id = runtime.events().next_session_id();
             let target = config.upstream;
-            let mut fields = session_fields(
-                session_id,
-                TCP_INBOUND,
-                outbound.tag(),
-                peer,
-                target,
-                target,
-            );
+            let mut fields =
+                session_fields(session_id, TCP_INBOUND, egress.tag(), peer, target, target);
             fields.push(("errorStage", "inbound-capacity".to_string()));
             fields.push(("error", "TCP session limit reached".to_string()));
             fields.push(("maxSessions", config.max_sessions.to_string()));
@@ -54,7 +48,7 @@ where
             continue;
         };
         let runtime = runtime.clone();
-        let outbound = outbound.clone();
+        let egress = egress.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let session_id = runtime.events().next_session_id();
@@ -66,40 +60,30 @@ where
             }) {
                 Ok(decision) => decision,
                 Err(error) => {
-                    let mut fields = session_fields(
-                        session_id,
-                        TCP_INBOUND,
-                        outbound.tag(),
-                        peer,
-                        target,
-                        target,
-                    );
-                    fields.push(("errorStage", "outbound-select".to_string()));
+                    let mut fields =
+                        session_fields(session_id, TCP_INBOUND, egress.tag(), peer, target, target);
+                    fields.push(("errorStage", "egress-select".to_string()));
                     fields.push(("error", error.to_string()));
                     runtime.events().record(IngressEventKind::TcpError, fields);
                     return;
                 }
             };
-            let mut fields = session_fields(
-                session_id,
-                TCP_INBOUND,
-                outbound.tag(),
-                peer,
-                target,
-                target,
-            );
+            let node_protocol = egress.decision_tag(&decision);
+            let mut fields =
+                session_fields(session_id, TCP_INBOUND, node_protocol, peer, target, target);
             push_decision_fields(&mut fields, &decision);
             runtime.events().record(IngressEventKind::TcpAccept, fields);
-            let session = TcpOutboundSession {
+            let session = TcpRelaySession {
                 target,
                 downstream: client,
+                decision: decision.clone(),
             };
-            match outbound.handle_tcp(session).await {
+            match egress.handle_tcp(session).await {
                 Ok(outcome) => {
                     let mut fields = session_fields(
                         session_id,
                         TCP_INBOUND,
-                        outbound.tag(),
+                        node_protocol,
                         peer,
                         target,
                         outcome.upstream,
@@ -122,7 +106,7 @@ where
                         error_fields(
                             session_id,
                             TCP_INBOUND,
-                            outbound.tag(),
+                            node_protocol,
                             peer,
                             target,
                             error,
@@ -137,11 +121,11 @@ where
 
 pub async fn run_udp<O>(
     config: UdpRelayConfig,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
 ) -> Result<(), String>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     let socket = Arc::new(
         UdpSocket::bind(config.bind)
@@ -171,7 +155,7 @@ where
                         let mut fields = session_fields(
                             session_id,
                             UDP_INBOUND,
-                            outbound.tag(),
+                            egress.tag(),
                             peer,
                             target,
                             target,
@@ -195,12 +179,12 @@ where
                             let mut fields = session_fields(
                                 session_id,
                                 UDP_INBOUND,
-                                outbound.tag(),
+                                egress.tag(),
                                 peer,
                                 target,
                                 target,
                             );
-                            fields.push(("errorStage", "outbound-select".to_string()));
+                            fields.push(("errorStage", "egress-select".to_string()));
                             fields.push(("error", error.to_string()));
                             runtime.events().record(IngressEventKind::UdpError, fields);
                             continue;
@@ -209,13 +193,14 @@ where
                     let session = UdpSessionSender {
                         session_id,
                         decision: decision.clone(),
+                        node_protocol: egress.decision_tag(&decision),
                         tx,
                     };
                     sessions.insert(peer, session.clone());
                     spawn_udp_association(UdpAssociationTask {
                         peer,
                         config,
-                        outbound: outbound.clone(),
+                    egress: egress.clone(),
                         downstream: socket.clone(),
                         downstream_rx: rx,
                         complete_tx: complete_tx.clone(),
@@ -229,7 +214,7 @@ where
                 let mut fields = session_fields(
                     sender.session_id,
                     UDP_INBOUND,
-                    outbound.tag(),
+                    sender.node_protocol,
                     peer,
                     target,
                     target,
@@ -249,7 +234,7 @@ where
 struct UdpAssociationTask<O> {
     peer: SocketAddr,
     config: UdpRelayConfig,
-    outbound: O,
+    egress: O,
     downstream: Arc<UdpSocket>,
     downstream_rx: mpsc::Receiver<Vec<u8>>,
     complete_tx: mpsc::Sender<SocketAddr>,
@@ -260,13 +245,13 @@ struct UdpAssociationTask<O> {
 
 fn spawn_udp_association<O>(task: UdpAssociationTask<O>)
 where
-    O: Outbound,
+    O: EgressNode,
 {
     tokio::spawn(async move {
         let UdpAssociationTask {
             peer,
             config,
-            outbound,
+            egress,
             downstream,
             downstream_rx,
             complete_tx,
@@ -275,35 +260,30 @@ where
             runtime,
         } = task;
         let target = config.upstream;
-        let mut fields = session_fields(
-            session_id,
-            UDP_INBOUND,
-            outbound.tag(),
-            peer,
-            target,
-            target,
-        );
+        let node_protocol = egress.decision_tag(&decision);
+        let mut fields =
+            session_fields(session_id, UDP_INBOUND, node_protocol, peer, target, target);
         push_decision_fields(&mut fields, &decision);
         runtime
             .events()
             .record(IngressEventKind::UdpSessionStart, fields);
-        let association = UdpOutboundAssociation {
+        let association = UdpRelayAssociation {
             session_id,
             inbound: UDP_INBOUND,
             peer,
             target,
             idle_timeout: config.idle_timeout,
-            downstream,
+            downstream: UdpDownstream::Raw(downstream),
             downstream_rx,
             decision: decision.clone(),
             runtime: runtime.clone(),
         };
-        match outbound.handle_udp(association).await {
+        match egress.handle_udp(association).await {
             Ok(outcome) => {
                 let mut fields = session_fields(
                     session_id,
                     UDP_INBOUND,
-                    outbound.tag(),
+                    node_protocol,
                     peer,
                     target,
                     outcome.upstream,
@@ -320,21 +300,15 @@ where
                     error_fields(
                         session_id,
                         UDP_INBOUND,
-                        outbound.tag(),
+                        node_protocol,
                         peer,
                         target,
                         error,
                         Some(&decision),
                     ),
                 );
-                let mut fields = session_fields(
-                    session_id,
-                    UDP_INBOUND,
-                    outbound.tag(),
-                    peer,
-                    target,
-                    target,
-                );
+                let mut fields =
+                    session_fields(session_id, UDP_INBOUND, node_protocol, peer, target, target);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("closeReason", "error".to_string()));
                 runtime
@@ -349,14 +323,14 @@ where
 fn error_fields(
     session_id: u64,
     inbound: &'static str,
-    outbound: &'static str,
+    egress: &'static str,
     peer: SocketAddr,
     target: SocketAddr,
-    error: OutboundError,
+    error: EgressError,
     decision: Option<&SelectionDecision>,
 ) -> Vec<(&'static str, String)> {
     let upstream = error.upstream.unwrap_or(target);
-    let mut fields = session_fields(session_id, inbound, outbound, peer, target, upstream);
+    let mut fields = session_fields(session_id, inbound, egress, peer, target, upstream);
     if let Some(decision) = decision {
         push_decision_fields(&mut fields, decision);
     }
@@ -369,5 +343,6 @@ fn error_fields(
 struct UdpSessionSender {
     session_id: u64,
     decision: SelectionDecision,
+    node_protocol: &'static str,
     tx: mpsc::Sender<Vec<u8>>,
 }

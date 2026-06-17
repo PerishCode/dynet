@@ -1,24 +1,23 @@
-use std::net::SocketAddr;
+use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use dynet_runtime::{IngressEventKind, RuntimeState};
-use tokio::{net::UdpSocket, time};
+use dynet_runtime::{sniff_dns_query, sniff_dns_response, IngressEventKind, RuntimeState};
+use tokio::net::UdpSocket;
 
-mod dns;
+mod egress;
 mod inbound;
-mod outbound;
+mod socks;
 
-const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DATAGRAM_LIMIT: usize = 65_535;
 pub const DEFAULT_TCP_MAX_SESSIONS: usize = 1024;
 pub const DEFAULT_UDP_MAX_SESSIONS: usize = 1024;
+pub const DEFAULT_SOCKS5_MAX_SESSIONS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DnsRelayConfig {
     pub bind: SocketAddr,
-    pub upstream: SocketAddr,
-    pub timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -36,15 +35,24 @@ pub struct UdpRelayConfig {
     pub max_sessions: usize,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct Socks5IngressConfig {
+    pub bind: SocketAddr,
+    pub udp_advertise_ip: Option<IpAddr>,
+    pub idle_timeout: Duration,
+    pub max_sessions: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct IngressConfig {
     pub dns: DnsRelayConfig,
     pub tcp: TcpRelayConfig,
     pub udp: UdpRelayConfig,
+    pub socks5: Socks5IngressConfig,
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
-pub enum OutboundConfig {
+pub enum EgressNodeConfig {
     #[default]
     Direct,
     Shadowsocks(ShadowsocksConfig),
@@ -53,10 +61,10 @@ pub enum OutboundConfig {
     Vmess(VmessConfig),
 }
 
-impl OutboundConfig {
+impl EgressNodeConfig {
     pub fn tag(&self) -> &'static str {
         match self {
-            Self::Direct => outbound::DIRECT_OUTBOUND,
+            Self::Direct => egress::DIRECT_EGRESS,
             Self::Shadowsocks(_) => "ss",
             Self::Trojan(_) => "trojan",
             Self::Vless(_) => "vless",
@@ -118,8 +126,6 @@ impl Default for DnsRelayConfig {
     fn default() -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 1053)),
-            upstream: SocketAddr::from(([1, 1, 1, 1], 53)),
-            timeout: DNS_TIMEOUT,
         }
     }
 }
@@ -145,6 +151,17 @@ impl Default for UdpRelayConfig {
     }
 }
 
+impl Default for Socks5IngressConfig {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::from(([127, 0, 0, 1], 1080)),
+            udp_advertise_ip: None,
+            idle_timeout: UDP_IDLE_TIMEOUT,
+            max_sessions: DEFAULT_SOCKS5_MAX_SESSIONS,
+        }
+    }
+}
+
 pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<(), String> {
     let socket = UdpSocket::bind(config.bind)
         .await
@@ -156,43 +173,29 @@ pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<()
             .await
             .map_err(|error| format!("failed receiving DNS datagram: {error}"))?;
         let query = buffer[..size].to_vec();
-        let query_info = dns::sniff_query(&query);
-        let mut fields = vec![
-            ("peer", peer.to_string()),
-            ("upstream", config.upstream.to_string()),
-            ("bytes", size.to_string()),
-        ];
+        let query_info = sniff_dns_query(&query);
+        let mut fields = vec![("peer", peer.to_string()), ("bytes", size.to_string())];
         push_endpoint_fields(&mut fields, "peer", peer);
-        push_endpoint_fields(&mut fields, "upstream", config.upstream);
         if let Some(info) = &query_info {
             fields.push(("transactionId", info.transaction_id.to_string()));
             fields.push(("queryName", info.query_name.clone()));
             fields.push(("queryType", info.query_type.clone()));
         }
         runtime.events().record(IngressEventKind::DnsQuery, fields);
-        match resolve_dns(
-            &query,
-            config.upstream,
-            config.timeout,
-            runtime.clone(),
-            peer,
-        )
-        .await
-        {
-            Ok(response) => {
+        match runtime.resolve_dns_wire(query).await {
+            Ok(resolution) => {
+                runtime.events().record(
+                    IngressEventKind::DnsResponse,
+                    dns_response_fields(peer, &resolution),
+                );
                 socket
-                    .send_to(&response, peer)
+                    .send_to(&resolution.response, peer)
                     .await
                     .map_err(|error| format!("failed sending DNS response: {error}"))?;
             }
             Err(error) => {
-                let mut fields = vec![
-                    ("peer", peer.to_string()),
-                    ("upstream", config.upstream.to_string()),
-                    ("error", error),
-                ];
+                let mut fields = vec![("peer", peer.to_string()), ("error", error.to_string())];
                 push_endpoint_fields(&mut fields, "peer", peer);
-                push_endpoint_fields(&mut fields, "upstream", config.upstream);
                 runtime.events().record(IngressEventKind::DnsError, fields);
             }
         }
@@ -200,82 +203,114 @@ pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<()
 }
 
 pub async fn run_tcp(config: TcpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
-    run_tcp_with_outbound(config, OutboundConfig::Direct, runtime).await
+    run_tcp_with_egress(config, EgressNodeConfig::Direct, runtime).await
 }
 
 pub async fn run_udp(config: UdpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
-    run_udp_with_outbound(config, OutboundConfig::Direct, runtime).await
+    run_udp_with_egress(config, EgressNodeConfig::Direct, runtime).await
 }
 
-pub async fn run_tcp_with_outbound(
+pub async fn run_socks5(config: Socks5IngressConfig, runtime: RuntimeState) -> Result<(), String> {
+    run_socks5_with_egress(config, EgressNodeConfig::Direct, runtime).await
+}
+
+pub async fn run_tcp_with_egress(
     config: TcpRelayConfig,
-    outbound: OutboundConfig,
+    node_config: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
     inbound::run_tcp(
         config,
-        outbound::OutboundMedium::try_from(outbound)?,
+        egress::EgressMedium::try_from(node_config)?,
         runtime,
     )
     .await
 }
 
-pub async fn run_udp_with_outbound(
+pub async fn run_tcp_graph(
+    config: TcpRelayConfig,
+    egress_nodes: BTreeMap<String, EgressNodeConfig>,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    inbound::run_tcp(
+        config,
+        egress::GraphEgress::try_from(egress_nodes)?,
+        runtime,
+    )
+    .await
+}
+
+pub async fn run_udp_with_egress(
     config: UdpRelayConfig,
-    outbound: OutboundConfig,
+    node_config: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
     inbound::run_udp(
         config,
-        outbound::OutboundMedium::try_from(outbound)?,
+        egress::EgressMedium::try_from(node_config)?,
         runtime,
     )
     .await
 }
 
-async fn resolve_dns(
-    query: &[u8],
-    upstream: SocketAddr,
-    timeout: Duration,
+pub async fn run_udp_graph(
+    config: UdpRelayConfig,
+    egress_nodes: BTreeMap<String, EgressNodeConfig>,
     runtime: RuntimeState,
-    peer: SocketAddr,
-) -> Result<Vec<u8>, String> {
-    let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
-        .await
-        .map_err(|error| format!("failed to bind DNS upstream socket: {error}"))?;
-    socket
-        .send_to(query, upstream)
-        .await
-        .map_err(|error| format!("failed forwarding DNS query: {error}"))?;
-    let mut response = vec![0_u8; DATAGRAM_LIMIT];
-    let (size, source) = time::timeout(timeout, socket.recv_from(&mut response))
-        .await
-        .map_err(|_| "timed out waiting for DNS upstream response".to_string())?
-        .map_err(|error| format!("failed receiving DNS upstream response: {error}"))?;
-    runtime.events().record(
-        IngressEventKind::DnsResponse,
-        dns_response_fields(peer, upstream, source, &response[..size]),
-    );
-    response.truncate(size);
-    Ok(response)
+) -> Result<(), String> {
+    inbound::run_udp(
+        config,
+        egress::GraphEgress::try_from(egress_nodes)?,
+        runtime,
+    )
+    .await
+}
+
+pub async fn run_socks5_with_egress(
+    config: Socks5IngressConfig,
+    node_config: EgressNodeConfig,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    socks::run_socks5(
+        config,
+        egress::EgressMedium::try_from(node_config)?,
+        runtime,
+    )
+    .await
+}
+
+pub async fn run_socks5_graph(
+    config: Socks5IngressConfig,
+    egress_nodes: BTreeMap<String, EgressNodeConfig>,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    socks::run_socks5(
+        config,
+        egress::GraphEgress::try_from(egress_nodes)?,
+        runtime,
+    )
+    .await
 }
 
 fn dns_response_fields(
     peer: SocketAddr,
-    upstream: SocketAddr,
-    source: SocketAddr,
-    response: &[u8],
+    resolution: &dynet_runtime::DnsResolution,
 ) -> Vec<(&'static str, String)> {
     let mut fields = vec![
         ("peer", peer.to_string()),
-        ("upstream", upstream.to_string()),
-        ("source", source.to_string()),
-        ("bytes", response.len().to_string()),
+        ("upstreamId", resolution.upstream.id.to_string()),
+        ("upstream", resolution.upstream.address.to_string()),
+        ("source", resolution.source.to_string()),
+        ("bytes", resolution.response.len().to_string()),
     ];
     push_endpoint_fields(&mut fields, "peer", peer);
-    push_endpoint_fields(&mut fields, "upstream", upstream);
-    push_endpoint_fields(&mut fields, "source", source);
-    if let Some(info) = dns::sniff_response(response) {
+    push_endpoint_fields(&mut fields, "upstream", resolution.upstream.address);
+    push_endpoint_fields(&mut fields, "source", resolution.source);
+    if let Some(info) = resolution
+        .response_info
+        .clone()
+        .or_else(|| sniff_dns_response(&resolution.response))
+    {
         fields.push(("transactionId", info.transaction_id.to_string()));
         if let Some(query_name) = info.query_name {
             fields.push(("queryName", query_name));
@@ -284,7 +319,14 @@ fn dns_response_fields(
             fields.push(("queryType", query_type));
         }
         if !info.answer_ips.is_empty() {
-            fields.push(("answerIps", info.answer_ips.join(",")));
+            fields.push((
+                "answerIps",
+                info.answer_ips
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
         }
     }
     fields
@@ -293,7 +335,7 @@ fn dns_response_fields(
 pub(crate) fn session_fields(
     session_id: u64,
     inbound: &'static str,
-    outbound: &'static str,
+    node_protocol: &'static str,
     peer: SocketAddr,
     target: SocketAddr,
     upstream: SocketAddr,
@@ -301,7 +343,7 @@ pub(crate) fn session_fields(
     let mut fields = vec![
         ("sessionId", session_id.to_string()),
         ("inbound", inbound.to_string()),
-        ("outbound", outbound.to_string()),
+        ("nodeProtocol", node_protocol.to_string()),
         ("peer", peer.to_string()),
         ("target", target.to_string()),
         ("upstream", upstream.to_string()),
@@ -317,8 +359,44 @@ pub(crate) fn push_decision_fields(
     decision: &dynet_runtime::SelectionDecision,
 ) {
     fields.push(("decisionId", decision.decision_id.to_string()));
+    fields.push(("groupId", decision.group_id.to_string()));
+    if let Some(rule_id) = &decision.matched_rule_id {
+        fields.push(("matchedRuleId", rule_id.to_string()));
+    }
     fields.push(("nodeId", decision.node_id.to_string()));
+    fields.push(("groupNext", decision.next.label().to_string()));
+    fields.push((
+        "selectionTrace",
+        decision
+            .trace
+            .iter()
+            .map(|hop| hop.label())
+            .collect::<Vec<_>>()
+            .join("|"),
+    ));
+    fields.push((
+        "selectionGroups",
+        decision
+            .trace
+            .iter()
+            .map(|hop| hop.group_id.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    ));
+    fields.push((
+        "selectionNodes",
+        decision
+            .trace
+            .iter()
+            .map(|hop| hop.node_id.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    ));
+    fields.push(("terminalEgress", decision.terminal.label().to_string()));
+    fields.push(("terminalKind", decision.terminal.kind().to_string()));
     fields.push(("selectionReason", decision.reason.as_str().to_string()));
+    fields.push(("scheduler", decision.scheduler.as_str().to_string()));
+    fields.push(("candidateCount", decision.candidate_count.to_string()));
 }
 
 pub(crate) fn push_endpoint_fields(

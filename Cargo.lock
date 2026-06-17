@@ -485,7 +485,11 @@ dependencies = [
 name = "dynet-ingress"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "dynet-runtime",
+ "hkdf",
+ "md-5",
+ "sha1",
  "shadowsocks-prototype",
  "tokio",
  "trojan-prototype",
@@ -511,6 +515,7 @@ name = "dynet-state"
 version = "0.1.0"
 dependencies = [
  "dynet-ingress",
+ "dynet-runtime",
  "serde",
  "toml",
 ]

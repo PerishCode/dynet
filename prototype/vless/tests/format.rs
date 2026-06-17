@@ -1,8 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, net::TcpListener};
 use vless_prototype::{
-    read_udp_frame, tcp_header_for_test, udp_frame, udp_header_for_test, TargetAddress, TargetHost,
+    read_udp_frame, tcp_header_for_test, udp_frame, udp_header_for_test, Client, ClientConfig,
+    TargetAddress, TargetHost,
 };
 
 const UUID: &str = "00112233-4455-6677-8899-aabbccddeeff";
@@ -77,4 +78,45 @@ fn udp_frame_oversize() {
     let payload = vec![0_u8; 65536];
     let error = udp_frame(&payload).expect_err("oversized");
     assert_eq!(error.stage(), "outbound-protocol");
+}
+
+#[tokio::test]
+async fn reality_request_preconnected() {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind server");
+    let upstream_addr = listener.local_addr().expect("server addr");
+    let server = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+
+        let (mut stream, _) = listener.accept().await.expect("accept server");
+        let mut prefix = [0_u8; 1];
+        stream
+            .read_exact(&mut prefix)
+            .await
+            .expect("read request prefix");
+        prefix
+    });
+
+    let client = Client::try_new(ClientConfig {
+        server: upstream_addr.ip().to_string(),
+        port: upstream_addr.port(),
+        uuid: UUID.to_string(),
+        server_name: "example.com".to_string(),
+        public_key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI".to_string(),
+        short_id: "0123456789abcdef".to_string(),
+    })
+    .expect("client");
+    let upstream = tokio::net::TcpStream::connect(upstream_addr)
+        .await
+        .expect("connect upstream");
+    let relay = tokio::spawn(async move {
+        client
+            .connect_tcp_with_stream(upstream_addr, upstream)
+            .await
+    });
+
+    let prefix = server.await.expect("server task");
+    assert_eq!(prefix[0], 0x16);
+    let _ = relay.await.expect("relay task");
 }

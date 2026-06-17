@@ -1,0 +1,34 @@
+[control]
+bind = "127.0.0.1:9977"
+
+[ingress.dns]
+bind = "127.0.0.1:1053"
+
+[ingress.tcp]
+bind = "127.0.0.1:18080"
+upstream = "93.184.216.34:80"
+max_sessions = 1024
+
+[ingress.udp]
+bind = "127.0.0.1:18443"
+upstream = "1.1.1.1:443"
+idle_timeout_ms = 30000
+max_sessions = 1024
+
+[ingress.socks5]
+bind = "127.0.0.1:1080"
+udp_advertise_ip = "192.168.5.2"
+udp_idle_timeout_ms = 30000
+max_sessions = 1024
+
+[forwarding]
+default_group = "default"
+
+[[forwarding.nodes]]
+id = "direct-node"
+type = "direct"
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["direct-node"]

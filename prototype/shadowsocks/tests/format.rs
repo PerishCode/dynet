@@ -58,6 +58,47 @@ async fn tcp_header_layout() {
     relay_task.abort();
 }
 
+#[tokio::test]
+async fn tcp_header_preconnected() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server = listener.local_addr().unwrap();
+    let target = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(1, 2, 3, 4), 8388));
+
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut salt = [0_u8; AES_256_GCM_SALT_SIZE];
+        stream.read_exact(&mut salt).await.unwrap();
+
+        let mut encrypted_length = [0_u8; 2 + AEAD_TAG_SIZE];
+        stream.read_exact(&mut encrypted_length).await.unwrap();
+        let mut reader = AeadReader::new(&salt);
+        let length = reader.decrypt(&encrypted_length);
+        assert_eq!(length, 7_u16.to_be_bytes());
+
+        let mut encrypted_payload = vec![0_u8; 7 + AEAD_TAG_SIZE];
+        stream.read_exact(&mut encrypted_payload).await.unwrap();
+        let payload = reader.decrypt(&encrypted_payload);
+        assert_eq!(payload, vec![1, 1, 2, 3, 4, 0x20, 0xc4]);
+    });
+
+    let downstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let downstream_addr = downstream.local_addr().unwrap();
+    let downstream_client = TcpStream::connect(downstream_addr).await.unwrap();
+    let (downstream_server, _) = downstream.accept().await.unwrap();
+    let upstream = TcpStream::connect(server).await.unwrap();
+
+    let client = client(server);
+    let relay_task = tokio::spawn(async move {
+        let _ = client
+            .relay_tcp_with_stream(downstream_server, upstream, target)
+            .await;
+    });
+
+    server_task.await.unwrap();
+    drop(downstream_client);
+    relay_task.abort();
+}
+
 #[test]
 fn udp_ipv4_layout() {
     let client = client(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8388)));

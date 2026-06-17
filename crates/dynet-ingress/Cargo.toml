@@ -13,3 +13,9 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 trojan-prototype = { path = "../../prototype/trojan" }
 vless-prototype = { path = "../../prototype/vless" }
 vmess-prototype = { path = "../../prototype/vmess" }
+
+[dev-dependencies]
+aes-gcm = "0.10"
+hkdf = "0.12"
+md-5 = "0.10"
+sha1 = "0.10"

@@ -7,19 +7,19 @@ use vless_prototype::{
 };
 
 use crate::{
-    outbound::{
-        Outbound, OutboundError, TcpOutboundOutcome, TcpOutboundSession, UdpOutboundAssociation,
-        UdpOutboundOutcome,
+    egress::{
+        DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
+        TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, VlessConfig,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct VlessOutbound {
+pub(crate) struct VlessEgress {
     client: VlessClient,
 }
 
-impl VlessOutbound {
+impl VlessEgress {
     pub(crate) fn new(config: VlessConfig) -> Result<Self, String> {
         Ok(Self {
             client: VlessClient::try_new(VlessClientConfig {
@@ -37,42 +37,57 @@ impl VlessOutbound {
     fn tag(&self) -> &'static str {
         "vless"
     }
-}
 
-impl Outbound for VlessOutbound {
-    fn tag(&self) -> &'static str {
-        self.tag()
-    }
-
-    async fn handle_tcp(
+    pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
-        mut session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
+        mut session: TcpRelaySession,
+        dialer: &D,
+    ) -> Result<TcpRelayOutcome, EgressError>
+    where
+        D: TcpDialer,
+    {
+        let upstream = dialer
+            .dial_tcp(TcpDialTarget::host(
+                self.client.server_host(),
+                self.client.server_port(),
+            ))
+            .await?
+            .into_tcp_stream(self.tag())?;
         let (parts, mut upstream) = self
             .client
-            .connect_tcp_stream(session.target)
+            .connect_tcp_with_stream(session.target, upstream)
             .await
             .map_err(|error| vless_error(error, None))?;
         let (client_to_upstream, upstream_to_client) =
             io::copy_bidirectional(&mut session.downstream, &mut upstream)
                 .await
-                .map_err(|error| OutboundError {
+                .map_err(|error| EgressError {
                     stage: "relay",
                     upstream: Some(parts.upstream),
                     message: format!("VLESS TCP relay failed: {error}"),
                 })?;
-        Ok(TcpOutboundOutcome {
+        Ok(TcpRelayOutcome {
             upstream: parts.upstream,
             client_to_upstream_bytes: client_to_upstream,
             upstream_to_client_bytes: upstream_to_client,
             close_reason: "normal",
         })
     }
+}
+
+impl EgressNode for VlessEgress {
+    fn tag(&self) -> &'static str {
+        self.tag()
+    }
+
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
+        self.handle_tcp_via_dialer(session, &DirectEgress).await
+    }
 
     async fn handle_udp(
         &self,
-        mut association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        mut association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         let (parts, mut reader, mut writer) = self
             .client
             .connect_udp(association.target)
@@ -94,9 +109,9 @@ impl Outbound for VlessOutbound {
                 Ok(VlessUdpStep::Upstream(payload)) => {
                     association
                         .downstream
-                        .send_to(&payload, association.peer)
+                        .send_to_peer(&payload, association.peer)
                         .await
-                        .map_err(|error| OutboundError {
+                        .map_err(|error| EgressError {
                             stage: "inbound-write",
                             upstream: Some(parts.upstream),
                             message: format!("failed sending UDP downstream datagram: {error}"),
@@ -111,14 +126,17 @@ impl Outbound for VlessOutbound {
                     );
                     push_decision_fields(&mut fields, &association.decision);
                     fields.push(("direction", "upstream-to-client".to_string()));
-                    fields.push(("bytes", payload.len().to_string()));
+                    fields.push((
+                        "bytes",
+                        association.downstream.payload_len(&payload).to_string(),
+                    ));
                     association
                         .runtime
                         .events()
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(VlessUdpStep::Closed) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "inbound-closed",
                     });
@@ -127,7 +145,7 @@ impl Outbound for VlessOutbound {
                     return Err(vless_error(error, Some(parts.upstream)));
                 }
                 Err(_) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "idle-timeout",
                     });
@@ -137,8 +155,8 @@ impl Outbound for VlessOutbound {
     }
 }
 
-fn vless_error(error: vless_prototype::Error, upstream: Option<SocketAddr>) -> OutboundError {
-    OutboundError {
+fn vless_error(error: vless_prototype::Error, upstream: Option<SocketAddr>) -> EgressError {
+    EgressError {
         stage: error.stage(),
         upstream,
         message: error.to_string(),

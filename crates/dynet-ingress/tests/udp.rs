@@ -65,7 +65,7 @@ async fn relay_loop() {
         "udp"
     );
     assert_eq!(
-        event_field(&events, IngressEventKind::UdpSessionStart, "outbound"),
+        event_field(&events, IngressEventKind::UdpSessionStart, "nodeProtocol"),
         "direct"
     );
     assert_eq!(
@@ -74,7 +74,7 @@ async fn relay_loop() {
     );
     assert_eq!(
         event_field(&events, IngressEventKind::UdpSessionStart, "nodeId"),
-        "default"
+        "default-node"
     );
     assert_eq!(
         event_field(

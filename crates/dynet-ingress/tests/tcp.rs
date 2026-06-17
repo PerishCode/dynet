@@ -73,7 +73,7 @@ async fn relay_loop() {
         "tcp"
     );
     assert_eq!(
-        event_field(&events, IngressEventKind::TcpAccept, "outbound"),
+        event_field(&events, IngressEventKind::TcpAccept, "nodeProtocol"),
         "direct"
     );
     assert_eq!(
@@ -82,7 +82,19 @@ async fn relay_loop() {
     );
     assert_eq!(
         event_field(&events, IngressEventKind::TcpAccept, "nodeId"),
-        "default"
+        "default-node"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "selectionTrace"),
+        "default:default-node->direct"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "terminalEgress"),
+        "direct"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpAccept, "terminalKind"),
+        "direct"
     );
     assert_eq!(
         event_field(&events, IngressEventKind::TcpAccept, "selectionReason"),
@@ -234,10 +246,10 @@ async fn upstream_error_event() {
     assert!(kinds.contains(&IngressEventKind::TcpError));
     assert_eq!(
         event_field(&events, IngressEventKind::TcpError, "errorStage"),
-        "outbound-connect"
+        "egress-connect"
     );
     assert_eq!(
-        event_field(&events, IngressEventKind::TcpError, "outbound"),
+        event_field(&events, IngressEventKind::TcpError, "nodeProtocol"),
         "direct"
     );
 }

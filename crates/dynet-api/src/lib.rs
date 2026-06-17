@@ -9,8 +9,8 @@ pub const API_PREFIX: &str = "/api/v1";
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(health, list_events),
-    components(schemas(EventsResponse, HealthResponse)),
+    paths(health, list_events, list_observed_dns),
+    components(schemas(EventsResponse, HealthResponse, ObservedDnsEntry, ObservedDnsResponse)),
     tags((name = "health", description = "Control-plane liveness"))
 )]
 pub struct ApiDoc;
@@ -34,6 +34,19 @@ pub struct HealthResponse {
     pub api_version: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedDnsEntry {
+    pub domain: String,
+    pub answer_ips: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedDnsResponse {
+    pub entries: Vec<ObservedDnsEntry>,
+}
+
 impl HealthResponse {
     pub fn healthy() -> Self {
         Self {
@@ -52,6 +65,7 @@ impl ApiState {
 
 pub fn router(runtime: RuntimeState) -> Router {
     Router::new()
+        .route("/api/v1/dns/observed", get(list_observed_dns))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/health", get(health))
         .with_state(ApiState::new(runtime))
@@ -73,6 +87,31 @@ pub async fn list_events(State(state): State<ApiState>) -> Json<EventsResponse> 
     Json(EventsResponse {
         events: state.runtime.events().snapshot(),
     })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/dns/observed",
+    tag = "dns",
+    responses(
+        (status = 200, description = "Observed DNS answers", body = ObservedDnsResponse)
+    )
+)]
+pub async fn list_observed_dns(State(state): State<ApiState>) -> Json<ObservedDnsResponse> {
+    let entries = state
+        .runtime
+        .dns_map()
+        .snapshot()
+        .into_iter()
+        .map(|(domain, answer_ips)| ObservedDnsEntry {
+            domain,
+            answer_ips: answer_ips
+                .into_iter()
+                .map(|address| address.to_string())
+                .collect(),
+        })
+        .collect();
+    Json(ObservedDnsResponse { entries })
 }
 
 #[utoipa::path(
