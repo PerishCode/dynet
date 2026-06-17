@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use crate::{
-    push_decision_fields, session_fields, IngressEventKind, OutboundConfig, DATAGRAM_LIMIT,
+    push_decision_fields, session_fields, EgressNodeConfig, IngressEventKind, DATAGRAM_LIMIT,
 };
 
 mod graph;
@@ -19,17 +19,17 @@ mod udp_downstream;
 mod vless;
 mod vmess;
 
-pub(crate) use graph::GraphOutbound;
-use shadowsocks::ShadowsocksOutbound;
-use trojan::TrojanOutbound;
+pub(crate) use graph::GraphEgress;
+use shadowsocks::ShadowsocksEgress;
+use trojan::TrojanEgress;
 pub(crate) use udp_downstream::UdpDownstream;
-use vless::VlessOutbound;
-use vmess::VmessOutbound;
+use vless::VlessEgress;
+use vmess::VmessEgress;
 
-pub(crate) const DIRECT_OUTBOUND: &str = "direct";
+pub(crate) const DIRECT_EGRESS: &str = "direct";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct DirectOutbound;
+pub(crate) struct DirectEgress;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum TcpDialTarget {
@@ -38,14 +38,14 @@ pub(crate) enum TcpDialTarget {
 }
 
 #[derive(Debug)]
-pub(crate) struct TcpOutboundSession {
+pub(crate) struct TcpRelaySession {
     pub target: SocketAddr,
     pub downstream: TcpStream,
     pub decision: SelectionDecision,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct TcpOutboundOutcome {
+pub(crate) struct TcpRelayOutcome {
     pub upstream: SocketAddr,
     pub client_to_upstream_bytes: u64,
     pub upstream_to_client_bytes: u64,
@@ -53,7 +53,7 @@ pub(crate) struct TcpOutboundOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) struct UdpOutboundAssociation {
+pub(crate) struct UdpRelayAssociation {
     pub session_id: u64,
     pub inbound: &'static str,
     pub peer: SocketAddr,
@@ -66,19 +66,19 @@ pub(crate) struct UdpOutboundAssociation {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct UdpOutboundOutcome {
+pub(crate) struct UdpRelayOutcome {
     pub upstream: SocketAddr,
     pub close_reason: &'static str,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct OutboundError {
+pub(crate) struct EgressError {
     pub stage: &'static str,
     pub upstream: Option<SocketAddr>,
     pub message: String,
 }
 
-pub(crate) trait Outbound: Clone + Send + Sync + 'static {
+pub(crate) trait EgressNode: Clone + Send + Sync + 'static {
     fn tag(&self) -> &'static str;
 
     fn decision_tag(&self, _decision: &SelectionDecision) -> &'static str {
@@ -87,49 +87,49 @@ pub(crate) trait Outbound: Clone + Send + Sync + 'static {
 
     fn handle_tcp(
         &self,
-        session: TcpOutboundSession,
-    ) -> impl Future<Output = Result<TcpOutboundOutcome, OutboundError>> + Send;
+        session: TcpRelaySession,
+    ) -> impl Future<Output = Result<TcpRelayOutcome, EgressError>> + Send;
 
     fn handle_udp(
         &self,
-        association: UdpOutboundAssociation,
-    ) -> impl Future<Output = Result<UdpOutboundOutcome, OutboundError>> + Send;
+        association: UdpRelayAssociation,
+    ) -> impl Future<Output = Result<UdpRelayOutcome, EgressError>> + Send;
 }
 
 pub(crate) trait TcpDialer: Send + Sync {
     fn dial_tcp(
         &self,
         target: TcpDialTarget,
-    ) -> impl Future<Output = Result<TcpStream, OutboundError>> + Send;
+    ) -> impl Future<Output = Result<TcpStream, EgressError>> + Send;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum OutboundMedium {
-    Direct(DirectOutbound),
-    Shadowsocks(ShadowsocksOutbound),
-    Trojan(TrojanOutbound),
-    Vless(VlessOutbound),
-    Vmess(VmessOutbound),
+pub(crate) enum EgressMedium {
+    Direct(DirectEgress),
+    Shadowsocks(ShadowsocksEgress),
+    Trojan(TrojanEgress),
+    Vless(VlessEgress),
+    Vmess(VmessEgress),
 }
 
-impl TryFrom<OutboundConfig> for OutboundMedium {
+impl TryFrom<EgressNodeConfig> for EgressMedium {
     type Error = String;
 
-    fn try_from(config: OutboundConfig) -> Result<Self, Self::Error> {
+    fn try_from(config: EgressNodeConfig) -> Result<Self, Self::Error> {
         match config {
-            OutboundConfig::Direct => Ok(Self::Direct(DirectOutbound)),
-            OutboundConfig::Shadowsocks(config) => {
-                Ok(Self::Shadowsocks(ShadowsocksOutbound::new(config)?))
+            EgressNodeConfig::Direct => Ok(Self::Direct(DirectEgress)),
+            EgressNodeConfig::Shadowsocks(config) => {
+                Ok(Self::Shadowsocks(ShadowsocksEgress::new(config)?))
             }
-            OutboundConfig::Trojan(config) => Ok(Self::Trojan(TrojanOutbound::new(config))),
-            OutboundConfig::Vless(config) => Ok(Self::Vless(VlessOutbound::new(config)?)),
-            OutboundConfig::Vmess(config) => Ok(Self::Vmess(VmessOutbound::new(config)?)),
+            EgressNodeConfig::Trojan(config) => Ok(Self::Trojan(TrojanEgress::new(config))),
+            EgressNodeConfig::Vless(config) => Ok(Self::Vless(VlessEgress::new(config)?)),
+            EgressNodeConfig::Vmess(config) => Ok(Self::Vmess(VmessEgress::new(config)?)),
         }
     }
 }
 
-impl OutboundMedium {
-    pub(super) fn tcp_dialer(&self) -> Option<&DirectOutbound> {
+impl EgressMedium {
+    pub(super) fn tcp_dialer(&self) -> Option<&DirectEgress> {
         match self {
             Self::Direct(dialer) => Some(dialer),
             Self::Shadowsocks(_) | Self::Trojan(_) | Self::Vless(_) | Self::Vmess(_) => None,
@@ -138,88 +138,82 @@ impl OutboundMedium {
 
     pub(super) async fn handle_tcp_with_dialer<D>(
         &self,
-        session: TcpOutboundSession,
+        session: TcpRelaySession,
         dialer: &D,
-    ) -> Result<TcpOutboundOutcome, OutboundError>
+    ) -> Result<TcpRelayOutcome, EgressError>
     where
         D: TcpDialer,
     {
         match self {
-            Self::Direct(outbound) => outbound.handle_tcp_with_dialer(session, dialer).await,
-            Self::Shadowsocks(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
-            Self::Trojan(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
-            Self::Vless(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
-            Self::Vmess(outbound) => outbound.handle_tcp_via_dialer(session, dialer).await,
+            Self::Direct(egress) => egress.handle_tcp_with_dialer(session, dialer).await,
+            Self::Shadowsocks(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
+            Self::Trojan(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
+            Self::Vless(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
+            Self::Vmess(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
         }
     }
 }
 
-impl Outbound for OutboundMedium {
+impl EgressNode for EgressMedium {
     fn tag(&self) -> &'static str {
         match self {
-            Self::Direct(outbound) => outbound.tag(),
-            Self::Shadowsocks(outbound) => outbound.tag(),
-            Self::Trojan(outbound) => outbound.tag(),
-            Self::Vless(outbound) => outbound.tag(),
-            Self::Vmess(outbound) => outbound.tag(),
+            Self::Direct(egress) => egress.tag(),
+            Self::Shadowsocks(egress) => egress.tag(),
+            Self::Trojan(egress) => egress.tag(),
+            Self::Vless(egress) => egress.tag(),
+            Self::Vmess(egress) => egress.tag(),
         }
     }
 
-    async fn handle_tcp(
-        &self,
-        session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
         match self {
-            Self::Direct(outbound) => outbound.handle_tcp(session).await,
-            Self::Shadowsocks(outbound) => outbound.handle_tcp(session).await,
-            Self::Trojan(outbound) => outbound.handle_tcp(session).await,
-            Self::Vless(outbound) => outbound.handle_tcp(session).await,
-            Self::Vmess(outbound) => outbound.handle_tcp(session).await,
+            Self::Direct(egress) => egress.handle_tcp(session).await,
+            Self::Shadowsocks(egress) => egress.handle_tcp(session).await,
+            Self::Trojan(egress) => egress.handle_tcp(session).await,
+            Self::Vless(egress) => egress.handle_tcp(session).await,
+            Self::Vmess(egress) => egress.handle_tcp(session).await,
         }
     }
 
     async fn handle_udp(
         &self,
-        association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         match self {
-            Self::Direct(outbound) => outbound.handle_udp(association).await,
-            Self::Shadowsocks(outbound) => outbound.handle_udp(association).await,
-            Self::Trojan(outbound) => outbound.handle_udp(association).await,
-            Self::Vless(outbound) => outbound.handle_udp(association).await,
-            Self::Vmess(outbound) => outbound.handle_udp(association).await,
+            Self::Direct(egress) => egress.handle_udp(association).await,
+            Self::Shadowsocks(egress) => egress.handle_udp(association).await,
+            Self::Trojan(egress) => egress.handle_udp(association).await,
+            Self::Vless(egress) => egress.handle_udp(association).await,
+            Self::Vmess(egress) => egress.handle_udp(association).await,
         }
     }
 }
 
-impl Outbound for DirectOutbound {
+impl EgressNode for DirectEgress {
     fn tag(&self) -> &'static str {
-        DIRECT_OUTBOUND
+        DIRECT_EGRESS
     }
 
-    async fn handle_tcp(
-        &self,
-        session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
         self.handle_tcp_with_dialer(session, self).await
     }
 
     async fn handle_udp(
         &self,
-        mut association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        mut association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         let upstream_socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
             .await
-            .map_err(|error| OutboundError {
-                stage: "outbound-bind",
+            .map_err(|error| EgressError {
+                stage: "egress-bind",
                 upstream: None,
-                message: format!("failed to bind UDP outbound socket: {error}"),
+                message: format!("failed to bind UDP egress socket: {error}"),
             })?;
         upstream_socket
             .connect(association.target)
             .await
-            .map_err(|error| OutboundError {
-                stage: "outbound-connect",
+            .map_err(|error| EgressError {
+                stage: "egress-connect",
                 upstream: Some(association.target),
                 message: format!(
                     "failed connecting UDP target {}: {error}",
@@ -242,8 +236,8 @@ impl Outbound for DirectOutbound {
                     upstream_socket
                         .send(&payload)
                         .await
-                        .map_err(|error| OutboundError {
-                            stage: "outbound-write",
+                        .map_err(|error| EgressError {
+                            stage: "egress-write",
                             upstream: Some(association.target),
                             message: format!("failed sending UDP target datagram: {error}"),
                         })?;
@@ -253,7 +247,7 @@ impl Outbound for DirectOutbound {
                         .downstream
                         .send_to_peer(&buffer[..size], association.peer)
                         .await
-                        .map_err(|error| OutboundError {
+                        .map_err(|error| EgressError {
                             stage: "inbound-write",
                             upstream: Some(association.target),
                             message: format!("failed sending UDP downstream datagram: {error}"),
@@ -281,13 +275,13 @@ impl Outbound for DirectOutbound {
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(UdpStep::Closed) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: association.target,
                         close_reason: "inbound-closed",
                     });
                 }
                 Err(_) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: association.target,
                         close_reason: "idle-timeout",
                     });
@@ -297,12 +291,12 @@ impl Outbound for DirectOutbound {
     }
 }
 
-impl DirectOutbound {
+impl DirectEgress {
     async fn handle_tcp_with_dialer<D>(
         &self,
-        mut session: TcpOutboundSession,
+        mut session: TcpRelaySession,
         dialer: &D,
-    ) -> Result<TcpOutboundOutcome, OutboundError>
+    ) -> Result<TcpRelayOutcome, EgressError>
     where
         D: TcpDialer,
     {
@@ -312,12 +306,12 @@ impl DirectOutbound {
         let (client_to_upstream, upstream_to_client) =
             io::copy_bidirectional(&mut session.downstream, &mut upstream)
                 .await
-                .map_err(|error| OutboundError {
+                .map_err(|error| EgressError {
                     stage: "relay",
                     upstream: Some(session.target),
                     message: format!("TCP relay failed: {error}"),
                 })?;
-        Ok(TcpOutboundOutcome {
+        Ok(TcpRelayOutcome {
             upstream: session.target,
             client_to_upstream_bytes: client_to_upstream,
             upstream_to_client_bytes: upstream_to_client,
@@ -326,12 +320,12 @@ impl DirectOutbound {
     }
 }
 
-impl TcpDialer for DirectOutbound {
-    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpStream, OutboundError> {
+impl TcpDialer for DirectEgress {
+    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpStream, EgressError> {
         let upstream = target.upstream();
         let label = target.label();
-        target.connect().await.map_err(|error| OutboundError {
-            stage: "outbound-connect",
+        target.connect().await.map_err(|error| EgressError {
+            stage: "egress-connect",
             upstream,
             message: format!("failed dialing TCP target {label}: {error}"),
         })

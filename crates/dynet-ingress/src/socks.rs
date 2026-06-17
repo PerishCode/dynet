@@ -8,7 +8,7 @@ use tokio::{
 };
 
 use crate::{
-    outbound::{Outbound, TcpOutboundSession, UdpDownstream, UdpOutboundAssociation},
+    egress::{EgressNode, TcpRelaySession, UdpDownstream, UdpRelayAssociation},
     push_decision_fields, push_endpoint_fields, IngressEventKind, Socks5IngressConfig,
     DATAGRAM_LIMIT,
 };
@@ -16,7 +16,7 @@ use crate::{
 mod events;
 mod protocol;
 use events::{
-    base_socks_fields, outbound_error_fields, record_socks_error, socks_session_fields,
+    base_socks_fields, egress_error_fields, record_socks_error, socks_session_fields,
     SOCKS5_INBOUND,
 };
 use protocol::{
@@ -29,11 +29,11 @@ const UDP_CHANNEL_DEPTH: usize = 64;
 
 pub async fn run_socks5<O>(
     config: Socks5IngressConfig,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
 ) -> Result<(), String>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     let listener = TcpListener::bind(config.bind)
         .await
@@ -56,13 +56,13 @@ where
             drop(client);
             continue;
         };
-        let outbound = outbound.clone();
+        let egress = egress.clone();
         let runtime = runtime.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let session_id = runtime.events().next_session_id();
             if let Err(error) =
-                handle_client(client, peer, config, outbound, runtime.clone(), session_id).await
+                handle_client(client, peer, config, egress, runtime.clone(), session_id).await
             {
                 record_socks_error(
                     &runtime,
@@ -80,21 +80,21 @@ async fn handle_client<O>(
     mut client: TcpStream,
     peer: SocketAddr,
     config: Socks5IngressConfig,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
     session_id: u64,
 ) -> Result<(), SocksError>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     negotiate_no_auth(&mut client).await?;
     let request = read_request(&mut client).await?;
     match request.command {
         SOCKS_CMD_CONNECT => {
-            handle_connect(client, peer, outbound, runtime, session_id, request).await
+            handle_connect(client, peer, egress, runtime, session_id, request).await
         }
         SOCKS_CMD_UDP_ASSOCIATE => {
-            handle_udp_associate(client, peer, config, outbound, runtime, session_id).await
+            handle_udp_associate(client, peer, config, egress, runtime, session_id).await
         }
         SOCKS_CMD_BIND => {
             write_reply(
@@ -126,13 +126,13 @@ where
 async fn handle_connect<O>(
     mut client: TcpStream,
     peer: SocketAddr,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
     session_id: u64,
     request: SocksRequest,
 ) -> Result<(), SocksError>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     let target_context = resolve_destination(&runtime, &request.destination).await?;
     let target = target_context.address;
@@ -143,20 +143,30 @@ where
         SocketAddr::from(([0, 0, 0, 0], 0)),
     )
     .await?;
-    let outbound_tag = outbound.decision_tag(&decision);
-    let mut fields =
-        socks_session_fields(session_id, outbound_tag, peer, target, &request.destination);
+    let node_protocol = egress.decision_tag(&decision);
+    let mut fields = socks_session_fields(
+        session_id,
+        node_protocol,
+        peer,
+        target,
+        &request.destination,
+    );
     push_decision_fields(&mut fields, &decision);
     runtime.events().record(IngressEventKind::TcpAccept, fields);
-    let session = TcpOutboundSession {
+    let session = TcpRelaySession {
         target,
         downstream: client,
         decision: decision.clone(),
     };
-    match outbound.handle_tcp(session).await {
+    match egress.handle_tcp(session).await {
         Ok(outcome) => {
-            let mut fields =
-                socks_session_fields(session_id, outbound_tag, peer, target, &request.destination);
+            let mut fields = socks_session_fields(
+                session_id,
+                node_protocol,
+                peer,
+                target,
+                &request.destination,
+            );
             push_decision_fields(&mut fields, &decision);
             fields.push(("upstream", outcome.upstream.to_string()));
             push_endpoint_fields(&mut fields, "upstream", outcome.upstream);
@@ -175,9 +185,9 @@ where
         Err(error) => {
             runtime.events().record(
                 IngressEventKind::TcpError,
-                outbound_error_fields(
+                egress_error_fields(
                     session_id,
-                    outbound_tag,
+                    node_protocol,
                     peer,
                     target,
                     &request.destination,
@@ -194,12 +204,12 @@ async fn handle_udp_associate<O>(
     mut control: TcpStream,
     peer: SocketAddr,
     config: Socks5IngressConfig,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
     session_id: u64,
 ) -> Result<(), SocksError>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     let downstream = Arc::new(
         UdpSocket::bind(SocketAddr::new(config.bind.ip(), 0))
@@ -218,7 +228,7 @@ where
     let advertised_bind =
         SocketAddr::new(config.udp_advertise_ip.unwrap_or(bind.ip()), bind.port());
     write_reply(&mut control, SOCKS_REPLY_SUCCEEDED, advertised_bind).await?;
-    let mut fields = base_socks_fields(session_id, outbound.tag(), peer);
+    let mut fields = base_socks_fields(session_id, egress.tag(), peer);
     fields.push(("udpBind", advertised_bind.to_string()));
     fields.push(("udpListen", bind.to_string()));
     push_endpoint_fields(&mut fields, "upstream", advertised_bind);
@@ -228,7 +238,7 @@ where
     let completion = spawn_udp_control_watch(control);
     run_socks_udp_loop(SocksUdpLoop {
         downstream,
-        outbound,
+        egress,
         runtime,
         config,
         peer,
@@ -250,7 +260,7 @@ fn spawn_udp_control_watch(mut control: TcpStream) -> mpsc::Receiver<()> {
 
 struct SocksUdpLoop<O> {
     downstream: Arc<UdpSocket>,
-    outbound: O,
+    egress: O,
     runtime: RuntimeState,
     config: Socks5IngressConfig,
     peer: SocketAddr,
@@ -260,7 +270,7 @@ struct SocksUdpLoop<O> {
 
 async fn run_socks_udp_loop<O>(mut task: SocksUdpLoop<O>) -> Result<(), SocksError>
 where
-    O: Outbound,
+    O: EgressNode,
 {
     let mut associations = BTreeMap::<(SocketAddr, SocketAddr), UdpAssociationSender>::new();
     let (complete_tx, mut complete_rx) =
@@ -290,7 +300,7 @@ where
                         select_target(&task.runtime, task.session_id, InboundKind::Udp, target_context)?;
                     let (tx, rx) = mpsc::channel(UDP_CHANNEL_DEPTH);
                     let sender = UdpAssociationSender {
-                        outbound_tag: task.outbound.decision_tag(&decision),
+                        node_protocol: task.egress.decision_tag(&decision),
                         decision: decision.clone(),
                         tx,
                     };
@@ -305,14 +315,14 @@ where
                         session_id: task.session_id,
                         decision,
                         runtime: task.runtime.clone(),
-                        outbound: task.outbound.clone(),
+                        egress: task.egress.clone(),
                         idle_timeout: task.config.idle_timeout,
                     });
                     sender
                 };
                 let mut fields = socks_session_fields(
                     task.session_id,
-                    sender.outbound_tag,
+                    sender.node_protocol,
                     task.peer,
                     target,
                     &packet.destination,
@@ -340,13 +350,13 @@ struct SocksUdpAssociationTask<O> {
     session_id: u64,
     decision: dynet_runtime::SelectionDecision,
     runtime: RuntimeState,
-    outbound: O,
+    egress: O,
     idle_timeout: std::time::Duration,
 }
 
 fn spawn_socks_udp_association<O>(task: SocksUdpAssociationTask<O>)
 where
-    O: Outbound,
+    O: EgressNode,
 {
     tokio::spawn(async move {
         let SocksUdpAssociationTask {
@@ -359,11 +369,11 @@ where
             session_id,
             decision,
             runtime,
-            outbound,
+            egress,
             idle_timeout,
         } = task;
-        let outbound_tag = outbound.decision_tag(&decision);
-        let association = UdpOutboundAssociation {
+        let node_protocol = egress.decision_tag(&decision);
+        let association = UdpRelayAssociation {
             session_id,
             inbound: SOCKS5_INBOUND,
             peer: udp_peer,
@@ -377,10 +387,10 @@ where
             decision: decision.clone(),
             runtime: runtime.clone(),
         };
-        match outbound.handle_udp(association).await {
+        match egress.handle_udp(association).await {
             Ok(outcome) => {
                 let mut fields =
-                    socks_session_fields(session_id, outbound_tag, udp_peer, target, &destination);
+                    socks_session_fields(session_id, node_protocol, udp_peer, target, &destination);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("upstream", outcome.upstream.to_string()));
                 push_endpoint_fields(&mut fields, "upstream", outcome.upstream);
@@ -392,9 +402,9 @@ where
             Err(error) => {
                 runtime.events().record(
                     IngressEventKind::UdpError,
-                    outbound_error_fields(
+                    egress_error_fields(
                         session_id,
-                        outbound_tag,
+                        node_protocol,
                         udp_peer,
                         target,
                         &destination,
@@ -420,7 +430,7 @@ fn select_target(
             inbound,
             target,
         })
-        .map_err(|error| SocksError::new("outbound-select", error.to_string()))
+        .map_err(|error| SocksError::new("egress-select", error.to_string()))
 }
 
 async fn resolve_destination(
@@ -446,7 +456,7 @@ async fn resolve_destination(
 
 #[derive(Debug, Clone)]
 struct UdpAssociationSender {
-    outbound_tag: &'static str,
+    node_protocol: &'static str,
     decision: dynet_runtime::SelectionDecision,
     tx: mpsc::Sender<Vec<u8>>,
 }

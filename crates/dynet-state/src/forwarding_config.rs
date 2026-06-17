@@ -3,7 +3,7 @@ use std::{
     net::IpAddr,
 };
 
-use dynet_ingress::{OutboundConfig, ShadowsocksConfig, TrojanConfig, VlessConfig, VmessConfig};
+use dynet_ingress::{EgressNodeConfig, ShadowsocksConfig, TrojanConfig, VlessConfig, VmessConfig};
 use dynet_runtime::{
     EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember, NodeId, RouteMatcher, RouteRule,
     RuleId, RuntimeSeed, SchedulerPolicy,
@@ -150,14 +150,14 @@ fn build_graph(
 
 fn load_nodes(
     nodes: Vec<FileForwardNodeConfig>,
-) -> Result<(Vec<ForwardNode>, BTreeMap<String, OutboundConfig>), String> {
+) -> Result<(Vec<ForwardNode>, BTreeMap<String, EgressNodeConfig>), String> {
     let mut runtime_nodes = Vec::with_capacity(nodes.len());
     let mut node_execution_configs = BTreeMap::new();
     for node in nodes {
-        let (runtime_node, outbound) = node.load_execution_node()?;
+        let (runtime_node, node_config) = node.load_execution_node()?;
         let id = runtime_node.id.as_str().to_string();
         if node_execution_configs
-            .insert(id.clone(), outbound)
+            .insert(id.clone(), node_config)
             .is_some()
         {
             return Err(format!("forwarding node id {id:?} is duplicated"));
@@ -261,24 +261,24 @@ fn parse_ip_exact_rule(id: &str, value: &str) -> Result<RouteMatcher, String> {
 }
 
 impl FileForwardNodeConfig {
-    fn load_execution_node(self) -> Result<(ForwardNode, OutboundConfig), String> {
+    fn load_execution_node(self) -> Result<(ForwardNode, EgressNodeConfig), String> {
         let id = non_empty("forwarding.nodes[].id", self.id.clone())?;
         let enabled = self.enabled.unwrap_or(true);
         let tag = self.kind.clone();
-        let outbound = self.load_execution_config()?;
+        let node_config = self.load_execution_config()?;
         Ok((
             ForwardNode {
                 id: NodeId::new(id),
                 tag,
                 enabled,
             },
-            outbound,
+            node_config,
         ))
     }
 
-    fn load_execution_config(self) -> Result<OutboundConfig, String> {
+    fn load_execution_config(self) -> Result<EgressNodeConfig, String> {
         match self.kind.as_str() {
-            "direct" => Ok(OutboundConfig::Direct),
+            "direct" => Ok(EgressNodeConfig::Direct),
             "shadowsocks" | "ss" => self.load_shadowsocks(),
             "trojan" => self.load_trojan(),
             "vless" => self.load_vless(),
@@ -290,7 +290,7 @@ impl FileForwardNodeConfig {
         }
     }
 
-    fn load_shadowsocks(self) -> Result<OutboundConfig, String> {
+    fn load_shadowsocks(self) -> Result<EgressNodeConfig, String> {
         if self.udp != Some(true) {
             return Err(
                 "forwarding.nodes[].udp must be true for shadowsocks cold start".to_string(),
@@ -317,7 +317,7 @@ impl FileForwardNodeConfig {
         let password = self
             .password
             .ok_or_else(|| "forwarding.nodes[].password is required for shadowsocks".to_string())?;
-        Ok(OutboundConfig::Shadowsocks(ShadowsocksConfig {
+        Ok(EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
             server,
             port,
             method: parse_shadowsocks_method(&method)?,
@@ -325,7 +325,7 @@ impl FileForwardNodeConfig {
         }))
     }
 
-    fn load_trojan(self) -> Result<OutboundConfig, String> {
+    fn load_trojan(self) -> Result<EgressNodeConfig, String> {
         if self.udp != Some(true) {
             return Err("forwarding.nodes[].udp must be true for trojan cold start".to_string());
         }
@@ -348,7 +348,7 @@ impl FileForwardNodeConfig {
             }
             (None, None) => None,
         };
-        Ok(OutboundConfig::Trojan(TrojanConfig {
+        Ok(EgressNodeConfig::Trojan(TrojanConfig {
             server,
             port,
             password,
@@ -357,7 +357,7 @@ impl FileForwardNodeConfig {
         }))
     }
 
-    fn load_vmess(self) -> Result<OutboundConfig, String> {
+    fn load_vmess(self) -> Result<EgressNodeConfig, String> {
         if self.udp != Some(true) {
             return Err("forwarding.nodes[].udp must be true for vmess cold start".to_string());
         }
@@ -382,10 +382,10 @@ impl FileForwardNodeConfig {
         let uuid = self
             .uuid
             .ok_or_else(|| "forwarding.nodes[].uuid is required for vmess".to_string())?;
-        Ok(OutboundConfig::Vmess(VmessConfig { server, port, uuid }))
+        Ok(EgressNodeConfig::Vmess(VmessConfig { server, port, uuid }))
     }
 
-    fn load_vless(self) -> Result<OutboundConfig, String> {
+    fn load_vless(self) -> Result<EgressNodeConfig, String> {
         if self.udp != Some(true) {
             return Err("forwarding.nodes[].udp must be true for vless cold start".to_string());
         }
@@ -439,7 +439,7 @@ impl FileForwardNodeConfig {
         let short_id = reality_opts
             .short_id
             .ok_or_else(|| "forwarding.nodes[].reality-opts.short-id is required".to_string())?;
-        Ok(OutboundConfig::Vless(VlessConfig {
+        Ok(EgressNodeConfig::Vless(VlessConfig {
             server,
             port,
             uuid,

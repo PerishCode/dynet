@@ -7,7 +7,7 @@ use std::{
 };
 
 use dynet_ingress::{
-    DnsRelayConfig, IngressConfig, OutboundConfig, TcpRelayConfig, UdpRelayConfig,
+    DnsRelayConfig, EgressNodeConfig, IngressConfig, TcpRelayConfig, UdpRelayConfig,
 };
 use dynet_runtime::RuntimeSeed;
 use serde::Deserialize;
@@ -38,7 +38,7 @@ pub struct ControlConfig {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ForwardingConfig {
     pub seed: RuntimeSeed,
-    pub execution_nodes: BTreeMap<String, OutboundConfig>,
+    pub execution_nodes: BTreeMap<String, EgressNodeConfig>,
 }
 
 impl Default for Config {
@@ -56,7 +56,7 @@ impl Default for Config {
 impl Default for ForwardingConfig {
     fn default() -> Self {
         let mut execution_nodes = BTreeMap::new();
-        execution_nodes.insert("default-node".to_string(), OutboundConfig::Direct);
+        execution_nodes.insert("default-node".to_string(), EgressNodeConfig::Direct);
         Self {
             seed: RuntimeSeed::single_node("direct"),
             execution_nodes,

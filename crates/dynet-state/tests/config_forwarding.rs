@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use dynet_ingress::{OutboundConfig, ShadowsocksMethod};
+use dynet_ingress::{EgressNodeConfig, ShadowsocksMethod};
 use dynet_state::Config;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -32,14 +32,14 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Shadowsocks(outbound) = node_execution_config(&config, "default-node")
+    let EgressNodeConfig::Shadowsocks(node_config) = node_execution_config(&config, "default-node")
     else {
         panic!("expected shadowsocks node config");
     };
-    assert_eq!(outbound.server, "demo.example");
-    assert_eq!(outbound.port, 8388);
-    assert_eq!(outbound.method, ShadowsocksMethod::Aes256Gcm);
-    assert_eq!(outbound.password, "fake-password");
+    assert_eq!(node_config.server, "demo.example");
+    assert_eq!(node_config.port, 8388);
+    assert_eq!(node_config.method, ShadowsocksMethod::Aes256Gcm);
+    assert_eq!(node_config.password, "fake-password");
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -66,12 +66,12 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Shadowsocks(outbound) = node_execution_config(&config, "default-node")
+    let EgressNodeConfig::Shadowsocks(node_config) = node_execution_config(&config, "default-node")
     else {
         panic!("expected shadowsocks node config");
     };
-    assert_eq!(outbound.method, ShadowsocksMethod::Blake3Aes128Gcm2022);
-    assert_eq!(outbound.password, "AQIDBAUGBwgJCgsMDQ4PEA==");
+    assert_eq!(node_config.method, ShadowsocksMethod::Blake3Aes128Gcm2022);
+    assert_eq!(node_config.password, "AQIDBAUGBwgJCgsMDQ4PEA==");
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -99,14 +99,15 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Trojan(outbound) = node_execution_config(&config, "default-node") else {
+    let EgressNodeConfig::Trojan(node_config) = node_execution_config(&config, "default-node")
+    else {
         panic!("expected trojan node config");
     };
-    assert_eq!(outbound.server, "demo.example");
-    assert_eq!(outbound.port, 443);
-    assert_eq!(outbound.password, "fake-password");
-    assert_eq!(outbound.sni.as_deref(), Some("sni.example"));
-    assert!(outbound.skip_cert_verify);
+    assert_eq!(node_config.server, "demo.example");
+    assert_eq!(node_config.port, 443);
+    assert_eq!(node_config.password, "fake-password");
+    assert_eq!(node_config.sni.as_deref(), Some("sni.example"));
+    assert!(node_config.skip_cert_verify);
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -133,11 +134,12 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Trojan(outbound) = node_execution_config(&config, "default-node") else {
+    let EgressNodeConfig::Trojan(node_config) = node_execution_config(&config, "default-node")
+    else {
         panic!("expected trojan node config");
     };
-    assert_eq!(outbound.sni.as_deref(), Some("sni.example"));
-    assert!(!outbound.skip_cert_verify);
+    assert_eq!(node_config.sni.as_deref(), Some("sni.example"));
+    assert!(!node_config.skip_cert_verify);
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -165,12 +167,13 @@ udp = true
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Vmess(outbound) = node_execution_config(&config, "default-node") else {
+    let EgressNodeConfig::Vmess(node_config) = node_execution_config(&config, "default-node")
+    else {
         panic!("expected vmess node config");
     };
-    assert_eq!(outbound.server, "demo.example");
-    assert_eq!(outbound.port, 10086);
-    assert_eq!(outbound.uuid, "11111111-2222-3333-4444-555555555555");
+    assert_eq!(node_config.server, "demo.example");
+    assert_eq!(node_config.port, 10086);
+    assert_eq!(node_config.uuid, "11111111-2222-3333-4444-555555555555");
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -204,18 +207,19 @@ short-id = "0123456789abcdef"
 
     let config = Config::from_config_path(Some(&config_path)).expect("config loads");
 
-    let OutboundConfig::Vless(outbound) = node_execution_config(&config, "default-node") else {
+    let EgressNodeConfig::Vless(node_config) = node_execution_config(&config, "default-node")
+    else {
         panic!("expected vless node config");
     };
-    assert_eq!(outbound.server, "demo.example");
-    assert_eq!(outbound.port, 443);
-    assert_eq!(outbound.uuid, "11111111-2222-3333-4444-555555555555");
-    assert_eq!(outbound.server_name, "www.example.com");
+    assert_eq!(node_config.server, "demo.example");
+    assert_eq!(node_config.port, 443);
+    assert_eq!(node_config.uuid, "11111111-2222-3333-4444-555555555555");
+    assert_eq!(node_config.server_name, "www.example.com");
     assert_eq!(
-        outbound.public_key,
+        node_config.public_key,
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     );
-    assert_eq!(outbound.short_id, "0123456789abcdef");
+    assert_eq!(node_config.short_id, "0123456789abcdef");
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -348,7 +352,7 @@ members = ["default-node"]
     )
 }
 
-fn node_execution_config<'a>(config: &'a Config, id: &str) -> &'a OutboundConfig {
+fn node_execution_config<'a>(config: &'a Config, id: &str) -> &'a EgressNodeConfig {
     config
         .forwarding
         .execution_nodes

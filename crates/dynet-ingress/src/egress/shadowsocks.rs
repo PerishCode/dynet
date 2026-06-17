@@ -9,16 +9,16 @@ use crate::{
 };
 
 use super::{
-    udp_step, DirectOutbound, Outbound, OutboundError, TcpDialTarget, TcpDialer,
-    TcpOutboundOutcome, TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome, UdpStep,
+    udp_step, DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
+    TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome, UdpStep,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct ShadowsocksOutbound {
+pub(crate) struct ShadowsocksEgress {
     client: ShadowsocksClient,
 }
 
-impl ShadowsocksOutbound {
+impl ShadowsocksEgress {
     pub(super) fn new(config: ShadowsocksConfig) -> Result<Self, String> {
         Ok(Self {
             client: ShadowsocksClient::try_new(ClientConfig {
@@ -37,9 +37,9 @@ impl ShadowsocksOutbound {
 
     pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
-        session: TcpOutboundSession,
+        session: TcpRelaySession,
         dialer: &D,
-    ) -> Result<TcpOutboundOutcome, OutboundError>
+    ) -> Result<TcpRelayOutcome, EgressError>
     where
         D: TcpDialer,
     {
@@ -54,7 +54,7 @@ impl ShadowsocksOutbound {
             .relay_tcp_with_stream(session.downstream, upstream, session.target)
             .await
             .map_err(|error| shadowsocks_error(error, None))?;
-        Ok(TcpOutboundOutcome {
+        Ok(TcpRelayOutcome {
             upstream: outcome.upstream,
             client_to_upstream_bytes: outcome.client_to_upstream_bytes,
             upstream_to_client_bytes: outcome.upstream_to_client_bytes,
@@ -63,42 +63,39 @@ impl ShadowsocksOutbound {
     }
 }
 
-impl Outbound for ShadowsocksOutbound {
+impl EgressNode for ShadowsocksEgress {
     fn tag(&self) -> &'static str {
         self.tag()
     }
 
-    async fn handle_tcp(
-        &self,
-        session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
-        self.handle_tcp_via_dialer(session, &DirectOutbound).await
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
+        self.handle_tcp_via_dialer(session, &DirectEgress).await
     }
 
     async fn handle_udp(
         &self,
-        mut association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        mut association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         let upstream_socket = tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
             .await
-            .map_err(|error| OutboundError {
-                stage: "outbound-bind",
+            .map_err(|error| EgressError {
+                stage: "egress-bind",
                 upstream: None,
                 message: format!("failed to bind Shadowsocks UDP socket: {error}"),
             })?;
         upstream_socket
             .connect(self.client.server_endpoint())
             .await
-            .map_err(|error| OutboundError {
-                stage: "outbound-connect",
+            .map_err(|error| EgressError {
+                stage: "egress-connect",
                 upstream: None,
                 message: format!(
                     "failed connecting Shadowsocks UDP server {}: {error}",
                     self.client.server_endpoint()
                 ),
             })?;
-        let upstream = upstream_socket.peer_addr().map_err(|error| OutboundError {
-            stage: "outbound-connect",
+        let upstream = upstream_socket.peer_addr().map_err(|error| EgressError {
+            stage: "egress-connect",
             upstream: None,
             message: format!("failed reading Shadowsocks UDP server address: {error}"),
         })?;
@@ -122,8 +119,8 @@ impl Outbound for ShadowsocksOutbound {
                     upstream_socket
                         .send(&packet)
                         .await
-                        .map_err(|error| OutboundError {
-                            stage: "outbound-write",
+                        .map_err(|error| EgressError {
+                            stage: "egress-write",
                             upstream: Some(upstream),
                             message: format!("failed sending Shadowsocks UDP packet: {error}"),
                         })?;
@@ -138,13 +135,13 @@ impl Outbound for ShadowsocksOutbound {
                     .await?;
                 }
                 Ok(UdpStep::Closed) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream,
                         close_reason: "inbound-closed",
                     });
                 }
                 Err(_) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream,
                         close_reason: "idle-timeout",
                     });
@@ -154,14 +151,14 @@ impl Outbound for ShadowsocksOutbound {
     }
 }
 
-impl ShadowsocksOutbound {
+impl ShadowsocksEgress {
     async fn handle_udp_response(
         &self,
         udp_session: &mut UdpSession,
-        association: &UdpOutboundAssociation,
+        association: &UdpRelayAssociation,
         upstream: SocketAddr,
         packet: &[u8],
-    ) -> Result<(), OutboundError> {
+    ) -> Result<(), EgressError> {
         let payload = udp_session
             .decode_udp_datagram(packet)
             .map_err(|error| shadowsocks_error(error, Some(upstream)))?;
@@ -169,7 +166,7 @@ impl ShadowsocksOutbound {
             .downstream
             .send_to_peer(&payload, association.peer)
             .await
-            .map_err(|error| OutboundError {
+            .map_err(|error| EgressError {
                 stage: "inbound-write",
                 upstream: Some(upstream),
                 message: format!("failed sending UDP downstream datagram: {error}"),
@@ -206,8 +203,8 @@ fn shadowsocks_method(method: ShadowsocksMethod) -> Method {
 fn shadowsocks_error(
     error: shadowsocks_prototype::Error,
     upstream: Option<SocketAddr>,
-) -> OutboundError {
-    OutboundError {
+) -> EgressError {
+    EgressError {
         stage: error.stage(),
         upstream,
         message: error.to_string(),

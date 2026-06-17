@@ -7,19 +7,19 @@ use vless_prototype::{
 };
 
 use crate::{
-    outbound::{
-        DirectOutbound, Outbound, OutboundError, TcpDialTarget, TcpDialer, TcpOutboundOutcome,
-        TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome,
+    egress::{
+        DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
+        TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, VlessConfig,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct VlessOutbound {
+pub(crate) struct VlessEgress {
     client: VlessClient,
 }
 
-impl VlessOutbound {
+impl VlessEgress {
     pub(crate) fn new(config: VlessConfig) -> Result<Self, String> {
         Ok(Self {
             client: VlessClient::try_new(VlessClientConfig {
@@ -40,9 +40,9 @@ impl VlessOutbound {
 
     pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
-        mut session: TcpOutboundSession,
+        mut session: TcpRelaySession,
         dialer: &D,
-    ) -> Result<TcpOutboundOutcome, OutboundError>
+    ) -> Result<TcpRelayOutcome, EgressError>
     where
         D: TcpDialer,
     {
@@ -60,12 +60,12 @@ impl VlessOutbound {
         let (client_to_upstream, upstream_to_client) =
             io::copy_bidirectional(&mut session.downstream, &mut upstream)
                 .await
-                .map_err(|error| OutboundError {
+                .map_err(|error| EgressError {
                     stage: "relay",
                     upstream: Some(parts.upstream),
                     message: format!("VLESS TCP relay failed: {error}"),
                 })?;
-        Ok(TcpOutboundOutcome {
+        Ok(TcpRelayOutcome {
             upstream: parts.upstream,
             client_to_upstream_bytes: client_to_upstream,
             upstream_to_client_bytes: upstream_to_client,
@@ -74,22 +74,19 @@ impl VlessOutbound {
     }
 }
 
-impl Outbound for VlessOutbound {
+impl EgressNode for VlessEgress {
     fn tag(&self) -> &'static str {
         self.tag()
     }
 
-    async fn handle_tcp(
-        &self,
-        session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
-        self.handle_tcp_via_dialer(session, &DirectOutbound).await
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
+        self.handle_tcp_via_dialer(session, &DirectEgress).await
     }
 
     async fn handle_udp(
         &self,
-        mut association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        mut association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         let (parts, mut reader, mut writer) = self
             .client
             .connect_udp(association.target)
@@ -113,7 +110,7 @@ impl Outbound for VlessOutbound {
                         .downstream
                         .send_to_peer(&payload, association.peer)
                         .await
-                        .map_err(|error| OutboundError {
+                        .map_err(|error| EgressError {
                             stage: "inbound-write",
                             upstream: Some(parts.upstream),
                             message: format!("failed sending UDP downstream datagram: {error}"),
@@ -138,7 +135,7 @@ impl Outbound for VlessOutbound {
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(VlessUdpStep::Closed) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "inbound-closed",
                     });
@@ -147,7 +144,7 @@ impl Outbound for VlessOutbound {
                     return Err(vless_error(error, Some(parts.upstream)));
                 }
                 Err(_) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "idle-timeout",
                     });
@@ -157,8 +154,8 @@ impl Outbound for VlessOutbound {
     }
 }
 
-fn vless_error(error: vless_prototype::Error, upstream: Option<SocketAddr>) -> OutboundError {
-    OutboundError {
+fn vless_error(error: vless_prototype::Error, upstream: Option<SocketAddr>) -> EgressError {
+    EgressError {
         stage: error.stage(),
         upstream,
         message: error.to_string(),

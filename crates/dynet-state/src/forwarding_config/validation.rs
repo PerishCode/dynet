@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use dynet_ingress::OutboundConfig;
+use dynet_ingress::EgressNodeConfig;
 use dynet_runtime::{ForwardGroup, GroupMember};
 
 use super::FileGroupThresholds;
@@ -9,7 +9,7 @@ pub(super) fn validate_execution_node(
     default_group: &str,
     groups: &[ForwardGroup],
     group_members: &[GroupMember],
-    node_execution_configs: &BTreeMap<String, OutboundConfig>,
+    node_execution_configs: &BTreeMap<String, EgressNodeConfig>,
 ) -> Result<(), String> {
     let group = groups
         .iter()

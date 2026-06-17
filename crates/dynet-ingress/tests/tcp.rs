@@ -246,7 +246,7 @@ async fn upstream_error_event() {
     assert!(kinds.contains(&IngressEventKind::TcpError));
     assert_eq!(
         event_field(&events, IngressEventKind::TcpError, "errorStage"),
-        "outbound-connect"
+        "egress-connect"
     );
     assert_eq!(
         event_field(&events, IngressEventKind::TcpError, "nodeProtocol"),

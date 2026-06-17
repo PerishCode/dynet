@@ -7,19 +7,19 @@ use vmess_prototype::{
 };
 
 use crate::{
-    outbound::{
-        DirectOutbound, Outbound, OutboundError, TcpDialTarget, TcpDialer, TcpOutboundOutcome,
-        TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome,
+    egress::{
+        DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
+        TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, VmessConfig,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct VmessOutbound {
+pub(crate) struct VmessEgress {
     client: VmessClient,
 }
 
-impl VmessOutbound {
+impl VmessEgress {
     pub(crate) fn new(config: VmessConfig) -> Result<Self, String> {
         Ok(Self {
             client: VmessClient::try_new(VmessClientConfig {
@@ -37,9 +37,9 @@ impl VmessOutbound {
 
     pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
-        session: TcpOutboundSession,
+        session: TcpRelaySession,
         dialer: &D,
-    ) -> Result<TcpOutboundOutcome, OutboundError>
+    ) -> Result<TcpRelayOutcome, EgressError>
     where
         D: TcpDialer,
     {
@@ -54,7 +54,7 @@ impl VmessOutbound {
             .relay_tcp_with_stream(session.downstream, session.target, upstream)
             .await
             .map_err(|error| vmess_error(error, None))?;
-        Ok(TcpOutboundOutcome {
+        Ok(TcpRelayOutcome {
             upstream: outcome.upstream,
             client_to_upstream_bytes: outcome.client_to_upstream_bytes,
             upstream_to_client_bytes: outcome.upstream_to_client_bytes,
@@ -63,22 +63,19 @@ impl VmessOutbound {
     }
 }
 
-impl Outbound for VmessOutbound {
+impl EgressNode for VmessEgress {
     fn tag(&self) -> &'static str {
         self.tag()
     }
 
-    async fn handle_tcp(
-        &self,
-        session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
-        self.handle_tcp_via_dialer(session, &DirectOutbound).await
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
+        self.handle_tcp_via_dialer(session, &DirectEgress).await
     }
 
     async fn handle_udp(
         &self,
-        mut association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        mut association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         let (parts, mut reader, mut writer) = self
             .client
             .connect_udp(association.target)
@@ -102,7 +99,7 @@ impl Outbound for VmessOutbound {
                         .downstream
                         .send_to_peer(&payload, association.peer)
                         .await
-                        .map_err(|error| OutboundError {
+                        .map_err(|error| EgressError {
                             stage: "inbound-write",
                             upstream: Some(parts.upstream),
                             message: format!("failed sending UDP downstream datagram: {error}"),
@@ -127,7 +124,7 @@ impl Outbound for VmessOutbound {
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(VmessUdpStep::Closed) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "inbound-closed",
                     });
@@ -136,7 +133,7 @@ impl Outbound for VmessOutbound {
                     return Err(vmess_error(error, Some(parts.upstream)));
                 }
                 Err(_) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "idle-timeout",
                     });
@@ -146,8 +143,8 @@ impl Outbound for VmessOutbound {
     }
 }
 
-fn vmess_error(error: vmess_prototype::Error, upstream: Option<SocketAddr>) -> OutboundError {
-    OutboundError {
+fn vmess_error(error: vmess_prototype::Error, upstream: Option<SocketAddr>) -> EgressError {
+    EgressError {
         stage: error.stage(),
         upstream,
         message: error.to_string(),

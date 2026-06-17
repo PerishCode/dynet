@@ -7,19 +7,19 @@ use trojan_prototype::{
 };
 
 use crate::{
-    outbound::{
-        DirectOutbound, Outbound, OutboundError, TcpDialTarget, TcpDialer, TcpOutboundOutcome,
-        TcpOutboundSession, UdpOutboundAssociation, UdpOutboundOutcome,
+    egress::{
+        DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
+        TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, TrojanConfig,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct TrojanOutbound {
+pub(crate) struct TrojanEgress {
     client: TrojanClient,
 }
 
-impl TrojanOutbound {
+impl TrojanEgress {
     pub(super) fn new(config: TrojanConfig) -> Self {
         Self {
             client: TrojanClient::new(TrojanClientConfig {
@@ -38,9 +38,9 @@ impl TrojanOutbound {
 
     pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
-        session: TcpOutboundSession,
+        session: TcpRelaySession,
         dialer: &D,
-    ) -> Result<TcpOutboundOutcome, OutboundError>
+    ) -> Result<TcpRelayOutcome, EgressError>
     where
         D: TcpDialer,
     {
@@ -55,7 +55,7 @@ impl TrojanOutbound {
             .relay_tcp_with_stream(session.downstream, session.target, upstream)
             .await
             .map_err(|error| trojan_error(error, None))?;
-        Ok(TcpOutboundOutcome {
+        Ok(TcpRelayOutcome {
             upstream: outcome.upstream,
             client_to_upstream_bytes: outcome.client_to_upstream_bytes,
             upstream_to_client_bytes: outcome.upstream_to_client_bytes,
@@ -64,22 +64,19 @@ impl TrojanOutbound {
     }
 }
 
-impl Outbound for TrojanOutbound {
+impl EgressNode for TrojanEgress {
     fn tag(&self) -> &'static str {
         self.tag()
     }
 
-    async fn handle_tcp(
-        &self,
-        session: TcpOutboundSession,
-    ) -> Result<TcpOutboundOutcome, OutboundError> {
-        self.handle_tcp_via_dialer(session, &DirectOutbound).await
+    async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
+        self.handle_tcp_via_dialer(session, &DirectEgress).await
     }
 
     async fn handle_udp(
         &self,
-        mut association: UdpOutboundAssociation,
-    ) -> Result<UdpOutboundOutcome, OutboundError> {
+        mut association: UdpRelayAssociation,
+    ) -> Result<UdpRelayOutcome, EgressError> {
         let (parts, mut reader, mut writer) = self
             .client
             .connect_udp(association.target)
@@ -103,7 +100,7 @@ impl Outbound for TrojanOutbound {
                         .downstream
                         .send_to_peer(&payload, association.peer)
                         .await
-                        .map_err(|error| OutboundError {
+                        .map_err(|error| EgressError {
                             stage: "inbound-write",
                             upstream: Some(parts.upstream),
                             message: format!("failed sending UDP downstream datagram: {error}"),
@@ -128,7 +125,7 @@ impl Outbound for TrojanOutbound {
                         .record(IngressEventKind::UdpDatagram, fields);
                 }
                 Ok(TrojanUdpStep::Closed) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "inbound-closed",
                     });
@@ -137,7 +134,7 @@ impl Outbound for TrojanOutbound {
                     return Err(trojan_error(error, Some(parts.upstream)));
                 }
                 Err(_) => {
-                    return Ok(UdpOutboundOutcome {
+                    return Ok(UdpRelayOutcome {
                         upstream: parts.upstream,
                         close_reason: "idle-timeout",
                     });
@@ -147,8 +144,8 @@ impl Outbound for TrojanOutbound {
     }
 }
 
-fn trojan_error(error: trojan_prototype::Error, upstream: Option<SocketAddr>) -> OutboundError {
-    OutboundError {
+fn trojan_error(error: trojan_prototype::Error, upstream: Option<SocketAddr>) -> EgressError {
+    EgressError {
         stage: error.stage(),
         upstream,
         message: error.to_string(),

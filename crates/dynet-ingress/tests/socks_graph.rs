@@ -3,7 +3,7 @@ mod support;
 use std::{collections::BTreeMap, net::Ipv4Addr, time::Duration};
 
 use dynet_ingress::{
-    run_socks5_graph, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod, Socks5IngressConfig,
+    run_socks5_graph, EgressNodeConfig, ShadowsocksConfig, ShadowsocksMethod, Socks5IngressConfig,
     VlessConfig, VmessConfig,
 };
 use dynet_runtime::IngressEventKind;
@@ -20,16 +20,16 @@ async fn graph_chains_vmess_direct() {
 
     let bind = support::unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert(
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
         "routed-node".to_string(),
-        OutboundConfig::Vmess(VmessConfig {
+        EgressNodeConfig::Vmess(VmessConfig {
             server: vmess_addr.ip().to_string(),
             port: vmess_addr.port(),
             uuid: "11111111-2222-3333-4444-555555555555".to_string(),
         }),
     );
-    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -37,7 +37,7 @@ async fn graph_chains_vmess_direct() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
@@ -59,10 +59,10 @@ async fn graph_chains_vless_direct() {
 
     let bind = support::unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert(
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
         "routed-node".to_string(),
-        OutboundConfig::Vless(VlessConfig {
+        EgressNodeConfig::Vless(VlessConfig {
             server: vless_addr.ip().to_string(),
             port: vless_addr.port(),
             uuid: "00112233-4455-6677-8899-aabbccddeeff".to_string(),
@@ -71,7 +71,7 @@ async fn graph_chains_vless_direct() {
             short_id: "0123456789abcdef".to_string(),
         }),
     );
-    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -79,7 +79,7 @@ async fn graph_chains_vless_direct() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
@@ -114,9 +114,9 @@ async fn graph_chains_direct_dialer() {
     let bind = support::unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
     let events = runtime.events().clone();
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert("routed-node".to_string(), OutboundConfig::Direct);
-    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert("routed-node".to_string(), EgressNodeConfig::Direct);
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -124,7 +124,7 @@ async fn graph_chains_direct_dialer() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
@@ -153,11 +153,11 @@ async fn rejects_protocol_tail() {
     let bind = support::unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
     let events = runtime.events().clone();
-    let mut outbounds = BTreeMap::new();
+    let mut egress_nodes = BTreeMap::new();
     for node_id in ["routed-node", "egress-node"] {
-        outbounds.insert(
+        egress_nodes.insert(
             node_id.to_string(),
-            OutboundConfig::Shadowsocks(ShadowsocksConfig {
+            EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
                 server: "127.0.0.1".to_string(),
                 port: 9,
                 method: ShadowsocksMethod::Aes256Gcm,
@@ -172,7 +172,7 @@ async fn rejects_protocol_tail() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;

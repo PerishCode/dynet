@@ -5,8 +5,8 @@ use std::time::Duration;
 use dynet_runtime::{sniff_dns_query, sniff_dns_response, IngressEventKind, RuntimeState};
 use tokio::net::UdpSocket;
 
+mod egress;
 mod inbound;
-mod outbound;
 mod socks;
 
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,7 +52,7 @@ pub struct IngressConfig {
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
-pub enum OutboundConfig {
+pub enum EgressNodeConfig {
     #[default]
     Direct,
     Shadowsocks(ShadowsocksConfig),
@@ -61,10 +61,10 @@ pub enum OutboundConfig {
     Vmess(VmessConfig),
 }
 
-impl OutboundConfig {
+impl EgressNodeConfig {
     pub fn tag(&self) -> &'static str {
         match self {
-            Self::Direct => outbound::DIRECT_OUTBOUND,
+            Self::Direct => egress::DIRECT_EGRESS,
             Self::Shadowsocks(_) => "ss",
             Self::Trojan(_) => "trojan",
             Self::Vless(_) => "vless",
@@ -203,90 +203,75 @@ pub async fn run_dns(config: DnsRelayConfig, runtime: RuntimeState) -> Result<()
 }
 
 pub async fn run_tcp(config: TcpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
-    run_tcp_with_outbound(config, OutboundConfig::Direct, runtime).await
+    run_tcp_with_egress(config, EgressNodeConfig::Direct, runtime).await
 }
 
 pub async fn run_udp(config: UdpRelayConfig, runtime: RuntimeState) -> Result<(), String> {
-    run_udp_with_outbound(config, OutboundConfig::Direct, runtime).await
+    run_udp_with_egress(config, EgressNodeConfig::Direct, runtime).await
 }
 
 pub async fn run_socks5(config: Socks5IngressConfig, runtime: RuntimeState) -> Result<(), String> {
-    run_socks5_with_outbound(config, OutboundConfig::Direct, runtime).await
+    run_socks5_with_egress(config, EgressNodeConfig::Direct, runtime).await
 }
 
-pub async fn run_tcp_with_outbound(
+pub async fn run_tcp_with_egress(
     config: TcpRelayConfig,
-    outbound: OutboundConfig,
+    egress: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
-    inbound::run_tcp(
-        config,
-        outbound::OutboundMedium::try_from(outbound)?,
-        runtime,
-    )
-    .await
+    inbound::run_tcp(config, egress::EgressMedium::try_from(egress)?, runtime).await
 }
 
 pub async fn run_tcp_graph(
     config: TcpRelayConfig,
-    outbounds: BTreeMap<String, OutboundConfig>,
+    egress_nodes: BTreeMap<String, EgressNodeConfig>,
     runtime: RuntimeState,
 ) -> Result<(), String> {
     inbound::run_tcp(
         config,
-        outbound::GraphOutbound::try_from(outbounds)?,
+        egress::GraphEgress::try_from(egress_nodes)?,
         runtime,
     )
     .await
 }
 
-pub async fn run_udp_with_outbound(
+pub async fn run_udp_with_egress(
     config: UdpRelayConfig,
-    outbound: OutboundConfig,
+    egress: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
-    inbound::run_udp(
-        config,
-        outbound::OutboundMedium::try_from(outbound)?,
-        runtime,
-    )
-    .await
+    inbound::run_udp(config, egress::EgressMedium::try_from(egress)?, runtime).await
 }
 
 pub async fn run_udp_graph(
     config: UdpRelayConfig,
-    outbounds: BTreeMap<String, OutboundConfig>,
+    egress_nodes: BTreeMap<String, EgressNodeConfig>,
     runtime: RuntimeState,
 ) -> Result<(), String> {
     inbound::run_udp(
         config,
-        outbound::GraphOutbound::try_from(outbounds)?,
+        egress::GraphEgress::try_from(egress_nodes)?,
         runtime,
     )
     .await
 }
 
-pub async fn run_socks5_with_outbound(
+pub async fn run_socks5_with_egress(
     config: Socks5IngressConfig,
-    outbound: OutboundConfig,
+    egress: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
-    socks::run_socks5(
-        config,
-        outbound::OutboundMedium::try_from(outbound)?,
-        runtime,
-    )
-    .await
+    socks::run_socks5(config, egress::EgressMedium::try_from(egress)?, runtime).await
 }
 
 pub async fn run_socks5_graph(
     config: Socks5IngressConfig,
-    outbounds: BTreeMap<String, OutboundConfig>,
+    egress_nodes: BTreeMap<String, EgressNodeConfig>,
     runtime: RuntimeState,
 ) -> Result<(), String> {
     socks::run_socks5(
         config,
-        outbound::GraphOutbound::try_from(outbounds)?,
+        egress::GraphEgress::try_from(egress_nodes)?,
         runtime,
     )
     .await

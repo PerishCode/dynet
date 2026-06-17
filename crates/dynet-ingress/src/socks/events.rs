@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use dynet_runtime::RuntimeState;
 
 use crate::{
-    outbound::OutboundError, push_decision_fields, push_endpoint_fields, session_fields,
+    egress::EgressError, push_decision_fields, push_endpoint_fields, session_fields,
     IngressEventKind,
 };
 
@@ -30,13 +30,13 @@ pub(super) fn socks_session_fields(
     fields
 }
 
-pub(super) fn outbound_error_fields(
+pub(super) fn egress_error_fields(
     session_id: u64,
     node_protocol: &'static str,
     peer: SocketAddr,
     target: SocketAddr,
     destination: &SocksDestination,
-    error: OutboundError,
+    error: EgressError,
     decision: Option<&dynet_runtime::SelectionDecision>,
 ) -> Vec<(&'static str, String)> {
     let upstream = error.upstream.unwrap_or(target);

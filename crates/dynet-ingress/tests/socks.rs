@@ -7,7 +7,7 @@ use std::{
 };
 
 use dynet_ingress::{
-    run_socks5, run_socks5_graph, OutboundConfig, ShadowsocksConfig, ShadowsocksMethod,
+    run_socks5, run_socks5_graph, EgressNodeConfig, ShadowsocksConfig, ShadowsocksMethod,
     Socks5IngressConfig, TrojanConfig,
 };
 use dynet_runtime::{IngressEventKind, RuntimeState};
@@ -152,8 +152,8 @@ async fn graph_routes_node() {
     let bind = unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
     let events = runtime.events().clone();
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert("routed-node".to_string(), OutboundConfig::Direct);
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert("routed-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -161,7 +161,7 @@ async fn graph_routes_node() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
@@ -197,17 +197,17 @@ async fn graph_chains_shadowsocks_direct() {
 
     let bind = unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert(
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
         "routed-node".to_string(),
-        OutboundConfig::Shadowsocks(ShadowsocksConfig {
+        EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
             server: ss_addr.ip().to_string(),
             port: ss_addr.port(),
             method: ShadowsocksMethod::Aes256Gcm,
             password: "fake-password".to_string(),
         }),
     );
-    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -215,7 +215,7 @@ async fn graph_chains_shadowsocks_direct() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;
@@ -237,10 +237,10 @@ async fn graph_chains_trojan_direct() {
 
     let bind = unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
-    let mut outbounds = BTreeMap::new();
-    outbounds.insert(
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
         "routed-node".to_string(),
-        OutboundConfig::Trojan(TrojanConfig {
+        EgressNodeConfig::Trojan(TrojanConfig {
             server: trojan_addr.ip().to_string(),
             port: trojan_addr.port(),
             password: "secret".to_string(),
@@ -248,7 +248,7 @@ async fn graph_chains_trojan_direct() {
             skip_cert_verify: true,
         }),
     );
-    outbounds.insert("egress-node".to_string(), OutboundConfig::Direct);
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -256,7 +256,7 @@ async fn graph_chains_trojan_direct() {
             idle_timeout: Duration::from_secs(2),
             max_sessions: 16,
         },
-        outbounds,
+        egress_nodes,
         runtime,
     ));
     time::sleep(Duration::from_millis(25)).await;

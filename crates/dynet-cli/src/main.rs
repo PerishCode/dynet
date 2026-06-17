@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, env, path::PathBuf};
 
 use dynet_cli::Args;
-use dynet_ingress::{IngressConfig, OutboundConfig};
+use dynet_ingress::{EgressNodeConfig, IngressConfig};
 use dynet_runtime::{RuntimeState, RuntimeStore};
 use dynet_state::AppState;
 use tokio::net::TcpListener;
@@ -62,7 +62,7 @@ fn runtime_db_path() -> Result<PathBuf, String> {
 
 fn spawn_ingress(
     config: IngressConfig,
-    execution_nodes: BTreeMap<String, OutboundConfig>,
+    execution_nodes: BTreeMap<String, EgressNodeConfig>,
     runtime: RuntimeState,
 ) {
     tokio::spawn(dynet_ingress::run_dns(config.dns, runtime.clone()));
