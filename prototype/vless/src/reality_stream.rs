@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::net::TcpStream;
 
 use crate::reality::{feed_reality_client_connection, RealityClientConnection};
 use crate::sync_adapter::{SyncReadAdapter, SyncWriteAdapter};
@@ -42,14 +41,14 @@ impl StreamState {
     }
 }
 
-pub(crate) struct RealityStream {
-    io: TcpStream,
+pub(crate) struct RealityStream<IO = tokio::net::TcpStream> {
+    io: IO,
     session: RealityClientConnection,
     state: StreamState,
     need_flush: bool,
 }
 
-impl std::fmt::Debug for RealityStream {
+impl<IO> std::fmt::Debug for RealityStream<IO> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RealityStream")
@@ -59,8 +58,11 @@ impl std::fmt::Debug for RealityStream {
     }
 }
 
-impl RealityStream {
-    pub(crate) fn new(io: TcpStream, session: RealityClientConnection) -> Self {
+impl<IO> RealityStream<IO>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    pub(crate) fn new(io: IO, session: RealityClientConnection) -> Self {
         debug_assert!(!session.is_handshaking());
         Self {
             io,
@@ -70,7 +72,7 @@ impl RealityStream {
         }
     }
 
-    pub(crate) fn into_inner(self) -> (TcpStream, RealityClientConnection) {
+    pub(crate) fn into_inner(self) -> (IO, RealityClientConnection) {
         (self.io, self.session)
     }
 
@@ -121,7 +123,7 @@ impl RealityStream {
 
 pub(crate) async fn perform_reality_handshake(
     session: &mut RealityClientConnection,
-    stream: &mut TcpStream,
+    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
 ) -> io::Result<()> {
     let mut read_buffer = vec![0_u8; HANDSHAKE_BUFFER_SIZE];
     let mut iteration = 0_u16;
@@ -175,7 +177,10 @@ pub(crate) async fn perform_reality_handshake(
     stream.flush().await
 }
 
-impl AsyncRead for RealityStream {
+impl<IO> AsyncRead for RealityStream<IO>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -244,7 +249,10 @@ impl AsyncRead for RealityStream {
     }
 }
 
-impl AsyncWrite for RealityStream {
+impl<IO> AsyncWrite for RealityStream<IO>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

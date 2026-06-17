@@ -1,7 +1,7 @@
 use std::{fmt, io::ErrorKind, net::SocketAddr};
 
 use tokio::{
-    io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
+    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
 };
 use uuid::Uuid;
@@ -137,7 +137,7 @@ impl Client {
         &self,
         downstream: TcpStream,
         target: SocketAddr,
-        mut upstream: TcpStream,
+        upstream: TcpStream,
     ) -> Result<TcpRelayOutcome, Error> {
         let upstream_addr = upstream.peer_addr().map_err(|error| {
             Error::new(
@@ -145,6 +145,21 @@ impl Client {
                 format!("failed reading VMess server address: {error}"),
             )
         })?;
+        self.relay_tcp_with_io(downstream, upstream_addr, upstream, target)
+            .await
+    }
+
+    pub async fn relay_tcp_with_io<D, U>(
+        &self,
+        downstream: D,
+        upstream_addr: SocketAddr,
+        mut upstream: U,
+        target: SocketAddr,
+    ) -> Result<TcpRelayOutcome, Error>
+    where
+        D: AsyncRead + AsyncWrite + Unpin,
+        U: AsyncRead + AsyncWrite + Unpin,
+    {
         let context = protocol::request_context();
         upstream
             .write_all(&protocol::request(
@@ -161,7 +176,7 @@ impl Client {
                 )
             })?;
 
-        let (downstream_rx, mut downstream_tx) = downstream.into_split();
+        let (downstream_rx, mut downstream_tx) = io::split(downstream);
         let (upstream_rx, upstream_tx) = io::split(upstream);
         let mut writer = VmessWriter::new(upstream_tx, context.request_key, context.request_iv);
         let mut reader = VmessReader::new(upstream_rx, &context);

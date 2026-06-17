@@ -6,7 +6,10 @@ use dynet_ingress::{
     run_socks5_graph, EgressNodeConfig, ShadowsocksConfig, ShadowsocksMethod, Socks5IngressConfig,
     TrojanConfig, VlessConfig, VmessConfig,
 };
-use dynet_runtime::IngressEventKind;
+use dynet_runtime::{
+    ForwardGroup, ForwardNode, GroupId, GroupMember, IngressEventKind, NextRef, NodeId,
+    SchedulerPolicy,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -209,7 +212,8 @@ async fn graph_uses_ss_dialer() {
 }
 
 #[tokio::test]
-async fn rejects_non_dialer_tail() {
+async fn graph_uses_trojan_dialer() {
+    let (trojan_addr, trojan_task) = support::spawn_tcp_prefix_server::<1>().await;
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = support::unused_tcp_addr().await;
@@ -219,14 +223,174 @@ async fn rejects_non_dialer_tail() {
     egress_nodes.insert(
         "routed-node".to_string(),
         EgressNodeConfig::Trojan(TrojanConfig {
-            server: "127.0.0.1".to_string(),
-            port: 9,
+            server: trojan_addr.ip().to_string(),
+            port: trojan_addr.port(),
             password: "fake-password".to_string(),
-            sni: None,
+            sni: Some("example.com".to_string()),
             skip_cert_verify: true,
         }),
     );
     egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        egress_nodes,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+    let mut response = Vec::new();
+    let _ = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response)).await;
+
+    let prefix = time::timeout(Duration::from_secs(2), trojan_task)
+        .await
+        .expect("trojan server timeout")
+        .expect("trojan task");
+    assert_eq!(prefix[0], 0x16);
+    let _ = support::wait_for_event(&events, IngressEventKind::TcpError).await;
+    assert!(
+        !support::event_field(&events, IngressEventKind::TcpError, "error")
+            .contains("without TCP dialer")
+    );
+}
+
+#[tokio::test]
+async fn graph_uses_vmess_dialer() {
+    let (vmess_addr, vmess_task) = support::spawn_tcp_prefix_server::<16>().await;
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
+        "routed-node".to_string(),
+        EgressNodeConfig::Vmess(VmessConfig {
+            server: vmess_addr.ip().to_string(),
+            port: vmess_addr.port(),
+            uuid: "11111111-2222-3333-4444-555555555555".to_string(),
+        }),
+    );
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        egress_nodes,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+    let mut response = Vec::new();
+    let _ = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response)).await;
+
+    let prefix = time::timeout(Duration::from_secs(2), vmess_task)
+        .await
+        .expect("vmess server timeout")
+        .expect("vmess task");
+    assert_ne!(prefix, [0_u8; 16]);
+    let _ = support::wait_for_event(&events, IngressEventKind::TcpError).await;
+    assert!(
+        !support::event_field(&events, IngressEventKind::TcpError, "error")
+            .contains("without TCP dialer")
+    );
+}
+
+#[tokio::test]
+async fn graph_uses_vless_dialer() {
+    let (vless_addr, reality_task) = support::spawn_tcp_prefix_server::<1>().await;
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
+        "routed-node".to_string(),
+        EgressNodeConfig::Vless(VlessConfig {
+            server: vless_addr.ip().to_string(),
+            port: vless_addr.port(),
+            uuid: "00112233-4455-6677-8899-aabbccddeeff".to_string(),
+            server_name: "example.com".to_string(),
+            public_key: "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI".to_string(),
+            short_id: "0123456789abcdef".to_string(),
+        }),
+    );
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        egress_nodes,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+    let mut response = Vec::new();
+    let _ = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response)).await;
+
+    let prefix = time::timeout(Duration::from_secs(2), reality_task)
+        .await
+        .expect("vless server timeout")
+        .expect("vless task");
+    assert_eq!(prefix[0], 0x16);
+    let _ = support::wait_for_event(&events, IngressEventKind::TcpError).await;
+    assert!(
+        !support::event_field(&events, IngressEventKind::TcpError, "error")
+            .contains("without TCP dialer")
+    );
+}
+
+#[tokio::test]
+async fn rejects_extra_tcp_hop() {
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+    let mut seed = support::chained_route_seed(dns_addr);
+    for group in &mut seed.groups {
+        if group.id.as_str() == "egress" {
+            group.next = NextRef::named("third");
+        }
+    }
+    seed.nodes.push(ForwardNode {
+        id: NodeId::new("third-node"),
+        tag: "direct".to_string(),
+        enabled: true,
+    });
+    seed.groups.push(ForwardGroup {
+        id: GroupId::new("third"),
+        enabled: true,
+        scheduler: SchedulerPolicy::SingleFirstEnabled,
+        next: NextRef::direct_audit_outlet(),
+    });
+    seed.group_members.push(GroupMember {
+        group_id: GroupId::new("third"),
+        node_id: NodeId::new("third-node"),
+        enabled: true,
+        priority: 0,
+    });
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(seed).await;
+    let events = runtime.events().clone();
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert("routed-node".to_string(), EgressNodeConfig::Direct);
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
+    egress_nodes.insert("third-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -251,11 +415,11 @@ async fn rejects_non_dialer_tail() {
     let _ = support::wait_for_event(&events, IngressEventKind::TcpError).await;
     assert_eq!(
         support::event_field(&events, IngressEventKind::TcpError, "selectionGroups"),
-        "routed,egress"
+        "routed,egress,third"
     );
     assert!(
         support::event_field(&events, IngressEventKind::TcpError, "error")
-            .contains("dialer node routed-node has no TCP dialer")
+            .contains("supports exactly one dialer hop")
     );
 }
 

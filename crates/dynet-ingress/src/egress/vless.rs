@@ -8,8 +8,8 @@ use vless_prototype::{
 
 use crate::{
     egress::{
-        DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
-        TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
+        DirectEgress, EgressError, EgressNode, TcpDialConnection, TcpDialTarget, TcpDialer,
+        TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, VlessConfig,
 };
@@ -51,11 +51,12 @@ impl VlessEgress {
                 self.client.server_host(),
                 self.client.server_port(),
             ))
-            .await?
-            .into_tcp_stream(self.tag())?;
+            .await?;
+        let upstream_addr = upstream.upstream();
+        let upstream = upstream.into_io();
         let (parts, mut upstream) = self
             .client
-            .connect_tcp_with_stream(session.target, upstream)
+            .connect_tcp_with_io(session.target, upstream_addr, upstream)
             .await
             .map_err(|error| vless_error(error, None))?;
         let (client_to_upstream, upstream_to_client) =
@@ -71,6 +72,29 @@ impl VlessEgress {
             client_to_upstream_bytes: client_to_upstream,
             upstream_to_client_bytes: upstream_to_client,
             close_reason: "normal",
+        })
+    }
+}
+
+impl TcpDialer for VlessEgress {
+    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpDialConnection, EgressError> {
+        let target = target.resolve_socket().await?;
+        let upstream = DirectEgress
+            .dial_tcp(TcpDialTarget::host(
+                self.client.server_host(),
+                self.client.server_port(),
+            ))
+            .await?;
+        let upstream_addr = upstream.upstream();
+        let upstream = upstream.into_io();
+        let (_parts, stream) = self
+            .client
+            .connect_tcp_with_io(target, upstream_addr, upstream)
+            .await
+            .map_err(|error| vless_error(error, Some(upstream_addr)))?;
+        Ok(TcpDialConnection::Stream {
+            stream: Box::new(stream),
+            upstream: upstream_addr,
         })
     }
 }

@@ -3,7 +3,7 @@ use std::{fmt, net::SocketAddr};
 use native_tls::TlsConnector as NativeTlsConnector;
 use sha2::{Digest, Sha224};
 use tokio::{
-    io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
+    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
 };
 use tokio_native_tls::{TlsConnector, TlsStream};
@@ -123,13 +123,33 @@ impl Client {
             .await
     }
 
-    async fn relay_tcp_with_tls(
+    pub async fn relay_tcp_with_io<D, U>(
         &self,
-        downstream: TcpStream,
+        downstream: D,
+        upstream_addr: SocketAddr,
+        upstream: U,
+        target: SocketAddr,
+    ) -> Result<TcpRelayOutcome, Error>
+    where
+        D: AsyncRead + AsyncWrite + Unpin,
+        U: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut upstream = self.connect_tls_with_io(upstream).await?;
+        self.relay_tcp_with_tls(downstream, target, upstream_addr, &mut upstream)
+            .await
+    }
+
+    async fn relay_tcp_with_tls<D, U>(
+        &self,
+        downstream: D,
         target: SocketAddr,
         upstream_addr: SocketAddr,
-        upstream: &mut TlsStream<TcpStream>,
-    ) -> Result<TcpRelayOutcome, Error> {
+        upstream: &mut TlsStream<U>,
+    ) -> Result<TcpRelayOutcome, Error>
+    where
+        D: AsyncRead + AsyncWrite + Unpin,
+        U: AsyncRead + AsyncWrite + Unpin,
+    {
         upstream
             .write_all(&request_header(&self.password_hash, CMD_CONNECT, target))
             .await
@@ -207,15 +227,23 @@ impl Client {
                 format!("failed reading Trojan server address: {error}"),
             )
         })?;
+        self.connect_tls_with_io(tcp)
+            .await
+            .map(|stream| (upstream_addr, stream))
+    }
+
+    async fn connect_tls_with_io<U>(&self, io: U) -> Result<TlsStream<U>, Error>
+    where
+        U: AsyncRead + AsyncWrite + Unpin,
+    {
         let connector = tls_connector(self.skip_cert_verify)?;
         let sni = self.sni.as_deref().unwrap_or(&self.server);
-        let stream = connector.connect(sni, tcp).await.map_err(|error| {
+        connector.connect(sni, io).await.map_err(|error| {
             Error::new(
                 "outbound-tls",
                 format!("failed establishing Trojan TLS connection: {error}"),
             )
-        })?;
-        Ok((upstream_addr, stream))
+        })
     }
 }
 
