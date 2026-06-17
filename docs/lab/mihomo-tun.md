@@ -84,7 +84,10 @@ the VM loopback instead of host-side `dynet`.
 The sample `dynet-lab.toml` uses a graph-shaped forwarding config with one
 direct audit outlet node in the default smart group. For provider-node tests,
 copy the file to untracked `dynet.toml` and replace the forwarding graph with
-the local nodes/groups under test.
+the local nodes/groups under test. Use `next = "<group>"` for group-to-group
+TCP composition in connection direction; for example, `Tunnel.next = "Private"`
+means traffic first uses the Tunnel group's selected dialer node, then reaches
+the Private group's selected business egress node.
 
 ## VM Setup
 

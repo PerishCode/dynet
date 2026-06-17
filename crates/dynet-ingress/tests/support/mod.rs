@@ -14,9 +14,9 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use dynet_runtime::{
-    DnsUpstream, DnsUpstreamId, EgressRef, EventStore, ForwardGroup, ForwardNode, GroupId,
-    GroupMember, IngressEvent, IngressEventKind, NodeId, RouteMatcher, RouteRule, RuleId,
-    RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
+    DnsUpstream, DnsUpstreamId, EventStore, ForwardGroup, ForwardNode, GroupId, GroupMember,
+    IngressEvent, IngressEventKind, NextRef, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
+    RuntimeState, RuntimeStore, SchedulerPolicy,
 };
 use hkdf::Hkdf;
 use md5::{Digest, Md5};
@@ -293,13 +293,13 @@ pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
                 id: GroupId::new("default"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
-                egress: EgressRef::direct_audit_outlet(),
+                next: NextRef::direct_audit_outlet(),
             },
             ForwardGroup {
                 id: GroupId::new("routed"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
-                egress: EgressRef::direct_audit_outlet(),
+                next: NextRef::direct_audit_outlet(),
             },
         ],
         group_members: vec![
@@ -337,7 +337,7 @@ pub fn chained_route_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     let mut seed = route_selected_seed(dns_addr);
     for group in &mut seed.groups {
         if group.id.as_str() == "routed" {
-            group.egress = EgressRef::named("egress");
+            group.next = NextRef::named("egress");
         }
     }
     seed.nodes.push(ForwardNode {
@@ -349,7 +349,7 @@ pub fn chained_route_seed(dns_addr: SocketAddr) -> RuntimeSeed {
         id: GroupId::new("egress"),
         enabled: true,
         scheduler: SchedulerPolicy::SingleFirstEnabled,
-        egress: EgressRef::direct_audit_outlet(),
+        next: NextRef::direct_audit_outlet(),
     });
     seed.group_members.push(GroupMember {
         group_id: GroupId::new("egress"),

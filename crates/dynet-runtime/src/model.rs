@@ -33,7 +33,7 @@ pub struct ForwardGroup {
     pub id: GroupId,
     pub enabled: bool,
     pub scheduler: SchedulerPolicy,
-    pub egress: EgressRef,
+    pub next: NextRef,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -86,7 +86,7 @@ pub enum SchedulerPolicy {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum EgressRef {
+pub enum NextRef {
     DirectAuditOutlet,
     Named(String),
 }
@@ -143,7 +143,7 @@ pub struct SelectionDecision {
     pub group_id: GroupId,
     pub matched_rule_id: Option<RuleId>,
     pub node_id: NodeId,
-    pub egress: EgressRef,
+    pub next: NextRef,
     pub trace: Vec<SelectionTraceHop>,
     pub terminal: SelectionTerminal,
     pub reason: SelectionReason,
@@ -155,7 +155,7 @@ pub struct SelectionDecision {
 pub struct SelectionTraceHop {
     pub group_id: GroupId,
     pub node_id: NodeId,
-    pub egress: EgressRef,
+    pub next: NextRef,
     pub scheduler: SchedulerPolicy,
     pub candidate_count: usize,
 }
@@ -246,7 +246,7 @@ impl ForwardGroup {
             id: GroupId::new(DEFAULT_GROUP_ID),
             enabled: true,
             scheduler: SchedulerPolicy::SingleFirstEnabled,
-            egress: EgressRef::DirectAuditOutlet,
+            next: NextRef::DirectAuditOutlet,
         }
     }
 }
@@ -355,7 +355,7 @@ impl SchedulerPolicy {
     }
 }
 
-impl EgressRef {
+impl NextRef {
     pub const DIRECT_AUDIT_OUTLET: &'static str = "direct";
 
     pub fn direct_audit_outlet() -> Self {
@@ -406,12 +406,7 @@ impl SelectionReason {
 
 impl SelectionTraceHop {
     pub fn label(&self) -> String {
-        format!(
-            "{}:{}->{}",
-            self.group_id,
-            self.node_id,
-            self.egress.label()
-        )
+        format!("{}:{}->{}", self.group_id, self.node_id, self.next.label())
     }
 }
 
@@ -425,7 +420,7 @@ impl SelectionTerminal {
 
     pub fn label(&self) -> &str {
         match self {
-            Self::DirectAuditOutlet => EgressRef::DIRECT_AUDIT_OUTLET,
+            Self::DirectAuditOutlet => NextRef::DIRECT_AUDIT_OUTLET,
             Self::Node(node_id) => node_id.as_str(),
         }
     }

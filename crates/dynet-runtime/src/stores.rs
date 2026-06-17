@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    DnsUpstream, DnsUpstreamId, EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember, NodeId,
+    DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef, NodeId,
     RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
 };
 
@@ -194,13 +194,13 @@ impl GroupStore {
         let mut trace = Vec::new();
         loop {
             if seen.insert(current.clone(), ()).is_some() {
-                return Err(format!("group egress cycle includes {current}"));
+                return Err(format!("group next cycle includes {current}"));
             }
             let hop = select_group_hop(&store, &current, nodes)?;
-            let egress = hop.egress.clone();
+            let next = hop.next.clone();
             trace.push(hop);
-            match egress {
-                EgressRef::DirectAuditOutlet => {
+            match next {
+                NextRef::DirectAuditOutlet => {
                     let first = trace.first().expect("selection trace has at least one hop");
                     return Ok(GroupSelection {
                         terminal: SelectionTerminal::DirectAuditOutlet,
@@ -209,7 +209,7 @@ impl GroupStore {
                         trace,
                     });
                 }
-                EgressRef::Named(name) => {
+                NextRef::Named(name) => {
                     if let Some(node_id) = nodes.enabled_node_id(&name) {
                         let first = trace.first().expect("selection trace has at least one hop");
                         return Ok(GroupSelection {
@@ -272,7 +272,7 @@ fn select_group_hop(
     Ok(SelectionTraceHop {
         group_id: group.id.clone(),
         node_id: selected.node_id.clone(),
-        egress: group.egress.clone(),
+        next: group.next.clone(),
         scheduler: group.scheduler,
         candidate_count: candidates.len(),
     })

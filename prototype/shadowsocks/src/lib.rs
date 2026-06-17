@@ -1,6 +1,9 @@
 use std::{fmt, net::SocketAddr};
 
-use tokio::net::TcpStream;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+};
 
 mod address;
 mod aead2017;
@@ -151,6 +154,21 @@ impl Client {
                 format!("failed reading Shadowsocks server address: {error}"),
             )
         })?;
+        self.relay_tcp_with_io(downstream, upstream_addr, upstream, target)
+            .await
+    }
+
+    pub async fn relay_tcp_with_io<D, U>(
+        &self,
+        downstream: D,
+        upstream_addr: SocketAddr,
+        upstream: U,
+        target: SocketAddr,
+    ) -> Result<TcpRelayOutcome, Error>
+    where
+        D: AsyncRead + AsyncWrite + Unpin,
+        U: AsyncRead + AsyncWrite + Unpin,
+    {
         let target_header = address::socks_address(target);
         match &self.protocol {
             Protocol::Aead2017(cipher) => {

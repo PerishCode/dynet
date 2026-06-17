@@ -51,7 +51,8 @@ impl VlessEgress {
                 self.client.server_host(),
                 self.client.server_port(),
             ))
-            .await?;
+            .await?
+            .into_tcp_stream(self.tag())?;
         let (parts, mut upstream) = self
             .client
             .connect_tcp_with_stream(session.target, upstream)

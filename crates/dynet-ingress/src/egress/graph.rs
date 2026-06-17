@@ -5,7 +5,7 @@ use dynet_runtime::SelectionDecision;
 use crate::EgressNodeConfig;
 
 use super::{
-    DirectEgress, EgressError, EgressMedium, EgressNode, TcpRelayOutcome, TcpRelaySession,
+    EgressError, EgressMedium, EgressNode, TcpDialerMedium, TcpRelayOutcome, TcpRelaySession,
     UdpRelayAssociation, UdpRelayOutcome,
 };
 
@@ -27,19 +27,17 @@ impl TryFrom<BTreeMap<String, EgressNodeConfig>> for GraphEgress {
 }
 
 impl GraphEgress {
-    fn egress_for_decision(
+    fn final_egress_for_decision(
         &self,
         decision: &SelectionDecision,
     ) -> Result<&EgressMedium, EgressError> {
+        let hop = decision.trace.last().ok_or_else(|| chained_error("TCP"))?;
         self.nodes
-            .get(decision.node_id.as_str())
+            .get(hop.node_id.as_str())
             .ok_or_else(|| EgressError {
                 stage: "egress-select",
                 upstream: None,
-                message: format!(
-                    "selection node {} has no execution egress",
-                    decision.node_id
-                ),
+                message: format!("selection node {} has no execution egress", hop.node_id),
             })
     }
 
@@ -51,32 +49,29 @@ impl GraphEgress {
         })
     }
 
-    fn tcp_dialer_for_tail(
+    fn tcp_dialer_for_head(
         &self,
         decision: &SelectionDecision,
-    ) -> Result<&DirectEgress, EgressError> {
-        for hop in decision.trace.iter().skip(1) {
-            let egress = self.egress_for_node(hop.node_id.as_str())?;
-            if egress.tcp_dialer().is_none() {
-                return Err(EgressError {
-                    stage: "egress-select",
-                    upstream: None,
-                    message: format!(
-                        "TCP chained graph execution through node {} without TCP dialer is not implemented",
-                        hop.node_id
-                    ),
-                });
-            }
+    ) -> Result<TcpDialerMedium<'_>, EgressError> {
+        if decision.trace.len() != 2 {
+            return Err(EgressError {
+                stage: "egress-select",
+                upstream: None,
+                message: format!(
+                    "TCP graph execution supports exactly one dialer hop, got {} hops",
+                    decision.trace.len()
+                ),
+            });
         }
-        let tail = decision.trace.last().ok_or_else(|| chained_error("TCP"))?;
-        self.egress_for_node(tail.node_id.as_str())?
+        let head = decision.trace.first().ok_or_else(|| chained_error("TCP"))?;
+        self.egress_for_node(head.node_id.as_str())?
             .tcp_dialer()
             .ok_or_else(|| EgressError {
                 stage: "egress-select",
                 upstream: None,
                 message: format!(
-                    "TCP chained graph tail node {} has no TCP dialer",
-                    tail.node_id
+                    "TCP chained graph dialer node {} has no TCP dialer",
+                    head.node_id
                 ),
             })
     }
@@ -88,19 +83,18 @@ impl EgressNode for GraphEgress {
     }
 
     fn decision_tag(&self, decision: &SelectionDecision) -> &'static str {
-        self.nodes
-            .get(decision.node_id.as_str())
+        self.final_egress_for_decision(decision)
             .map_or(self.tag(), EgressMedium::tag)
     }
 
     async fn handle_tcp(&self, session: TcpRelaySession) -> Result<TcpRelayOutcome, EgressError> {
-        let egress = self.egress_for_decision(&session.decision)?;
+        let egress = self.final_egress_for_decision(&session.decision)?;
         if session.decision.trace.len() == 1 && session.decision.terminal.kind() == "direct" {
             return egress.handle_tcp(session).await;
         }
         if session.decision.terminal.kind() == "direct" {
-            let dialer = self.tcp_dialer_for_tail(&session.decision)?;
-            return egress.handle_tcp_with_dialer(session, dialer).await;
+            let dialer = self.tcp_dialer_for_head(&session.decision)?;
+            return egress.handle_tcp_with_dialer(session, &dialer).await;
         }
         Err(chained_error("TCP"))
     }
@@ -110,7 +104,7 @@ impl EgressNode for GraphEgress {
         association: UdpRelayAssociation,
     ) -> Result<UdpRelayOutcome, EgressError> {
         reject_chained_udp(&association.decision)?;
-        self.egress_for_decision(&association.decision)?
+        self.final_egress_for_decision(&association.decision)?
             .handle_udp(association)
             .await
     }

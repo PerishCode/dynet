@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use dynet_runtime::{
-    EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember, InboundKind, IngressEventKind,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, InboundKind, IngressEventKind, NextRef,
     NodeId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy, SelectionContext,
     TargetContext,
 };
@@ -31,7 +31,7 @@ async fn seeds_default_bootstrap() {
     assert_eq!(nodes[0].id.as_str(), "default-node");
     assert_eq!(nodes[0].tag, "ss");
     assert_eq!(runtime.groups().snapshot()[0].id.as_str(), "default");
-    assert_eq!(runtime.groups().snapshot()[0].egress.label(), "direct");
+    assert_eq!(runtime.groups().snapshot()[0].next.label(), "direct");
     assert_eq!(
         runtime.groups().member_snapshot()[0].node_id.as_str(),
         "default-node"
@@ -119,7 +119,7 @@ async fn persists_observations() {
     let decision = fixture.selection_decision().await;
     assert_eq!(decision.group_id, "default");
     assert_eq!(decision.node_id, "default-node");
-    assert_eq!(decision.egress, "direct");
+    assert_eq!(decision.next, "direct");
     assert_eq!(decision.reason, "single-node");
     assert_eq!(decision.scheduler, "single-first-enabled");
     assert_eq!(decision.candidate_count, 1);
@@ -128,7 +128,7 @@ async fn persists_observations() {
 }
 
 #[tokio::test]
-async fn seeds_group_egress_graph() {
+async fn seeds_group_next_graph() {
     let fixture = StoreFixture::open().await;
 
     let runtime = RuntimeState::from_store_seed(fixture.store.clone(), tunnel_seed())
@@ -144,21 +144,21 @@ async fn seeds_group_egress_graph() {
         .iter()
         .find(|group| group.id.as_str() == "Private")
         .expect("Private group");
-    assert_eq!(tunnel.egress.label(), "Private");
-    assert_eq!(private.egress.label(), "direct");
+    assert_eq!(tunnel.next.label(), "Private");
+    assert_eq!(private.next.label(), "direct");
 
-    let row = sqlx::query("select egress from runtime_forward_groups where id = 'Tunnel'")
+    let row = sqlx::query("select next from runtime_forward_groups where id = 'Tunnel'")
         .fetch_one(&fixture.inspector)
         .await
         .expect("stored Tunnel group");
-    assert_eq!(row.get::<String, _>("egress"), "Private");
+    assert_eq!(row.get::<String, _>("next"), "Private");
 
     let decision = runtime
         .select(selection_context(1))
         .expect("graph selection succeeds");
     assert_eq!(decision.group_id.as_str(), "Tunnel");
     assert_eq!(decision.node_id.as_str(), "airport-us-01");
-    assert_eq!(decision.egress.label(), "Private");
+    assert_eq!(decision.next.label(), "Private");
     assert_eq!(decision.trace.len(), 2);
     assert_eq!(decision.trace[0].label(), "Tunnel:airport-us-01->Private");
     assert_eq!(
@@ -223,7 +223,7 @@ impl StoreFixture {
     async fn insert_complete_bootstrap(&self, tag: &str) {
         self.insert_node_only(tag).await;
         sqlx::query(
-            "insert into runtime_forward_groups (id, enabled, scheduler, egress, updated_at_unix_ms)
+            "insert into runtime_forward_groups (id, enabled, scheduler, next, updated_at_unix_ms)
              values ('default', 1, 'single-first-enabled', 'direct', 1)",
         )
         .execute(&self.inspector)
@@ -281,7 +281,7 @@ impl StoreFixture {
 
     async fn selection_decision(&self) -> PersistedSelectionDecision {
         let row = sqlx::query(
-            "select group_id, node_id, egress, reason, scheduler, candidate_count
+            "select group_id, node_id, next, reason, scheduler, candidate_count
              from selection_decisions",
         )
         .fetch_one(&self.inspector)
@@ -290,7 +290,7 @@ impl StoreFixture {
         PersistedSelectionDecision {
             group_id: row.get("group_id"),
             node_id: row.get("node_id"),
-            egress: row.get("egress"),
+            next: row.get("next"),
             reason: row.get("reason"),
             scheduler: row.get("scheduler"),
             candidate_count: row.get("candidate_count"),
@@ -302,7 +302,7 @@ impl StoreFixture {
 struct PersistedSelectionDecision {
     group_id: String,
     node_id: String,
-    egress: String,
+    next: String,
     reason: String,
     scheduler: String,
     candidate_count: i64,
@@ -328,13 +328,13 @@ fn tunnel_seed() -> RuntimeSeed {
                 id: GroupId::new("Tunnel"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
-                egress: EgressRef::named("Private"),
+                next: NextRef::named("Private"),
             },
             ForwardGroup {
                 id: GroupId::new("Private"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
-                egress: EgressRef::direct_audit_outlet(),
+                next: NextRef::direct_audit_outlet(),
             },
         ],
         group_members: vec![

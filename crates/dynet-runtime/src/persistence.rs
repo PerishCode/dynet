@@ -21,7 +21,7 @@ pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "5";
+const SCHEMA_VERSION: &str = "6";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {
@@ -105,7 +105,7 @@ impl RuntimeStore {
                 group_id,
                 matched_rule_id,
                 node_id,
-                egress,
+                next,
                 reason,
                 scheduler,
                 candidate_count
@@ -122,7 +122,7 @@ impl RuntimeStore {
         .bind(decision.group_id.as_str())
         .bind(decision.matched_rule_id.as_ref().map(|id| id.as_str()))
         .bind(decision.node_id.as_str())
-        .bind(decision.egress.label())
+        .bind(decision.next.label())
         .bind(decision.reason.as_str())
         .bind(decision.scheduler.as_str())
         .bind(usize_to_i64(decision.candidate_count))

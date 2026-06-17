@@ -2,7 +2,7 @@ use std::{future::Future, net::SocketAddr, time::Duration};
 
 use dynet_runtime::{RuntimeState, SelectionDecision};
 use tokio::{
-    io,
+    io::{self, AsyncRead, AsyncWrite},
     net::{TcpStream, UdpSocket},
     sync::mpsc,
     time,
@@ -35,6 +35,49 @@ pub(crate) struct DirectEgress;
 pub(crate) enum TcpDialTarget {
     Socket(SocketAddr),
     Host { host: String, port: u16 },
+}
+
+pub(crate) trait TcpStreamIo: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> TcpStreamIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+pub(crate) enum TcpDialConnection {
+    TcpStream {
+        stream: TcpStream,
+        upstream: SocketAddr,
+    },
+    Stream {
+        stream: Box<dyn TcpStreamIo>,
+        upstream: SocketAddr,
+    },
+}
+
+impl TcpDialConnection {
+    pub(crate) fn upstream(&self) -> SocketAddr {
+        match self {
+            Self::TcpStream { upstream, .. } | Self::Stream { upstream, .. } => *upstream,
+        }
+    }
+
+    pub(crate) fn into_io(self) -> Box<dyn TcpStreamIo> {
+        match self {
+            Self::TcpStream { stream, .. } => Box::new(stream),
+            Self::Stream { stream, .. } => stream,
+        }
+    }
+
+    pub(crate) fn into_tcp_stream(self, protocol: &'static str) -> Result<TcpStream, EgressError> {
+        match self {
+            Self::TcpStream { stream, .. } => Ok(stream),
+            Self::Stream { .. } => Err(EgressError {
+                stage: "egress-select",
+                upstream: None,
+                message: format!(
+                    "{protocol} TCP execution through non-TCPStream dialer is not implemented"
+                ),
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -100,7 +143,7 @@ pub(crate) trait TcpDialer: Send + Sync {
     fn dial_tcp(
         &self,
         target: TcpDialTarget,
-    ) -> impl Future<Output = Result<TcpStream, EgressError>> + Send;
+    ) -> impl Future<Output = Result<TcpDialConnection, EgressError>> + Send;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -129,10 +172,11 @@ impl TryFrom<EgressNodeConfig> for EgressMedium {
 }
 
 impl EgressMedium {
-    pub(super) fn tcp_dialer(&self) -> Option<&DirectEgress> {
+    pub(super) fn tcp_dialer(&self) -> Option<TcpDialerMedium<'_>> {
         match self {
-            Self::Direct(dialer) => Some(dialer),
-            Self::Shadowsocks(_) | Self::Trojan(_) | Self::Vless(_) | Self::Vmess(_) => None,
+            Self::Direct(dialer) => Some(TcpDialerMedium::Direct(dialer)),
+            Self::Shadowsocks(dialer) => Some(TcpDialerMedium::Shadowsocks(dialer)),
+            Self::Trojan(_) | Self::Vless(_) | Self::Vmess(_) => None,
         }
     }
 
@@ -150,6 +194,21 @@ impl EgressMedium {
             Self::Trojan(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
             Self::Vless(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
             Self::Vmess(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum TcpDialerMedium<'a> {
+    Direct(&'a DirectEgress),
+    Shadowsocks(&'a ShadowsocksEgress),
+}
+
+impl TcpDialer for TcpDialerMedium<'_> {
+    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpDialConnection, EgressError> {
+        match self {
+            Self::Direct(dialer) => dialer.dial_tcp(target).await,
+            Self::Shadowsocks(dialer) => dialer.dial_tcp(target).await,
         }
     }
 }
@@ -302,7 +361,8 @@ impl DirectEgress {
     {
         let mut upstream = dialer
             .dial_tcp(TcpDialTarget::Socket(session.target))
-            .await?;
+            .await?
+            .into_io();
         let (client_to_upstream, upstream_to_client) =
             io::copy_bidirectional(&mut session.downstream, &mut upstream)
                 .await
@@ -321,18 +381,45 @@ impl DirectEgress {
 }
 
 impl TcpDialer for DirectEgress {
-    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpStream, EgressError> {
+    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpDialConnection, EgressError> {
         let upstream = target.upstream();
         let label = target.label();
-        target.connect().await.map_err(|error| EgressError {
+        let stream = target.connect().await.map_err(|error| EgressError {
             stage: "egress-connect",
             upstream,
             message: format!("failed dialing TCP target {label}: {error}"),
-        })
+        })?;
+        let upstream = stream.peer_addr().map_err(|error| EgressError {
+            stage: "egress-connect",
+            upstream,
+            message: format!("failed reading TCP target address {label}: {error}"),
+        })?;
+        Ok(TcpDialConnection::TcpStream { stream, upstream })
     }
 }
 
 impl TcpDialTarget {
+    pub(crate) async fn resolve_socket(&self) -> Result<SocketAddr, EgressError> {
+        match self {
+            Self::Socket(address) => Ok(*address),
+            Self::Host { host, port } => {
+                let label = self.label();
+                let mut addresses = tokio::net::lookup_host((host.as_str(), *port))
+                    .await
+                    .map_err(|error| EgressError {
+                        stage: "egress-resolve",
+                        upstream: None,
+                        message: format!("failed resolving TCP target {label}: {error}"),
+                    })?;
+                addresses.next().ok_or_else(|| EgressError {
+                    stage: "egress-resolve",
+                    upstream: None,
+                    message: format!("TCP target {label} resolved no addresses"),
+                })
+            }
+        }
+    }
+
     pub(crate) fn host(host: impl Into<String>, port: u16) -> Self {
         Self::Host {
             host: host.into(),

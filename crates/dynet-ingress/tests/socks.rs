@@ -196,7 +196,7 @@ async fn graph_chains_shadowsocks_direct() {
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
-    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
     let mut egress_nodes = BTreeMap::new();
     egress_nodes.insert(
         "routed-node".to_string(),
@@ -207,7 +207,6 @@ async fn graph_chains_shadowsocks_direct() {
             password: "fake-password".to_string(),
         }),
     );
-    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -236,7 +235,7 @@ async fn graph_chains_trojan_direct() {
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = unused_tcp_addr().await;
-    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
     let mut egress_nodes = BTreeMap::new();
     egress_nodes.insert(
         "routed-node".to_string(),
@@ -248,7 +247,6 @@ async fn graph_chains_trojan_direct() {
             skip_cert_verify: true,
         }),
     );
-    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,

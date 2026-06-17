@@ -7,10 +7,7 @@ use std::{
 use aes_gcm::{aead::Aead, Aes128Gcm, Nonce};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rand::{rngs::OsRng, RngCore};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{Error, TcpRelayOutcome};
 
@@ -63,15 +60,19 @@ impl Cipher {
         UdpSession::new(self.clone())
     }
 
-    pub(crate) async fn relay_tcp_stream(
+    pub(crate) async fn relay_tcp_stream<D, U>(
         &self,
         upstream_addr: SocketAddr,
-        downstream: TcpStream,
-        upstream: TcpStream,
+        downstream: D,
+        upstream: U,
         target_header: &[u8],
-    ) -> Result<TcpRelayOutcome, Error> {
-        let (mut downstream_rx, mut downstream_tx) = downstream.into_split();
-        let (mut upstream_rx, mut upstream_tx) = upstream.into_split();
+    ) -> Result<TcpRelayOutcome, Error>
+    where
+        D: AsyncRead + AsyncWrite + Unpin,
+        U: AsyncRead + AsyncWrite + Unpin,
+    {
+        let (mut downstream_rx, mut downstream_tx) = io::split(downstream);
+        let (mut upstream_rx, mut upstream_tx) = io::split(upstream);
         let mut salt = [0_u8; SALT_SIZE];
         OsRng.fill_bytes(&mut salt);
         let mut writer = AeadStream::from_salt(&self.key, &salt)?;

@@ -225,10 +225,10 @@ short-id = "0123456789abcdef"
 }
 
 #[test]
-fn loads_group_egress_graph() {
+fn loads_group_next_graph() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _guard = EnvGuard::set(&[]);
-    let config_path = temp_config_path("loads_group_egress_graph");
+    let config_path = temp_config_path("loads_group_next_graph");
     fs::write(
         &config_path,
         r#"
@@ -246,7 +246,7 @@ type = "direct"
 [[forwarding.groups]]
 id = "Tunnel"
 mode = "smart"
-egress = "Private"
+next = "Private"
 members = ["airport-us-01"]
 
 [[forwarding.groups]]
@@ -274,7 +274,7 @@ group = "Tunnel"
         .iter()
         .find(|group| group.id.as_str() == "Tunnel")
         .expect("Tunnel group");
-    assert_eq!(tunnel.egress.label(), "Private");
+    assert_eq!(tunnel.next.label(), "Private");
     assert_eq!(config.forwarding.seed.route_rules.len(), 1);
 
     fs::remove_file(config_path).expect("remove config");

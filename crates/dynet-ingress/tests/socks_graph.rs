@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, net::Ipv4Addr, time::Duration};
 
 use dynet_ingress::{
     run_socks5_graph, EgressNodeConfig, ShadowsocksConfig, ShadowsocksMethod, Socks5IngressConfig,
-    VlessConfig, VmessConfig,
+    TrojanConfig, VlessConfig, VmessConfig,
 };
 use dynet_runtime::IngressEventKind;
 use tokio::{
@@ -19,7 +19,7 @@ async fn graph_chains_vmess_direct() {
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = support::unused_tcp_addr().await;
-    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
     let mut egress_nodes = BTreeMap::new();
     egress_nodes.insert(
         "routed-node".to_string(),
@@ -29,7 +29,6 @@ async fn graph_chains_vmess_direct() {
             uuid: "11111111-2222-3333-4444-555555555555".to_string(),
         }),
     );
-    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -58,7 +57,7 @@ async fn graph_chains_vless_direct() {
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = support::unused_tcp_addr().await;
-    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let runtime = support::runtime_from_seed(support::route_selected_seed(dns_addr)).await;
     let mut egress_nodes = BTreeMap::new();
     egress_nodes.insert(
         "routed-node".to_string(),
@@ -71,7 +70,6 @@ async fn graph_chains_vless_direct() {
             short_id: "0123456789abcdef".to_string(),
         }),
     );
-    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -147,24 +145,88 @@ async fn graph_chains_direct_dialer() {
 }
 
 #[tokio::test]
-async fn rejects_protocol_tail() {
+async fn graph_uses_ss_dialer() {
+    let (airport_addr, airport_task) = support::spawn_ss_header_server("airport-password").await;
+    let private_addr = support::unused_tcp_addr().await;
     let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
 
     let bind = support::unused_tcp_addr().await;
     let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
     let events = runtime.events().clone();
     let mut egress_nodes = BTreeMap::new();
-    for node_id in ["routed-node", "egress-node"] {
-        egress_nodes.insert(
-            node_id.to_string(),
-            EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
-                server: "127.0.0.1".to_string(),
-                port: 9,
-                method: ShadowsocksMethod::Aes256Gcm,
-                password: "fake-password".to_string(),
-            }),
-        );
-    }
+    egress_nodes.insert(
+        "routed-node".to_string(),
+        EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
+            server: airport_addr.ip().to_string(),
+            port: airport_addr.port(),
+            method: ShadowsocksMethod::Aes256Gcm,
+            password: "airport-password".to_string(),
+        }),
+    );
+    egress_nodes.insert(
+        "egress-node".to_string(),
+        EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
+            server: private_addr.ip().to_string(),
+            port: private_addr.port(),
+            method: ShadowsocksMethod::Aes256Gcm,
+            password: "private-password".to_string(),
+        }),
+    );
+    tokio::spawn(run_socks5_graph(
+        Socks5IngressConfig {
+            bind,
+            udp_advertise_ip: None,
+            idle_timeout: Duration::from_secs(2),
+            max_sessions: 16,
+        },
+        egress_nodes,
+        runtime,
+    ));
+    time::sleep(Duration::from_millis(25)).await;
+
+    let mut client = socks_connect_domain(bind, "routed.example", 80).await;
+    client.write_all(b"chain").await.expect("write payload");
+    let mut response = Vec::new();
+    let _ = time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+        .await
+        .expect("read timeout")
+        .expect("read response");
+
+    let airport_target = time::timeout(Duration::from_secs(2), airport_task)
+        .await
+        .expect("airport ss timeout")
+        .expect("airport ss task");
+    assert_eq!(airport_target, socks_address(private_addr));
+    let _ = support::wait_for_event(&events, IngressEventKind::TcpError).await;
+    assert_eq!(
+        support::event_field(&events, IngressEventKind::TcpAccept, "selectionGroups"),
+        "routed,egress"
+    );
+    assert!(
+        !support::event_field(&events, IngressEventKind::TcpError, "error")
+            .contains("without TCP dialer")
+    );
+}
+
+#[tokio::test]
+async fn rejects_non_dialer_tail() {
+    let dns_addr = support::spawn_dns_a(Ipv4Addr::LOCALHOST).await;
+
+    let bind = support::unused_tcp_addr().await;
+    let runtime = support::runtime_from_seed(support::chained_route_seed(dns_addr)).await;
+    let events = runtime.events().clone();
+    let mut egress_nodes = BTreeMap::new();
+    egress_nodes.insert(
+        "routed-node".to_string(),
+        EgressNodeConfig::Trojan(TrojanConfig {
+            server: "127.0.0.1".to_string(),
+            port: 9,
+            password: "fake-password".to_string(),
+            sni: None,
+            skip_cert_verify: true,
+        }),
+    );
+    egress_nodes.insert("egress-node".to_string(), EgressNodeConfig::Direct);
     tokio::spawn(run_socks5_graph(
         Socks5IngressConfig {
             bind,
@@ -193,8 +255,25 @@ async fn rejects_protocol_tail() {
     );
     assert!(
         support::event_field(&events, IngressEventKind::TcpError, "error")
-            .contains("node egress-node without TCP dialer")
+            .contains("dialer node routed-node has no TCP dialer")
     );
+}
+
+fn socks_address(target: std::net::SocketAddr) -> Vec<u8> {
+    match target {
+        std::net::SocketAddr::V4(address) => {
+            let mut out = vec![1];
+            out.extend_from_slice(&address.ip().octets());
+            out.extend_from_slice(&address.port().to_be_bytes());
+            out
+        }
+        std::net::SocketAddr::V6(address) => {
+            let mut out = vec![4];
+            out.extend_from_slice(&address.ip().octets());
+            out.extend_from_slice(&address.port().to_be_bytes());
+            out
+        }
+    }
 }
 
 async fn socks_connect_domain(bind: std::net::SocketAddr, domain: &str, port: u16) -> TcpStream {

@@ -173,6 +173,45 @@ mode = "smart"
 members = ["default-node"]
 ```
 
+Groups can also describe connection-direction TCP composition with `next`.
+Rules select the first group, that group's selected node acts as the dialer,
+and the final group supplies the business egress node. The reserved default is
+`next = "direct"` when the field is omitted.
+
+```toml
+[forwarding]
+default_group = "Tunnel"
+
+[[forwarding.nodes]]
+id = "airport-us-01"
+type = "shadowsocks"
+server = "airport.example.com"
+port = 8388
+method = "aes-256-gcm"
+password = "local-secret"
+udp = true
+
+[[forwarding.nodes]]
+id = "private-us-01"
+type = "shadowsocks"
+server = "private.example.com"
+port = 8388
+method = "aes-256-gcm"
+password = "local-secret"
+udp = true
+
+[[forwarding.groups]]
+id = "Tunnel"
+mode = "smart"
+next = "Private"
+members = ["airport-us-01"]
+
+[[forwarding.groups]]
+id = "Private"
+mode = "smart"
+members = ["private-us-01"]
+```
+
 ## Development
 
 ```bash

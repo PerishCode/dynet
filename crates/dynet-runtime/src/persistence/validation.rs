@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DnsRacePolicy, DnsUpstream, EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember,
+    DnsRacePolicy, DnsUpstream, ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef,
     RouteRule, RuntimeSeed,
 };
 
@@ -97,7 +97,7 @@ fn validate_references(
             )));
         }
     }
-    validate_group_egresses(nodes, groups)
+    validate_group_next_refs(nodes, groups)
 }
 
 fn validate_unique_ids(
@@ -109,7 +109,7 @@ fn validate_unique_ids(
     let mut forwarding_names = BTreeSet::new();
     for node in nodes {
         let id = node.id.as_str();
-        if id == EgressRef::DIRECT_AUDIT_OUTLET {
+        if id == NextRef::DIRECT_AUDIT_OUTLET {
             return Err(RuntimeStoreError::InvalidBootstrap(
                 "node id 'direct' is reserved".to_string(),
             ));
@@ -122,7 +122,7 @@ fn validate_unique_ids(
     }
     for group in groups {
         let id = group.id.as_str();
-        if id == EgressRef::DIRECT_AUDIT_OUTLET {
+        if id == NextRef::DIRECT_AUDIT_OUTLET {
             return Err(RuntimeStoreError::InvalidBootstrap(
                 "group id 'direct' is reserved".to_string(),
             ));
@@ -163,54 +163,54 @@ fn validate_unique_dns_ids(dns_upstreams: &[DnsUpstream]) -> Result<(), RuntimeS
     Ok(())
 }
 
-fn validate_group_egresses(
+fn validate_group_next_refs(
     nodes: &[ForwardNode],
     groups: &[ForwardGroup],
 ) -> Result<(), RuntimeStoreError> {
     for group in groups {
-        validate_group_egress_reference(nodes, groups, group)?;
+        validate_group_next_reference(nodes, groups, group)?;
     }
     for group in groups {
-        validate_group_egress_cycle(nodes, groups, group.id.as_str())?;
+        validate_group_next_cycle(nodes, groups, group.id.as_str())?;
     }
     Ok(())
 }
 
-fn validate_group_egress_reference(
+fn validate_group_next_reference(
     nodes: &[ForwardNode],
     groups: &[ForwardGroup],
     group: &ForwardGroup,
 ) -> Result<(), RuntimeStoreError> {
-    let egress = group.egress.label();
-    if egress == EgressRef::DIRECT_AUDIT_OUTLET {
+    let next = group.next.label();
+    if next == NextRef::DIRECT_AUDIT_OUTLET {
         return Ok(());
     }
-    if let Some(node) = nodes.iter().find(|node| node.id.as_str() == egress) {
+    if let Some(node) = nodes.iter().find(|node| node.id.as_str() == next) {
         return node.enabled.then_some(()).ok_or_else(|| {
             RuntimeStoreError::InvalidBootstrap(format!(
-                "group {} egress {egress:?} references a disabled node",
+                "group {} next {next:?} references a disabled node",
                 group.id
             ))
         });
     }
     if let Some(referenced_group) = groups
         .iter()
-        .find(|candidate| candidate.id.as_str() == egress)
+        .find(|candidate| candidate.id.as_str() == next)
     {
         return referenced_group.enabled.then_some(()).ok_or_else(|| {
             RuntimeStoreError::InvalidBootstrap(format!(
-                "group {} egress {egress:?} references a disabled group",
+                "group {} next {next:?} references a disabled group",
                 group.id
             ))
         });
     }
     Err(RuntimeStoreError::InvalidBootstrap(format!(
-        "group {} egress {egress:?} references no declared forwarding node or group",
+        "group {} next {next:?} references no declared forwarding node or group",
         group.id
     )))
 }
 
-fn validate_group_egress_cycle(
+fn validate_group_next_cycle(
     nodes: &[ForwardNode],
     groups: &[ForwardGroup],
     start: &str,
@@ -220,7 +220,7 @@ fn validate_group_egress_cycle(
     loop {
         if !seen.insert(current.to_string()) {
             return Err(RuntimeStoreError::InvalidBootstrap(format!(
-                "group egress cycle includes {current:?}"
+                "group next cycle includes {current:?}"
             )));
         }
         let Some(group) = groups
@@ -229,14 +229,14 @@ fn validate_group_egress_cycle(
         else {
             break;
         };
-        let egress = group.egress.label();
-        if egress == EgressRef::DIRECT_AUDIT_OUTLET {
+        let next = group.next.label();
+        if next == NextRef::DIRECT_AUDIT_OUTLET {
             break;
         }
-        if nodes.iter().any(|node| node.id.as_str() == egress) {
+        if nodes.iter().any(|node| node.id.as_str() == next) {
             break;
         }
-        current = egress;
+        current = next;
     }
     Ok(())
 }

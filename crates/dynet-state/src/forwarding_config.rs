@@ -5,7 +5,7 @@ use std::{
 
 use dynet_ingress::{EgressNodeConfig, ShadowsocksConfig, TrojanConfig, VlessConfig, VmessConfig};
 use dynet_runtime::{
-    EgressRef, ForwardGroup, ForwardNode, GroupId, GroupMember, NodeId, RouteMatcher, RouteRule,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef, NodeId, RouteMatcher, RouteRule,
     RuleId, RuntimeSeed, SchedulerPolicy,
 };
 use serde::Deserialize;
@@ -31,7 +31,7 @@ struct FileForwardGroupConfig {
     enabled: Option<bool>,
     mode: String,
     profile: Option<String>,
-    egress: Option<String>,
+    next: Option<String>,
     members: Vec<String>,
     thresholds: Option<FileGroupThresholds>,
 }
@@ -176,15 +176,15 @@ fn load_groups(
     for group in groups {
         let id = non_empty("forwarding.groups[].id", group.id.clone())?;
         validate_group_header(&id, &group, &mut group_ids)?;
-        let egress = group
-            .egress
-            .map_or_else(EgressRef::direct_audit_outlet, EgressRef::named);
+        let next = group
+            .next
+            .map_or_else(NextRef::direct_audit_outlet, NextRef::named);
         push_group_members(&id, group.members, &mut group_members)?;
         runtime_groups.push(ForwardGroup {
             id: GroupId::new(id),
             enabled: group.enabled.unwrap_or(true),
             scheduler: SchedulerPolicy::SingleFirstEnabled,
-            egress,
+            next,
         });
     }
     Ok((runtime_groups, group_members))
@@ -195,7 +195,7 @@ fn validate_group_header(
     group: &FileForwardGroupConfig,
     group_ids: &mut BTreeSet<String>,
 ) -> Result<(), String> {
-    if id == EgressRef::DIRECT_AUDIT_OUTLET {
+    if id == NextRef::DIRECT_AUDIT_OUTLET {
         return Err("forwarding group id 'direct' is reserved".to_string());
     }
     if !group_ids.insert(id.to_string()) {

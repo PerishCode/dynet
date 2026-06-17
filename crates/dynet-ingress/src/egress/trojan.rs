@@ -49,7 +49,8 @@ impl TrojanEgress {
                 self.client.server_host(),
                 self.client.server_port(),
             ))
-            .await?;
+            .await?
+            .into_tcp_stream(self.tag())?;
         let outcome = self
             .client
             .relay_tcp_with_stream(session.downstream, session.target, upstream)

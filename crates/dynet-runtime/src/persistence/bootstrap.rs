@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
 
 use crate::{
-    DnsRacePolicy, DnsUpstream, DnsUpstreamId, EgressRef, ForwardGroup, ForwardNode, GroupId,
-    GroupMember, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
+    DnsRacePolicy, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId, GroupMember,
+    NextRef, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
 };
 
 use super::{
@@ -142,7 +142,7 @@ impl RuntimeStore {
 
     async fn load_groups(&self) -> Result<Vec<ForwardGroup>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, enabled, scheduler, egress from runtime_forward_groups order by id",
+            "select id, enabled, scheduler, next from runtime_forward_groups order by id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -212,7 +212,7 @@ fn row_to_group(row: SqliteRow) -> Result<ForwardGroup, RuntimeStoreError> {
         id: GroupId::new(id),
         enabled,
         scheduler,
-        egress: EgressRef::named(row.get::<String, _>("egress")),
+        next: NextRef::named(row.get::<String, _>("next")),
     })
 }
 
@@ -331,14 +331,14 @@ async fn insert_group(
     let enabled = if group.enabled { 1_i64 } else { 0_i64 };
     sqlx::query(
         "insert into runtime_forward_groups (
-            id, enabled, scheduler, egress, updated_at_unix_ms
+            id, enabled, scheduler, next, updated_at_unix_ms
          )
          values (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(group.id.as_str())
     .bind(enabled)
     .bind(group.scheduler.as_str())
-    .bind(group.egress.label())
+    .bind(group.next.label())
     .bind(super::unix_ms_i64())
     .execute(&mut **transaction)
     .await?;

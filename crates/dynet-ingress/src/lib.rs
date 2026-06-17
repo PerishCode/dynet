@@ -216,10 +216,15 @@ pub async fn run_socks5(config: Socks5IngressConfig, runtime: RuntimeState) -> R
 
 pub async fn run_tcp_with_egress(
     config: TcpRelayConfig,
-    egress: EgressNodeConfig,
+    node_config: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
-    inbound::run_tcp(config, egress::EgressMedium::try_from(egress)?, runtime).await
+    inbound::run_tcp(
+        config,
+        egress::EgressMedium::try_from(node_config)?,
+        runtime,
+    )
+    .await
 }
 
 pub async fn run_tcp_graph(
@@ -237,10 +242,15 @@ pub async fn run_tcp_graph(
 
 pub async fn run_udp_with_egress(
     config: UdpRelayConfig,
-    egress: EgressNodeConfig,
+    node_config: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
-    inbound::run_udp(config, egress::EgressMedium::try_from(egress)?, runtime).await
+    inbound::run_udp(
+        config,
+        egress::EgressMedium::try_from(node_config)?,
+        runtime,
+    )
+    .await
 }
 
 pub async fn run_udp_graph(
@@ -258,10 +268,15 @@ pub async fn run_udp_graph(
 
 pub async fn run_socks5_with_egress(
     config: Socks5IngressConfig,
-    egress: EgressNodeConfig,
+    node_config: EgressNodeConfig,
     runtime: RuntimeState,
 ) -> Result<(), String> {
-    socks::run_socks5(config, egress::EgressMedium::try_from(egress)?, runtime).await
+    socks::run_socks5(
+        config,
+        egress::EgressMedium::try_from(node_config)?,
+        runtime,
+    )
+    .await
 }
 
 pub async fn run_socks5_graph(
@@ -349,7 +364,7 @@ pub(crate) fn push_decision_fields(
         fields.push(("matchedRuleId", rule_id.to_string()));
     }
     fields.push(("nodeId", decision.node_id.to_string()));
-    fields.push(("groupEgress", decision.egress.label().to_string()));
+    fields.push(("groupNext", decision.next.label().to_string()));
     fields.push((
         "selectionTrace",
         decision

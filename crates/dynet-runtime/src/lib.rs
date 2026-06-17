@@ -18,11 +18,11 @@ pub use dns::{
 };
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
-    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, EgressRef, ForwardGroup,
-    ForwardNode, GroupId, GroupMember, InboundKind, NodeId, ObservedDnsMap, RouteMatcher,
-    RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision,
-    SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix,
-    TargetContext, TargetSource,
+    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId,
+    GroupMember, InboundKind, NextRef, NodeId, ObservedDnsMap, RouteMatcher, RouteRule, RuleId,
+    RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
+    SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix, TargetContext,
+    TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
@@ -187,7 +187,7 @@ impl RuntimeState {
             group_id,
             matched_rule_id: route_match.rule_id,
             node_id: first_hop.node_id.clone(),
-            egress: first_hop.egress.clone(),
+            next: first_hop.next.clone(),
             trace: selection.trace,
             terminal: selection.terminal,
             reason: SelectionReason::SingleNode,
