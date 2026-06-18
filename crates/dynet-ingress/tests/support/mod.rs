@@ -119,6 +119,20 @@ pub async fn spawn_tcp_prefix_server<const N: usize>() -> (SocketAddr, JoinHandl
     (address, task)
 }
 
+pub async fn spawn_prefix_vec(size: usize) -> (SocketAddr, JoinHandle<Vec<u8>>) {
+    let listener = TcpListener::bind(local_addr())
+        .await
+        .expect("bind prefix server");
+    let address = listener.local_addr().expect("prefix server addr");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept prefix server");
+        let mut prefix = vec![0_u8; size];
+        stream.read_exact(&mut prefix).await.expect("read prefix");
+        prefix
+    });
+    (address, task)
+}
+
 struct SsAeadReader {
     cipher: Aes256Gcm,
     nonce: [u8; SS_AEAD_NONCE_SIZE],

@@ -185,6 +185,29 @@ impl EgressMedium {
             Self::Vmess(egress) => egress.handle_tcp_via_dialer(session, dialer).await,
         }
     }
+
+    pub(super) async fn handle_udp_with_dialer<D>(
+        &self,
+        association: UdpRelayAssociation,
+        dialer: &D,
+    ) -> Result<UdpRelayOutcome, EgressError>
+    where
+        D: TcpDialer,
+    {
+        match self {
+            Self::Trojan(egress) => egress.handle_udp_via_dialer(association, dialer).await,
+            Self::Vless(egress) => egress.handle_udp_via_dialer(association, dialer).await,
+            Self::Vmess(egress) => egress.handle_udp_via_dialer(association, dialer).await,
+            Self::Direct(_) | Self::Shadowsocks(_) => Err(EgressError {
+                stage: "egress-select",
+                upstream: None,
+                message: format!(
+                    "UDP final egress {} does not support TCP-dialer underlay",
+                    self.tag()
+                ),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

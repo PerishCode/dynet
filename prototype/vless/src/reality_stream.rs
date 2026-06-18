@@ -41,7 +41,7 @@ impl StreamState {
     }
 }
 
-pub(crate) struct RealityStream<IO = tokio::net::TcpStream> {
+pub struct RealityStream<IO = tokio::net::TcpStream> {
     io: IO,
     session: RealityClientConnection,
     state: StreamState,

@@ -28,13 +28,13 @@ pub struct Client {
 }
 
 #[derive(Debug)]
-pub struct UdpReader {
-    reader: VmessReader<ReadHalf<TcpStream>>,
+pub struct UdpReader<R = ReadHalf<TcpStream>> {
+    reader: VmessReader<R>,
 }
 
 #[derive(Debug)]
-pub struct UdpWriter {
-    writer: VmessWriter<WriteHalf<TcpStream>>,
+pub struct UdpWriter<W = WriteHalf<TcpStream>> {
+    writer: VmessWriter<W>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -212,13 +212,54 @@ impl Client {
         &self,
         target: SocketAddr,
     ) -> Result<(UdpRelayParts, UdpReader, UdpWriter), Error> {
-        let mut upstream = self.connect().await?;
+        let upstream = self.connect().await?;
         let upstream_addr = upstream.peer_addr().map_err(|error| {
             Error::new(
                 "outbound-connect",
                 format!("failed reading VMess server address: {error}"),
             )
         })?;
+        self.connect_udp_with_stream(upstream_addr, upstream, target)
+            .await
+    }
+
+    pub async fn connect_udp_with_io<IO>(
+        &self,
+        upstream_addr: SocketAddr,
+        upstream: IO,
+        target: SocketAddr,
+    ) -> Result<
+        (
+            UdpRelayParts,
+            UdpReader<ReadHalf<IO>>,
+            UdpWriter<WriteHalf<IO>>,
+        ),
+        Error,
+    >
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
+        self.connect_udp_with_stream(upstream_addr, upstream, target)
+            .await
+    }
+
+    async fn connect_udp_with_stream<IO>(
+        &self,
+        upstream_addr: SocketAddr,
+        upstream: IO,
+        target: SocketAddr,
+    ) -> Result<
+        (
+            UdpRelayParts,
+            UdpReader<ReadHalf<IO>>,
+            UdpWriter<WriteHalf<IO>>,
+        ),
+        Error,
+    >
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut upstream = upstream;
         let context = protocol::request_context();
         upstream
             .write_all(&protocol::request(
@@ -263,13 +304,19 @@ impl Client {
     }
 }
 
-impl UdpWriter {
+impl<W> UdpWriter<W>
+where
+    W: AsyncWriteExt + Unpin,
+{
     pub async fn write_datagram(&mut self, payload: &[u8]) -> Result<(), Error> {
         self.writer.write_chunk(payload).await
     }
 }
 
-impl UdpReader {
+impl<R> UdpReader<R>
+where
+    R: AsyncRead + Unpin,
+{
     pub async fn read_datagram(&mut self) -> Result<Vec<u8>, Error> {
         self.reader
             .read_chunk()

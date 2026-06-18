@@ -31,13 +31,13 @@ pub struct Client {
 }
 
 #[derive(Debug)]
-pub struct UdpReader {
-    reader: ReadHalf<TlsStream<TcpStream>>,
+pub struct UdpReader<R = ReadHalf<TlsStream<TcpStream>>> {
+    reader: R,
 }
 
 #[derive(Debug)]
-pub struct UdpWriter {
-    writer: WriteHalf<TlsStream<TcpStream>>,
+pub struct UdpWriter<W = WriteHalf<TlsStream<TcpStream>>> {
+    writer: W,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -179,6 +179,56 @@ impl Client {
         target: SocketAddr,
     ) -> Result<(UdpRelayParts, UdpReader, UdpWriter), Error> {
         let (upstream_addr, mut upstream) = self.connect_tls().await?;
+        self.connect_udp_with_tls(upstream_addr, &mut upstream, target)
+            .await?;
+        let (reader, writer) = io::split(upstream);
+        Ok((
+            UdpRelayParts {
+                upstream: upstream_addr,
+            },
+            UdpReader { reader },
+            UdpWriter { writer },
+        ))
+    }
+
+    pub async fn connect_udp_with_io<IO>(
+        &self,
+        upstream_addr: SocketAddr,
+        upstream: IO,
+        target: SocketAddr,
+    ) -> Result<
+        (
+            UdpRelayParts,
+            UdpReader<ReadHalf<TlsStream<IO>>>,
+            UdpWriter<WriteHalf<TlsStream<IO>>>,
+        ),
+        Error,
+    >
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
+        let mut upstream = self.connect_tls_with_io(upstream).await?;
+        self.connect_udp_with_tls(upstream_addr, &mut upstream, target)
+            .await?;
+        let (reader, writer) = io::split(upstream);
+        Ok((
+            UdpRelayParts {
+                upstream: upstream_addr,
+            },
+            UdpReader { reader },
+            UdpWriter { writer },
+        ))
+    }
+
+    async fn connect_udp_with_tls<IO>(
+        &self,
+        upstream_addr: SocketAddr,
+        upstream: &mut TlsStream<IO>,
+        target: SocketAddr,
+    ) -> Result<(), Error>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
         upstream
             .write_all(&request_header(
                 &self.password_hash,
@@ -192,14 +242,8 @@ impl Client {
                     format!("failed writing Trojan UDP associate request: {error}"),
                 )
             })?;
-        let (reader, writer) = io::split(upstream);
-        Ok((
-            UdpRelayParts {
-                upstream: upstream_addr,
-            },
-            UdpReader { reader },
-            UdpWriter { writer },
-        ))
+        let _ = upstream_addr;
+        Ok(())
     }
 
     async fn connect_tls(&self) -> Result<(SocketAddr, TlsStream<TcpStream>), Error> {
@@ -247,7 +291,10 @@ impl Client {
     }
 }
 
-impl UdpWriter {
+impl<W> UdpWriter<W>
+where
+    W: AsyncWrite + Unpin,
+{
     pub async fn write_datagram(
         &mut self,
         target: SocketAddr,
@@ -263,7 +310,10 @@ impl UdpWriter {
     }
 }
 
-impl UdpReader {
+impl<R> UdpReader<R>
+where
+    R: AsyncRead + Unpin,
+{
     pub async fn read_datagram(&mut self) -> Result<Vec<u8>, Error> {
         read_udp_packet(&mut self.reader).await
     }

@@ -74,6 +74,103 @@ impl VlessEgress {
             close_reason: "normal",
         })
     }
+
+    pub(super) async fn handle_udp_via_dialer<D>(
+        &self,
+        association: UdpRelayAssociation,
+        dialer: &D,
+    ) -> Result<UdpRelayOutcome, EgressError>
+    where
+        D: TcpDialer,
+    {
+        let upstream = dialer
+            .dial_tcp(TcpDialTarget::host(
+                self.client.server_host(),
+                self.client.server_port(),
+            ))
+            .await?;
+        let upstream_addr = upstream.upstream();
+        let upstream = upstream.into_io();
+        let (parts, reader, writer) = self
+            .client
+            .connect_udp_with_io(upstream_addr, upstream, association.target)
+            .await
+            .map_err(|error| vless_error(error, Some(upstream_addr)))?;
+        self.relay_udp(association, parts.upstream, reader, writer)
+            .await
+    }
+
+    async fn relay_udp<R, W>(
+        &self,
+        mut association: UdpRelayAssociation,
+        upstream: SocketAddr,
+        mut reader: VlessUdpReader<R>,
+        mut writer: vless_prototype::UdpWriter<W>,
+    ) -> Result<UdpRelayOutcome, EgressError>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            let step = time::timeout(
+                association.idle_timeout,
+                vless_udp_step(&mut association.downstream_rx, &mut reader),
+            )
+            .await;
+            match step {
+                Ok(VlessUdpStep::Downstream(payload)) => {
+                    writer
+                        .write_datagram(&payload)
+                        .await
+                        .map_err(|error| vless_error(error, Some(upstream)))?;
+                }
+                Ok(VlessUdpStep::Upstream(payload)) => {
+                    association
+                        .downstream
+                        .send_to_peer(&payload, association.peer)
+                        .await
+                        .map_err(|error| EgressError {
+                            stage: "inbound-write",
+                            upstream: Some(upstream),
+                            message: format!("failed sending UDP downstream datagram: {error}"),
+                        })?;
+                    let mut fields = session_fields(
+                        association.session_id,
+                        association.inbound,
+                        self.tag(),
+                        association.peer,
+                        association.target,
+                        upstream,
+                    );
+                    push_decision_fields(&mut fields, &association.decision);
+                    fields.push(("direction", "upstream-to-client".to_string()));
+                    fields.push((
+                        "bytes",
+                        association.downstream.payload_len(&payload).to_string(),
+                    ));
+                    association
+                        .runtime
+                        .events()
+                        .record(IngressEventKind::UdpDatagram, fields);
+                }
+                Ok(VlessUdpStep::Closed) => {
+                    return Ok(UdpRelayOutcome {
+                        upstream,
+                        close_reason: "inbound-closed",
+                    });
+                }
+                Ok(VlessUdpStep::ReadError(error)) => {
+                    return Err(vless_error(error, Some(upstream)));
+                }
+                Err(_) => {
+                    return Ok(UdpRelayOutcome {
+                        upstream,
+                        close_reason: "idle-timeout",
+                    });
+                }
+            }
+        }
+    }
 }
 
 impl TcpDialer for VlessEgress {
@@ -110,72 +207,15 @@ impl EgressNode for VlessEgress {
 
     async fn handle_udp(
         &self,
-        mut association: UdpRelayAssociation,
+        association: UdpRelayAssociation,
     ) -> Result<UdpRelayOutcome, EgressError> {
-        let (parts, mut reader, mut writer) = self
+        let (parts, reader, writer) = self
             .client
             .connect_udp(association.target)
             .await
             .map_err(|error| vless_error(error, None))?;
-        loop {
-            let step = time::timeout(
-                association.idle_timeout,
-                vless_udp_step(&mut association.downstream_rx, &mut reader),
-            )
-            .await;
-            match step {
-                Ok(VlessUdpStep::Downstream(payload)) => {
-                    writer
-                        .write_datagram(&payload)
-                        .await
-                        .map_err(|error| vless_error(error, Some(parts.upstream)))?;
-                }
-                Ok(VlessUdpStep::Upstream(payload)) => {
-                    association
-                        .downstream
-                        .send_to_peer(&payload, association.peer)
-                        .await
-                        .map_err(|error| EgressError {
-                            stage: "inbound-write",
-                            upstream: Some(parts.upstream),
-                            message: format!("failed sending UDP downstream datagram: {error}"),
-                        })?;
-                    let mut fields = session_fields(
-                        association.session_id,
-                        association.inbound,
-                        self.tag(),
-                        association.peer,
-                        association.target,
-                        parts.upstream,
-                    );
-                    push_decision_fields(&mut fields, &association.decision);
-                    fields.push(("direction", "upstream-to-client".to_string()));
-                    fields.push((
-                        "bytes",
-                        association.downstream.payload_len(&payload).to_string(),
-                    ));
-                    association
-                        .runtime
-                        .events()
-                        .record(IngressEventKind::UdpDatagram, fields);
-                }
-                Ok(VlessUdpStep::Closed) => {
-                    return Ok(UdpRelayOutcome {
-                        upstream: parts.upstream,
-                        close_reason: "inbound-closed",
-                    });
-                }
-                Ok(VlessUdpStep::ReadError(error)) => {
-                    return Err(vless_error(error, Some(parts.upstream)));
-                }
-                Err(_) => {
-                    return Ok(UdpRelayOutcome {
-                        upstream: parts.upstream,
-                        close_reason: "idle-timeout",
-                    });
-                }
-            }
-        }
+        self.relay_udp(association, parts.upstream, reader, writer)
+            .await
     }
 }
 
@@ -196,7 +236,7 @@ enum VlessUdpStep {
 
 async fn vless_udp_step(
     downstream_rx: &mut mpsc::Receiver<Vec<u8>>,
-    reader: &mut VlessUdpReader,
+    reader: &mut VlessUdpReader<impl tokio::io::AsyncRead + Unpin>,
 ) -> VlessUdpStep {
     tokio::select! {
         payload = downstream_rx.recv() => match payload {
