@@ -72,8 +72,8 @@ pub struct TcpWriter {
 }
 
 #[derive(Debug)]
-pub struct TcpStreamHandle {
-    stream: VisionStream<TcpStream>,
+pub struct TcpStreamHandle<IO = TcpStream> {
+    stream: VisionStream<IO>,
 }
 
 #[derive(Debug)]
@@ -212,7 +212,25 @@ impl Client {
         target: SocketAddr,
         tcp: TcpStream,
     ) -> Result<(TcpRelayParts, TcpStreamHandle), Error> {
-        let (upstream, mut stream) = self.connect_reality_with_stream(tcp).await?;
+        let upstream = tcp.peer_addr().map_err(|error| {
+            Error::new(
+                "outbound-connect",
+                format!("failed reading VLESS Reality server address: {error}"),
+            )
+        })?;
+        self.connect_tcp_with_io(target, upstream, tcp).await
+    }
+
+    pub async fn connect_tcp_with_io<IO>(
+        &self,
+        target: SocketAddr,
+        upstream: SocketAddr,
+        io: IO,
+    ) -> Result<(TcpRelayParts, TcpStreamHandle<IO>), Error>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
+        let (upstream, mut stream) = self.connect_reality_with_io(upstream, io).await?;
         stream
             .write_all(&self.tcp_request_header(TargetAddress::socket(target))?)
             .await
@@ -228,9 +246,9 @@ impl Client {
                 format!("failed flushing VLESS TCP request: {error}"),
             )
         })?;
-        let (tcp, session) = stream.into_inner();
+        let (io, session) = stream.into_inner();
         let stream = VisionStream::new_client(
-            tcp,
+            io,
             CryptoConnection::new_reality_client(session),
             self.user_id,
         );
@@ -290,7 +308,7 @@ impl Client {
 
     async fn connect_reality_with_stream(
         &self,
-        mut tcp: TcpStream,
+        tcp: TcpStream,
     ) -> Result<(SocketAddr, RealityStream), Error> {
         let upstream = tcp.peer_addr().map_err(|error| {
             Error::new(
@@ -298,6 +316,17 @@ impl Client {
                 format!("failed reading VLESS Reality server address: {error}"),
             )
         })?;
+        self.connect_reality_with_io(upstream, tcp).await
+    }
+
+    async fn connect_reality_with_io<IO>(
+        &self,
+        upstream: SocketAddr,
+        mut io: IO,
+    ) -> Result<(SocketAddr, RealityStream<IO>), Error>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
         let mut session = RealityClientConnection::new(RealityClientConfig {
             public_key: self.public_key,
             short_id: self.short_id,
@@ -310,7 +339,7 @@ impl Client {
                 format!("failed creating VLESS Reality client connection: {error}"),
             )
         })?;
-        perform_reality_handshake(&mut session, &mut tcp)
+        perform_reality_handshake(&mut session, &mut io)
             .await
             .map_err(|error| {
                 Error::new(
@@ -318,11 +347,14 @@ impl Client {
                     format!("failed establishing VLESS Reality connection: {error}"),
                 )
             })?;
-        Ok((upstream, RealityStream::new(tcp, session)))
+        Ok((upstream, RealityStream::new(io, session)))
     }
 }
 
-impl AsyncRead for TcpStreamHandle {
+impl<IO> AsyncRead for TcpStreamHandle<IO>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -332,7 +364,10 @@ impl AsyncRead for TcpStreamHandle {
     }
 }
 
-impl AsyncWrite for TcpStreamHandle {
+impl<IO> AsyncWrite for TcpStreamHandle<IO>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

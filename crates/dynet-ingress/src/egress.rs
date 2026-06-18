@@ -65,19 +65,6 @@ impl TcpDialConnection {
             Self::Stream { stream, .. } => stream,
         }
     }
-
-    pub(crate) fn into_tcp_stream(self, protocol: &'static str) -> Result<TcpStream, EgressError> {
-        match self {
-            Self::TcpStream { stream, .. } => Ok(stream),
-            Self::Stream { .. } => Err(EgressError {
-                stage: "egress-select",
-                upstream: None,
-                message: format!(
-                    "{protocol} TCP execution through non-TCPStream dialer is not implemented"
-                ),
-            }),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -176,7 +163,9 @@ impl EgressMedium {
         match self {
             Self::Direct(dialer) => Some(TcpDialerMedium::Direct(dialer)),
             Self::Shadowsocks(dialer) => Some(TcpDialerMedium::Shadowsocks(dialer)),
-            Self::Trojan(_) | Self::Vless(_) | Self::Vmess(_) => None,
+            Self::Trojan(dialer) => Some(TcpDialerMedium::Trojan(dialer)),
+            Self::Vless(dialer) => Some(TcpDialerMedium::Vless(dialer)),
+            Self::Vmess(dialer) => Some(TcpDialerMedium::Vmess(dialer)),
         }
     }
 
@@ -202,6 +191,9 @@ impl EgressMedium {
 pub(crate) enum TcpDialerMedium<'a> {
     Direct(&'a DirectEgress),
     Shadowsocks(&'a ShadowsocksEgress),
+    Trojan(&'a TrojanEgress),
+    Vless(&'a VlessEgress),
+    Vmess(&'a VmessEgress),
 }
 
 impl TcpDialer for TcpDialerMedium<'_> {
@@ -209,6 +201,9 @@ impl TcpDialer for TcpDialerMedium<'_> {
         match self {
             Self::Direct(dialer) => dialer.dial_tcp(target).await,
             Self::Shadowsocks(dialer) => dialer.dial_tcp(target).await,
+            Self::Trojan(dialer) => dialer.dial_tcp(target).await,
+            Self::Vless(dialer) => dialer.dial_tcp(target).await,
+            Self::Vmess(dialer) => dialer.dial_tcp(target).await,
         }
     }
 }

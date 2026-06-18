@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::{sync::mpsc, time};
+use tokio::{io, sync::mpsc, time};
 
 use vmess_prototype::{
     Client as VmessClient, ClientConfig as VmessClientConfig, UdpReader as VmessUdpReader,
@@ -8,8 +8,8 @@ use vmess_prototype::{
 
 use crate::{
     egress::{
-        DirectEgress, EgressError, EgressNode, TcpDialTarget, TcpDialer, TcpRelayOutcome,
-        TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
+        DirectEgress, EgressError, EgressNode, TcpDialConnection, TcpDialTarget, TcpDialer,
+        TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, session_fields, IngressEventKind, VmessConfig,
 };
@@ -48,11 +48,12 @@ impl VmessEgress {
                 self.client.server_host(),
                 self.client.server_port(),
             ))
-            .await?
-            .into_tcp_stream(self.tag())?;
+            .await?;
+        let upstream_addr = upstream.upstream();
+        let upstream = upstream.into_io();
         let outcome = self
             .client
-            .relay_tcp_with_stream(session.downstream, session.target, upstream)
+            .relay_tcp_with_io(session.downstream, upstream_addr, upstream, session.target)
             .await
             .map_err(|error| vmess_error(error, None))?;
         Ok(TcpRelayOutcome {
@@ -60,6 +61,31 @@ impl VmessEgress {
             client_to_upstream_bytes: outcome.client_to_upstream_bytes,
             upstream_to_client_bytes: outcome.upstream_to_client_bytes,
             close_reason: "normal",
+        })
+    }
+}
+
+impl TcpDialer for VmessEgress {
+    async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpDialConnection, EgressError> {
+        let target = target.resolve_socket().await?;
+        let upstream = DirectEgress
+            .dial_tcp(TcpDialTarget::host(
+                self.client.server_host(),
+                self.client.server_port(),
+            ))
+            .await?;
+        let upstream_addr = upstream.upstream();
+        let upstream = upstream.into_io();
+        let client = self.client.clone();
+        let (dialer_side, relay_side) = io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let _ = client
+                .relay_tcp_with_io(relay_side, upstream_addr, upstream, target)
+                .await;
+        });
+        Ok(TcpDialConnection::Stream {
+            stream: Box::new(dialer_side),
+            upstream: upstream_addr,
         })
     }
 }
