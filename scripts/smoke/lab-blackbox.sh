@@ -10,6 +10,11 @@ UDP_HOST="${DYNET_LAB_UDP_HOST:-1.1.1.1}"
 UDP_PORT="${DYNET_LAB_UDP_PORT:-443}"
 REQUIRE_UDP="${DYNET_LAB_REQUIRE_UDP:-1}"
 EXPECT_TCP_GROUPS="${DYNET_LAB_EXPECT_TCP_GROUPS:-}"
+ENSURE_TUN_RULE="${DYNET_LAB_ENSURE_TUN_RULE:-1}"
+TUN_TABLE="${DYNET_LAB_TUN_TABLE:-2022}"
+TUN_RULE_PREF="${DYNET_LAB_TUN_RULE_PREF:-9000}"
+TUN_DEVICE="${DYNET_LAB_TUN_DEVICE:-Meta}"
+HOST_GATEWAY="${DYNET_LAB_HOST_GATEWAY:-192.168.5.2}"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -29,6 +34,18 @@ validate_config() {
   fi
   if [[ "${REQUIRE_UDP}" != "0" && "${REQUIRE_UDP}" != "1" ]]; then
     echo "DYNET_LAB_REQUIRE_UDP must be 0 or 1" >&2
+    exit 1
+  fi
+  if [[ "${ENSURE_TUN_RULE}" != "0" && "${ENSURE_TUN_RULE}" != "1" ]]; then
+    echo "DYNET_LAB_ENSURE_TUN_RULE must be 0 or 1" >&2
+    exit 1
+  fi
+  if ! [[ "${TUN_TABLE}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "DYNET_LAB_TUN_TABLE must be a positive integer" >&2
+    exit 1
+  fi
+  if ! [[ "${TUN_RULE_PREF}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "DYNET_LAB_TUN_RULE_PREF must be a positive integer" >&2
     exit 1
   fi
 }
@@ -151,6 +168,27 @@ vm_udp() {
       'printf dynet-lab-udp >"/dev/udp/${DYNET_UDP_HOST}/${DYNET_UDP_PORT}"'
 }
 
+ensure_tun_rule() {
+  if [[ "${ENSURE_TUN_RULE}" != "1" ]]; then
+    return
+  fi
+  if ! limactl shell "${VM}" ip route show table "${TUN_TABLE}" | grep -q "dev ${TUN_DEVICE}"; then
+    echo "missing Mihomo TUN routes in table ${TUN_TABLE}" >&2
+    exit 1
+  fi
+  if ! limactl shell "${VM}" ip rule show | grep -Eq "lookup ${TUN_TABLE}( |$)"; then
+    limactl shell "${VM}" sudo ip rule add pref "${TUN_RULE_PREF}" lookup "${TUN_TABLE}"
+  fi
+  if ! limactl shell "${VM}" ip route get "${UDP_HOST}" | grep -q "dev ${TUN_DEVICE}"; then
+    echo "Mihomo TUN route is not active for ${UDP_HOST}" >&2
+    exit 1
+  fi
+  if ! limactl shell "${VM}" ip route get "${HOST_GATEWAY}" | grep -q "dev eth0"; then
+    echo "host gateway ${HOST_GATEWAY} must bypass Mihomo TUN" >&2
+    exit 1
+  fi
+}
+
 require_cmd curl
 require_cmd limactl
 require_cmd python3
@@ -158,6 +196,7 @@ validate_config
 
 curl -fsS "${CONTROL_URL}/api/v1/health" >/dev/null
 limactl shell "${VM}" curl -fsS --max-time 5 "${GUEST_CONTROL_URL}/api/v1/health" >/dev/null
+ensure_tun_rule
 
 BASELINE_EVENTS="$(event_count)"
 
