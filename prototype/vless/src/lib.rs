@@ -56,8 +56,8 @@ pub struct Client {
 }
 
 #[derive(Debug)]
-pub struct UdpReader {
-    reader: ReadHalf<RealityStream>,
+pub struct UdpReader<R = ReadHalf<RealityStream>> {
+    reader: R,
     response_pending: bool,
 }
 
@@ -77,9 +77,11 @@ pub struct TcpStreamHandle<IO = TcpStream> {
 }
 
 #[derive(Debug)]
-pub struct UdpWriter {
-    writer: WriteHalf<RealityStream>,
+pub struct UdpWriter<W = WriteHalf<RealityStream>> {
+    writer: W,
 }
+type UdpIoReader<IO> = UdpReader<ReadHalf<RealityStream<IO>>>;
+type UdpIoWriter<IO> = UdpWriter<WriteHalf<RealityStream<IO>>>;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct TcpRelayParts {
@@ -260,6 +262,48 @@ impl Client {
         target: SocketAddr,
     ) -> Result<(UdpRelayParts, UdpReader, UdpWriter), Error> {
         let (upstream, mut stream) = self.connect_reality().await?;
+        self.connect_udp_with_reality(&mut stream, target).await?;
+        let (reader, writer) = io::split(stream);
+        Ok((
+            UdpRelayParts { upstream },
+            UdpReader {
+                reader,
+                response_pending: true,
+            },
+            UdpWriter { writer },
+        ))
+    }
+
+    pub async fn connect_udp_with_io<IO>(
+        &self,
+        upstream: SocketAddr,
+        io: IO,
+        target: SocketAddr,
+    ) -> Result<(UdpRelayParts, UdpIoReader<IO>, UdpIoWriter<IO>), Error>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
+        let (upstream, mut stream) = self.connect_reality_with_io(upstream, io).await?;
+        self.connect_udp_with_reality(&mut stream, target).await?;
+        let (reader, writer) = io::split(stream);
+        Ok((
+            UdpRelayParts { upstream },
+            UdpReader {
+                reader,
+                response_pending: true,
+            },
+            UdpWriter { writer },
+        ))
+    }
+
+    async fn connect_udp_with_reality<IO>(
+        &self,
+        stream: &mut RealityStream<IO>,
+        target: SocketAddr,
+    ) -> Result<(), Error>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
         stream
             .write_all(&self.udp_request_header(TargetAddress::socket(target))?)
             .await
@@ -274,16 +318,7 @@ impl Client {
                 "outbound-write",
                 format!("failed flushing VLESS UDP request: {error}"),
             )
-        })?;
-        let (reader, writer) = io::split(stream);
-        Ok((
-            UdpRelayParts { upstream },
-            UdpReader {
-                reader,
-                response_pending: true,
-            },
-            UdpWriter { writer },
-        ))
+        })
     }
 
     async fn dial_tcp_server(&self) -> Result<TcpStream, Error> {
@@ -428,7 +463,10 @@ impl TcpReader {
     }
 }
 
-impl UdpWriter {
+impl<W> UdpWriter<W>
+where
+    W: AsyncWriteExt + Unpin,
+{
     pub async fn write_datagram(&mut self, payload: &[u8]) -> Result<(), Error> {
         self.writer
             .write_all(&udp_frame(payload)?)
@@ -448,7 +486,10 @@ impl UdpWriter {
     }
 }
 
-impl UdpReader {
+impl<R> UdpReader<R>
+where
+    R: AsyncRead + Unpin,
+{
     pub async fn read_datagram(&mut self) -> Result<Vec<u8>, Error> {
         if self.response_pending {
             vless_protocol::read_vless_response_header(&mut self.reader).await?;

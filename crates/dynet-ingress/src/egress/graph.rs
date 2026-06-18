@@ -129,6 +129,9 @@ impl EgressNode for GraphEgress {
             {
                 return final_egress.handle_udp_over_ss(association, underlay).await;
             }
+            if let Some(dialer) = head.tcp_dialer() {
+                return tail.handle_udp_with_dialer(association, &dialer).await;
+            }
         }
         Err(chained_error("UDP"))
     }
