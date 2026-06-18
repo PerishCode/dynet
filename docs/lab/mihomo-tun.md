@@ -119,6 +119,31 @@ Start Mihomo in the VM:
 limactl shell dynet-lab sudo mihomo -d /etc/mihomo -f /etc/mihomo/dynet.yaml
 ```
 
+Confirm that Mihomo's TUN routing table is active for ordinary outbound
+traffic:
+
+```bash
+limactl shell dynet-lab ip route get 1.1.1.1
+```
+
+The route should use `dev Meta`. If it instead uses `dev eth0`, Mihomo created
+the TUN route table but did not install a policy rule for normal VM traffic.
+Add the rule:
+
+```bash
+limactl shell dynet-lab sudo ip rule add pref 9000 lookup 2022
+limactl shell dynet-lab ip route get 1.1.1.1
+```
+
+The host bridge must still bypass TUN:
+
+```bash
+limactl shell dynet-lab ip route get 192.168.5.2
+```
+
+This should remain on `dev eth0`; otherwise Mihomo cannot reach host-side
+`dynet`.
+
 For repeated runs, keep the VM running and restart only the two processes:
 
 ```bash
@@ -179,6 +204,8 @@ Use `DYNET_LAB_GUEST_CONTROL_URL` if the VM reaches the host at an address
 other than Lima's default `http://192.168.5.2:9977`.
 Use `DYNET_LAB_EXPECT_TCP_GROUPS=Tunnel,Private` to assert the TCP graph trace
 for a Tunnel group that exits through a Private group.
+The script ensures the Mihomo TUN route rule by default. Set
+`DYNET_LAB_ENSURE_TUN_RULE=0` to disable this check.
 
 Expected event evidence:
 
@@ -202,6 +229,21 @@ excluded from the TUN route:
 
 ```bash
 limactl shell dynet-lab ip route get 192.168.5.2
+```
+
+If public UDP or HTTP/3 traffic does not produce dynet SOCKS5 UDP events,
+confirm that ordinary outbound traffic uses Mihomo's TUN table:
+
+```bash
+limactl shell dynet-lab ip rule
+limactl shell dynet-lab ip route show table 2022
+limactl shell dynet-lab ip route get 1.1.1.1
+```
+
+The route to `1.1.1.1` should use `dev Meta`. If not, add:
+
+```bash
+limactl shell dynet-lab sudo ip rule add pref 9000 lookup 2022
 ```
 
 If DNS events are missing, confirm Mihomo is hijacking DNS and forwarding
