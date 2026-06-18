@@ -103,18 +103,35 @@ impl EgressNode for GraphEgress {
         &self,
         association: UdpRelayAssociation,
     ) -> Result<UdpRelayOutcome, EgressError> {
-        reject_chained_udp(&association.decision)?;
-        self.final_egress_for_decision(&association.decision)?
-            .handle_udp(association)
-            .await
+        if association.decision.trace.len() == 1 && association.decision.terminal.kind() == "direct"
+        {
+            return self
+                .final_egress_for_decision(&association.decision)?
+                .handle_udp(association)
+                .await;
+        }
+        if association.decision.trace.len() == 2 && association.decision.terminal.kind() == "direct"
+        {
+            let head = association
+                .decision
+                .trace
+                .first()
+                .ok_or_else(|| chained_error("UDP"))?;
+            let tail = association
+                .decision
+                .trace
+                .last()
+                .ok_or_else(|| chained_error("UDP"))?;
+            let head = self.egress_for_node(head.node_id.as_str())?;
+            let tail = self.egress_for_node(tail.node_id.as_str())?;
+            if let (EgressMedium::Shadowsocks(underlay), EgressMedium::Shadowsocks(final_egress)) =
+                (head, tail)
+            {
+                return final_egress.handle_udp_over_ss(association, underlay).await;
+            }
+        }
+        Err(chained_error("UDP"))
     }
-}
-
-fn reject_chained_udp(decision: &SelectionDecision) -> Result<(), EgressError> {
-    if decision.trace.len() == 1 && decision.terminal.kind() == "direct" {
-        return Ok(());
-    }
-    Err(chained_error("UDP"))
 }
 
 fn chained_error(protocol: &str) -> EgressError {

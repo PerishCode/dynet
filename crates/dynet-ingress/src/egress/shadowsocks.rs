@@ -218,6 +218,189 @@ impl ShadowsocksEgress {
             .record(IngressEventKind::UdpDatagram, fields);
         Ok(())
     }
+
+    pub(super) async fn handle_udp_over_ss(
+        &self,
+        mut association: UdpRelayAssociation,
+        underlay: &ShadowsocksEgress,
+    ) -> Result<UdpRelayOutcome, EgressError> {
+        let final_server = self.resolve_udp_server().await?;
+        let upstream_socket = tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
+            .await
+            .map_err(|error| EgressError {
+                stage: "egress-bind",
+                upstream: None,
+                message: format!("failed to bind Shadowsocks UDP socket: {error}"),
+            })?;
+        upstream_socket
+            .connect(underlay.client.server_endpoint())
+            .await
+            .map_err(|error| EgressError {
+                stage: "egress-connect",
+                upstream: None,
+                message: format!(
+                    "failed connecting Shadowsocks UDP underlay server {}: {error}",
+                    underlay.client.server_endpoint()
+                ),
+            })?;
+        let upstream = upstream_socket.peer_addr().map_err(|error| EgressError {
+            stage: "egress-connect",
+            upstream: None,
+            message: format!("failed reading Shadowsocks UDP underlay address: {error}"),
+        })?;
+        let mut final_session = self.client.udp_session();
+        let mut underlay_session = underlay.client.udp_session();
+        let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
+        loop {
+            let step = time::timeout(
+                association.idle_timeout,
+                udp_step(
+                    &mut association.downstream_rx,
+                    &upstream_socket,
+                    &mut buffer,
+                ),
+            )
+            .await;
+            match step {
+                Ok(UdpStep::Downstream(payload)) => {
+                    let inner_packet = final_session
+                        .encode_udp_datagram(association.target, &payload)
+                        .map_err(|error| {
+                            shadowsocks_chain_error(
+                                "egress-udp-inner-encode",
+                                error,
+                                Some(final_server),
+                            )
+                        })?;
+                    ensure_datagram_limit(
+                        "egress-udp-inner-encode",
+                        inner_packet.len(),
+                        Some(final_server),
+                    )?;
+                    let outer_packet = underlay_session
+                        .encode_udp_datagram(final_server, &inner_packet)
+                        .map_err(|error| {
+                            shadowsocks_chain_error(
+                                "egress-udp-outer-encode",
+                                error,
+                                Some(upstream),
+                            )
+                        })?;
+                    ensure_datagram_limit(
+                        "egress-udp-outer-encode",
+                        outer_packet.len(),
+                        Some(upstream),
+                    )?;
+                    upstream_socket
+                        .send(&outer_packet)
+                        .await
+                        .map_err(|error| EgressError {
+                            stage: "egress-udp-outer-write",
+                            upstream: Some(upstream),
+                            message: format!(
+                                "failed sending Shadowsocks UDP underlay packet: {error}"
+                            ),
+                        })?;
+                }
+                Ok(UdpStep::Upstream(size)) => {
+                    let outer_payload = underlay_session
+                        .decode_udp_datagram(&buffer[..size])
+                        .map_err(|error| {
+                            shadowsocks_chain_error(
+                                "egress-udp-outer-decode",
+                                error,
+                                Some(upstream),
+                            )
+                        })?;
+                    let payload =
+                        final_session
+                            .decode_udp_datagram(&outer_payload)
+                            .map_err(|error| {
+                                shadowsocks_chain_error(
+                                    "egress-udp-inner-decode",
+                                    error,
+                                    Some(final_server),
+                                )
+                            })?;
+                    self.handle_chained_udp_response(
+                        &association,
+                        upstream,
+                        final_server,
+                        &payload,
+                    )
+                    .await?;
+                }
+                Ok(UdpStep::Closed) => {
+                    return Ok(UdpRelayOutcome {
+                        upstream,
+                        close_reason: "inbound-closed",
+                    });
+                }
+                Err(_) => {
+                    return Ok(UdpRelayOutcome {
+                        upstream,
+                        close_reason: "idle-timeout",
+                    });
+                }
+            }
+        }
+    }
+
+    async fn handle_chained_udp_response(
+        &self,
+        association: &UdpRelayAssociation,
+        upstream: SocketAddr,
+        final_server: SocketAddr,
+        payload: &[u8],
+    ) -> Result<(), EgressError> {
+        association
+            .downstream
+            .send_to_peer(payload, association.peer)
+            .await
+            .map_err(|error| EgressError {
+                stage: "inbound-write",
+                upstream: Some(upstream),
+                message: format!("failed sending UDP downstream datagram: {error}"),
+            })?;
+        let mut fields = session_fields(
+            association.session_id,
+            association.inbound,
+            self.tag(),
+            association.peer,
+            association.target,
+            upstream,
+        );
+        push_decision_fields(&mut fields, &association.decision);
+        fields.push(("direction", "upstream-to-client".to_string()));
+        fields.push((
+            "bytes",
+            association.downstream.payload_len(payload).to_string(),
+        ));
+        fields.push(("udpUnderlay", upstream.to_string()));
+        fields.push(("udpFinalServer", final_server.to_string()));
+        association
+            .runtime
+            .events()
+            .record(IngressEventKind::UdpDatagram, fields);
+        Ok(())
+    }
+
+    async fn resolve_udp_server(&self) -> Result<SocketAddr, EgressError> {
+        let label = self.client.server_endpoint();
+        let mut addresses =
+            tokio::net::lookup_host((self.client.server_host(), self.client.server_port()))
+                .await
+                .map_err(|error| EgressError {
+                    stage: "egress-udp-inner-resolve",
+                    upstream: None,
+                    message: format!("failed resolving Shadowsocks UDP server {label}: {error}"),
+                })?;
+        addresses.next().ok_or_else(|| EgressError {
+            stage: "egress-udp-inner-resolve",
+            upstream: None,
+            message: format!("Shadowsocks UDP server {label} resolved no addresses"),
+        })
+    }
 }
 
 fn shadowsocks_method(method: ShadowsocksMethod) -> Method {
@@ -236,4 +419,31 @@ fn shadowsocks_error(
         upstream,
         message: error.to_string(),
     }
+}
+
+fn shadowsocks_chain_error(
+    stage: &'static str,
+    error: shadowsocks_prototype::Error,
+    upstream: Option<SocketAddr>,
+) -> EgressError {
+    EgressError {
+        stage,
+        upstream,
+        message: error.to_string(),
+    }
+}
+
+fn ensure_datagram_limit(
+    stage: &'static str,
+    size: usize,
+    upstream: Option<SocketAddr>,
+) -> Result<(), EgressError> {
+    if size <= DATAGRAM_LIMIT {
+        return Ok(());
+    }
+    Err(EgressError {
+        stage,
+        upstream,
+        message: format!("encoded UDP packet exceeds {DATAGRAM_LIMIT} bytes: {size}"),
+    })
 }
