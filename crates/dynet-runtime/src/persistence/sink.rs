@@ -5,7 +5,7 @@ use std::sync::{
 
 use tokio::sync::mpsc;
 
-use crate::{unix_ms, IngressEvent, SelectionContext, SelectionDecision};
+use crate::{unix_ms, IngressEvent, MatrixShadowDecision, SelectionContext, SelectionDecision};
 
 use super::{RuntimeStore, RuntimeStoreError, OBSERVATION_QUEUE_CAPACITY};
 
@@ -35,6 +35,7 @@ pub(crate) enum RuntimeObservation {
         context: SelectionContext,
         decision: SelectionDecision,
     },
+    MatrixShadow(MatrixShadowDecision),
 }
 
 impl RuntimeStore {
@@ -70,6 +71,10 @@ impl ObservationSink {
             context,
             decision,
         });
+    }
+
+    pub(crate) fn record_matrix_shadow(&self, decision: MatrixShadowDecision) {
+        self.try_send(RuntimeObservation::MatrixShadow(decision));
     }
 
     pub(crate) fn stats_snapshot(&self) -> PersistenceStatsSnapshot {
@@ -135,6 +140,9 @@ impl ObservationSinkWorker {
                 self.store
                     .insert_selection_decision(observed_at_unix_ms, &context, &decision)
                     .await
+            }
+            RuntimeObservation::MatrixShadow(decision) => {
+                self.store.insert_matrix_shadow(&decision).await
             }
         }
     }

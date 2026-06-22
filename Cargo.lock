@@ -501,11 +501,13 @@ dependencies = [
 name = "dynet-runtime"
 version = "0.1.0"
 dependencies = [
+ "native-tls",
  "serde",
  "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
+ "tokio-native-tls",
  "tracing",
  "utoipa",
 ]

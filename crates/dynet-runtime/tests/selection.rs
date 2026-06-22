@@ -24,6 +24,18 @@ fn selects_default_node() {
     assert_eq!(decision.trace[0].next.label(), "direct");
     assert_eq!(decision.terminal, SelectionTerminal::DirectAuditOutlet);
     assert_eq!(decision.decision_id, 1);
+    let shadows = runtime.matrix().shadow_decisions();
+    assert_eq!(shadows.len(), 1);
+    assert_eq!(shadows[0].decision_id, 1);
+    assert_eq!(shadows[0].session_id, 1);
+    assert_eq!(shadows[0].actual_node_id, "default-node");
+    assert_eq!(
+        shadows[0].shadow_top_node_id.as_deref(),
+        Some("default-node")
+    );
+    assert!(!shadows[0].shadow_differs_from_actual);
+    assert_eq!(shadows[0].candidates.len(), 1);
+    assert_eq!(shadows[0].candidates[0].reason, "priority-baseline");
     assert_eq!(runtime.nodes().snapshot()[0].tag, "ss");
     assert_eq!(runtime.groups().snapshot()[0].id.as_str(), "default");
     assert_eq!(

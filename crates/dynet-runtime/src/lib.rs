@@ -11,6 +11,7 @@ mod event;
 mod model;
 mod persistence;
 mod stores;
+mod traffic_session;
 
 pub use dns::{
     sniff_dns_query, sniff_dns_response, DnsQueryInfo, DnsResolution, DnsResolveError,
@@ -18,14 +19,16 @@ pub use dns::{
 };
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
-    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId,
-    GroupMember, InboundKind, NextRef, NodeId, ObservedDnsMap, RouteMatcher, RouteRule, RuleId,
-    RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
-    SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix, TargetContext,
-    TargetSource,
+    DnsHttpsEndpoint, DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId,
+    DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId, GroupMember, InboundKind,
+    MatrixService, MatrixShadowCandidate, MatrixShadowDecision, NextRef, NodeId, ObservedDnsMap,
+    RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext,
+    SelectionDecision, SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop,
+    SelectorMatrix, TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
+pub use traffic_session::TrafficSession;
 
 use model::{default_dns_upstreams, DEFAULT_NODE_ID};
 
@@ -43,8 +46,8 @@ struct RuntimeInner {
     dns_upstreams: DnsUpstreamStore,
     dns_policy: DnsRacePolicy,
     dns_map: ObservedDnsMap,
+    matrix: MatrixService,
     selector_matrix: SelectorMatrix,
-    observation_sink: Option<persistence::ObservationSink>,
     next_decision_id: AtomicU64,
 }
 
@@ -76,17 +79,18 @@ impl RuntimeState {
         let group = ForwardGroup::default_group();
         let member = GroupMember::default_member(node.id.clone(), group.id.clone());
         let nodes = NodeStore::single_node(node);
+        let matrix = MatrixService::default();
         Self {
             inner: Arc::new(RuntimeInner {
-                events: EventStore::default(),
+                events: EventStore::with_matrix(matrix.clone()),
                 nodes,
                 groups: GroupStore::from_parts(group.id.clone(), vec![group], vec![member]),
                 routes: RouteRuleStore::default(),
                 dns_upstreams: DnsUpstreamStore::from_upstreams(dns_upstreams),
                 dns_policy,
                 dns_map: ObservedDnsMap::default(),
+                matrix,
                 selector_matrix: SelectorMatrix,
-                observation_sink: None,
                 next_decision_id: AtomicU64::new(0),
             }),
         }
@@ -105,9 +109,10 @@ impl RuntimeState {
         bootstrap: persistence::RuntimeBootstrap,
         observation_sink: Option<persistence::ObservationSink>,
     ) -> Self {
+        let matrix = MatrixService::new(observation_sink);
         Self {
             inner: Arc::new(RuntimeInner {
-                events: EventStore::with_sink(observation_sink.clone()),
+                events: EventStore::with_matrix(matrix.clone()),
                 nodes: NodeStore::from_nodes(bootstrap.nodes),
                 groups: GroupStore::from_parts(
                     bootstrap.default_group_id,
@@ -118,8 +123,8 @@ impl RuntimeState {
                 dns_upstreams: DnsUpstreamStore::from_upstreams(bootstrap.dns_upstreams),
                 dns_policy: bootstrap.dns_policy,
                 dns_map: ObservedDnsMap::default(),
+                matrix,
                 selector_matrix: SelectorMatrix,
-                observation_sink,
                 next_decision_id: AtomicU64::new(0),
             }),
         }
@@ -153,18 +158,16 @@ impl RuntimeState {
         &self.inner.dns_map
     }
 
+    pub fn matrix(&self) -> &MatrixService {
+        &self.inner.matrix
+    }
+
     pub fn selector_matrix(&self) -> &SelectorMatrix {
         &self.inner.selector_matrix
     }
 
     pub fn persistence_stats(&self) -> PersistenceStatsSnapshot {
-        self.inner.observation_sink.as_ref().map_or(
-            PersistenceStatsSnapshot {
-                dropped_observations: 0,
-                sink_errors: 0,
-            },
-            |sink| sink.stats_snapshot(),
-        )
+        self.inner.matrix.persistence_stats()
     }
 
     pub fn select(&self, context: SelectionContext) -> Result<SelectionDecision, SelectionError> {
@@ -184,7 +187,7 @@ impl RuntimeState {
             .expect("selection graph has at least one hop");
         let decision = SelectionDecision {
             decision_id: self.inner.next_decision_id.fetch_add(1, Ordering::SeqCst) + 1,
-            group_id,
+            group_id: group_id.clone(),
             matched_rule_id: route_match.rule_id,
             node_id: first_hop.node_id.clone(),
             next: first_hop.next.clone(),
@@ -194,9 +197,22 @@ impl RuntimeState {
             scheduler: selection.scheduler,
             candidate_count: selection.candidate_count,
         };
-        if let Some(sink) = &self.inner.observation_sink {
-            sink.record_selection_decision(context, decision.clone());
+        if let Ok(candidates) = self
+            .inner
+            .groups
+            .enabled_candidates(&group_id, &self.inner.nodes)
+        {
+            self.inner.matrix.record_shadow_selection(
+                unix_ms(),
+                &context,
+                &group_id,
+                &decision,
+                candidates,
+            );
         }
+        self.inner
+            .matrix
+            .record_selection_decision(context, decision.clone());
         Ok(decision)
     }
 }

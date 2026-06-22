@@ -4,7 +4,8 @@ use std::{net::SocketAddr, time::Duration};
 
 use dynet_ingress::{run_dns, DnsRelayConfig};
 use dynet_runtime::{
-    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState,
+    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, DnsUpstreamTransport,
+    IngressEventKind, RuntimeState,
 };
 use support::{event_field, event_kinds, local_addr, unused_udp_addr, wait_for_event};
 use tokio::{net::UdpSocket, time};
@@ -154,6 +155,7 @@ fn runtime_with_dns_timeout(upstream: SocketAddr, timeout: Duration) -> RuntimeS
         vec![DnsUpstream {
             id: DnsUpstreamId::new("test"),
             address: upstream,
+            transport: DnsUpstreamTransport::Udp,
             enabled: true,
             priority: 0,
         }],

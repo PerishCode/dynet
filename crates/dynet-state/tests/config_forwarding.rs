@@ -6,6 +6,7 @@ use std::{
 };
 
 use dynet_ingress::{EgressNodeConfig, ShadowsocksMethod};
+use dynet_runtime::DnsUpstreamTransport;
 use dynet_state::Config;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -276,6 +277,57 @@ group = "Tunnel"
         .expect("Tunnel group");
     assert_eq!(tunnel.next.label(), "Private");
     assert_eq!(config.forwarding.seed.route_rules.len(), 1);
+
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
+fn loads_https_dns_upstream() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_https_dns_upstream");
+    fs::write(
+        &config_path,
+        r#"
+[forwarding]
+default_group = "default"
+dns_race_timeout_ms = 5000
+
+[[forwarding.dns_upstreams]]
+id = "cloudflare-doh"
+type = "https"
+address = "1.1.1.1:443"
+host = "cloudflare-dns.com"
+path = "/dns-query"
+priority = 10
+
+[[forwarding.nodes]]
+id = "default-node"
+type = "direct"
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["default-node"]
+"#,
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    let upstream = &config.forwarding.seed.dns_upstreams[0];
+    assert_eq!(upstream.id.as_str(), "cloudflare-doh");
+    assert_eq!(upstream.address, "1.1.1.1:443".parse().expect("socket"));
+    assert_eq!(upstream.priority, 10);
+    assert_eq!(
+        config.forwarding.seed.dns_policy.timeout,
+        std::time::Duration::from_millis(5000)
+    );
+    let DnsUpstreamTransport::Https(endpoint) = &upstream.transport else {
+        panic!("expected HTTPS upstream");
+    };
+    assert_eq!(endpoint.host, "cloudflare-dns.com");
+    assert_eq!(endpoint.path, "/dns-query");
 
     fs::remove_file(config_path).expect("remove config");
 }

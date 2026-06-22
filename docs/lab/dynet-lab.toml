@@ -23,6 +23,15 @@ max_sessions = 1024
 
 [forwarding]
 default_group = "default"
+dns_race_timeout_ms = 5000
+
+[[forwarding.dns_upstreams]]
+id = "cloudflare-doh"
+type = "https"
+address = "1.1.1.1:443"
+host = "cloudflare-dns.com"
+path = "/dns-query"
+priority = 0
 
 [[forwarding.nodes]]
 id = "direct-node"

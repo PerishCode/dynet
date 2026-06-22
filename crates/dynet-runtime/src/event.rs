@@ -9,7 +9,7 @@ use std::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{persistence, unix_ms};
+use crate::{unix_ms, MatrixService};
 
 const EVENT_LIMIT: usize = 1024;
 
@@ -23,7 +23,7 @@ struct EventInner {
     next_event_id: AtomicU64,
     next_session_id: AtomicU64,
     events: Mutex<VecDeque<IngressEvent>>,
-    observation_sink: Option<persistence::ObservationSink>,
+    matrix: MatrixService,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
@@ -52,18 +52,18 @@ pub enum IngressEventKind {
 
 impl Default for EventStore {
     fn default() -> Self {
-        Self::with_sink(None)
+        Self::with_matrix(MatrixService::default())
     }
 }
 
 impl EventStore {
-    pub(crate) fn with_sink(observation_sink: Option<persistence::ObservationSink>) -> Self {
+    pub(crate) fn with_matrix(matrix: MatrixService) -> Self {
         Self {
             inner: Arc::new(EventInner {
                 next_event_id: AtomicU64::new(0),
                 next_session_id: AtomicU64::new(0),
                 events: Mutex::new(VecDeque::new()),
-                observation_sink,
+                matrix,
             }),
         }
     }
@@ -85,9 +85,7 @@ impl EventStore {
         }
         events.push_back(event.clone());
         drop(events);
-        if let Some(sink) = &self.inner.observation_sink {
-            sink.record_event(event);
-        }
+        self.inner.matrix.record_ingress_event(event);
     }
 
     pub fn snapshot(&self) -> Vec<IngressEvent> {

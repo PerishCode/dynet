@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
+    time::Duration,
 };
 
 use dynet_ingress::{EgressNodeConfig, ShadowsocksConfig, TrojanConfig, VlessConfig, VmessConfig};
@@ -12,7 +13,9 @@ use serde::Deserialize;
 
 use crate::{method_config::parse_shadowsocks_method, ForwardingConfig};
 
+mod dns_upstream;
 mod validation;
+use dns_upstream::FileDnsUpstreamConfig;
 use validation::{validate_execution_node, validate_thresholds};
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +25,8 @@ pub(crate) struct FileForwardingConfig {
     nodes: Option<Vec<FileForwardNodeConfig>>,
     groups: Option<Vec<FileForwardGroupConfig>>,
     rules: Option<Vec<FileRouteRuleConfig>>,
+    dns_upstreams: Option<Vec<FileDnsUpstreamConfig>>,
+    dns_race_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,7 +114,14 @@ impl FileForwardingConfig {
         if groups.is_empty() {
             return Err("forwarding.groups must not be empty".to_string());
         }
-        build_graph(self.default_group, nodes, groups, self.rules)
+        build_graph(
+            self.default_group,
+            nodes,
+            groups,
+            self.rules,
+            self.dns_upstreams,
+            self.dns_race_timeout_ms,
+        )
     }
 }
 
@@ -118,6 +130,8 @@ fn build_graph(
     nodes: Vec<FileForwardNodeConfig>,
     groups: Vec<FileForwardGroupConfig>,
     rules: Option<Vec<FileRouteRuleConfig>>,
+    dns_upstreams: Option<Vec<FileDnsUpstreamConfig>>,
+    dns_race_timeout_ms: Option<u64>,
 ) -> Result<ForwardingConfig, String> {
     let default_group = default_group.unwrap_or_else(|| groups[0].id.clone());
     let (runtime_nodes, node_execution_configs) = load_nodes(nodes)?;
@@ -127,13 +141,29 @@ fn build_graph(
         .into_iter()
         .map(FileRouteRuleConfig::load)
         .collect::<Result<Vec<_>, _>>()?;
+    let defaults = RuntimeSeed::single_node("direct");
+    let dns_upstreams = dns_upstreams
+        .map(|upstreams| {
+            upstreams
+                .into_iter()
+                .map(FileDnsUpstreamConfig::load)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or(defaults.dns_upstreams);
+    let mut dns_policy = defaults.dns_policy;
+    if let Some(timeout_ms) = dns_race_timeout_ms {
+        if timeout_ms == 0 {
+            return Err("forwarding.dns_race_timeout_ms must be positive".to_string());
+        }
+        dns_policy.timeout = Duration::from_millis(timeout_ms);
+    }
     validate_execution_node(
         &default_group,
         &runtime_groups,
         &group_members,
         &node_execution_configs,
     )?;
-    let defaults = RuntimeSeed::single_node("direct");
     Ok(ForwardingConfig {
         seed: RuntimeSeed {
             nodes: runtime_nodes,
@@ -141,8 +171,8 @@ fn build_graph(
             groups: runtime_groups,
             group_members,
             route_rules,
-            dns_upstreams: defaults.dns_upstreams,
-            dns_policy: defaults.dns_policy,
+            dns_upstreams,
+            dns_policy,
         },
         execution_nodes: node_execution_configs,
     })

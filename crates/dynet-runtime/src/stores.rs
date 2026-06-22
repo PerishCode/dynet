@@ -4,8 +4,9 @@ use std::{
 };
 
 use crate::{
-    DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef, NodeId,
-    RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
+    model::MatrixCandidateInput, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId,
+    GroupMember, NextRef, NodeId, RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext,
+    DEFAULT_NODE_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -243,6 +244,33 @@ impl GroupStore {
             .values()
             .flat_map(|members| members.iter().cloned())
             .collect()
+    }
+
+    pub(crate) fn enabled_candidates(
+        &self,
+        group_id: &GroupId,
+        nodes: &NodeStore,
+    ) -> Result<Vec<MatrixCandidateInput>, String> {
+        let store = self.inner.read().expect("group store lock poisoned");
+        let group = store
+            .groups
+            .get(group_id)
+            .ok_or_else(|| format!("forwarding group {group_id} is missing"))?;
+        if !group.enabled {
+            return Err(format!("forwarding group {group_id} is disabled"));
+        }
+        let members = store
+            .members
+            .get(group_id)
+            .ok_or_else(|| format!("forwarding group {group_id} has no enabled node"))?;
+        Ok(members
+            .iter()
+            .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
+            .map(|member| MatrixCandidateInput {
+                node_id: member.node_id.clone(),
+                priority: member.priority,
+            })
+            .collect())
     }
 }
 

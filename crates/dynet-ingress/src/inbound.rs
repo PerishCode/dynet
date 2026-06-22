@@ -10,8 +10,8 @@ use tokio::{
 
 use crate::egress::{EgressError, EgressNode, TcpRelaySession, UdpDownstream, UdpRelayAssociation};
 use crate::{
-    push_decision_fields, session_fields, IngressEventKind, TcpRelayConfig, UdpRelayConfig,
-    DATAGRAM_LIMIT,
+    push_decision_fields, push_target_context_fields, session_fields, IngressEventKind,
+    TcpRelayConfig, UdpRelayConfig, DATAGRAM_LIMIT,
 };
 
 const TCP_INBOUND: &str = "tcp";
@@ -53,10 +53,11 @@ where
             let _permit = permit;
             let session_id = runtime.events().next_session_id();
             let target = config.upstream;
+            let target_context = TargetContext::fixed_upstream(target);
             let decision = match runtime.select(SelectionContext {
                 session_id,
                 inbound: InboundKind::Tcp,
-                target: TargetContext::fixed_upstream(target),
+                target: target_context.clone(),
             }) {
                 Ok(decision) => decision,
                 Err(error) => {
@@ -71,6 +72,7 @@ where
             let node_protocol = egress.decision_tag(&decision);
             let mut fields =
                 session_fields(session_id, TCP_INBOUND, node_protocol, peer, target, target);
+            push_target_context_fields(&mut fields, &target_context);
             push_decision_fields(&mut fields, &decision);
             runtime.events().record(IngressEventKind::TcpAccept, fields);
             let session = TcpRelaySession {
@@ -88,6 +90,7 @@ where
                         target,
                         outcome.upstream,
                     );
+                    push_target_context_fields(&mut fields, &target_context);
                     push_decision_fields(&mut fields, &decision);
                     fields.push((
                         "clientToUpstreamBytes",
@@ -169,10 +172,11 @@ where
                     let (tx, rx) = mpsc::channel(UDP_CHANNEL_DEPTH);
                     let session_id = runtime.events().next_session_id();
                     let target = config.upstream;
+                    let target_context = TargetContext::fixed_upstream(target);
                     let decision = match runtime.select(SelectionContext {
                         session_id,
                         inbound: InboundKind::Udp,
-                        target: TargetContext::fixed_upstream(target),
+                        target: target_context.clone(),
                     }) {
                         Ok(decision) => decision,
                         Err(error) => {
@@ -193,6 +197,7 @@ where
                     let session = UdpSessionSender {
                         session_id,
                         decision: decision.clone(),
+                        target_context: target_context.clone(),
                         node_protocol: egress.decision_tag(&decision),
                         tx,
                     };
@@ -206,6 +211,7 @@ where
                         complete_tx: complete_tx.clone(),
                         session_id: session.session_id,
                         decision,
+                        target_context,
                         runtime: runtime.clone(),
                     });
                     session
@@ -219,6 +225,7 @@ where
                     target,
                     target,
                 );
+                push_target_context_fields(&mut fields, &sender.target_context);
                 push_decision_fields(&mut fields, &sender.decision);
                 fields.push(("direction", "client-to-upstream".to_string()));
                 fields.push(("bytes", size.to_string()));
@@ -240,6 +247,7 @@ struct UdpAssociationTask<O> {
     complete_tx: mpsc::Sender<SocketAddr>,
     session_id: u64,
     decision: SelectionDecision,
+    target_context: TargetContext,
     runtime: RuntimeState,
 }
 
@@ -257,12 +265,14 @@ where
             complete_tx,
             session_id,
             decision,
+            target_context,
             runtime,
         } = task;
         let target = config.upstream;
         let node_protocol = egress.decision_tag(&decision);
         let mut fields =
             session_fields(session_id, UDP_INBOUND, node_protocol, peer, target, target);
+        push_target_context_fields(&mut fields, &target_context);
         push_decision_fields(&mut fields, &decision);
         runtime
             .events()
@@ -288,6 +298,7 @@ where
                     target,
                     outcome.upstream,
                 );
+                push_target_context_fields(&mut fields, &target_context);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("closeReason", outcome.close_reason.to_string()));
                 runtime
@@ -309,6 +320,7 @@ where
                 );
                 let mut fields =
                     session_fields(session_id, UDP_INBOUND, node_protocol, peer, target, target);
+                push_target_context_fields(&mut fields, &target_context);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("closeReason", "error".to_string()));
                 runtime
@@ -343,6 +355,7 @@ fn error_fields(
 struct UdpSessionSender {
     session_id: u64,
     decision: SelectionDecision,
+    target_context: TargetContext,
     node_protocol: &'static str,
     tx: mpsc::Sender<Vec<u8>>,
 }

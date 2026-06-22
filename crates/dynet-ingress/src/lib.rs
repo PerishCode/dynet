@@ -424,3 +424,13 @@ pub(crate) fn push_endpoint_fields(
         _ => {}
     }
 }
+
+pub(crate) fn push_target_context_fields(
+    fields: &mut Vec<(&'static str, String)>,
+    target: &dynet_runtime::TargetContext,
+) {
+    fields.push(("targetSource", target.source.as_str().to_string()));
+    if let Some(domain) = &target.domain {
+        fields.push(("targetDomain", domain.clone()));
+    }
+}

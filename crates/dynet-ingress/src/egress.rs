@@ -8,14 +8,13 @@ use tokio::{
     time,
 };
 
-use crate::{
-    push_decision_fields, session_fields, EgressNodeConfig, IngressEventKind, DATAGRAM_LIMIT,
-};
+use crate::{EgressNodeConfig, DATAGRAM_LIMIT};
 
 mod graph;
 mod shadowsocks;
 mod trojan;
 mod udp_downstream;
+mod udp_observation;
 mod vless;
 mod vmess;
 
@@ -23,6 +22,7 @@ pub(crate) use graph::GraphEgress;
 use shadowsocks::ShadowsocksEgress;
 use trojan::TrojanEgress;
 pub(crate) use udp_downstream::UdpDownstream;
+pub(super) use udp_observation::relay_udp_response;
 use vless::VlessEgress;
 use vmess::VmessEgress;
 
@@ -320,36 +320,14 @@ impl EgressNode for DirectEgress {
                         })?;
                 }
                 Ok(UdpStep::Upstream(size)) => {
-                    association
-                        .downstream
-                        .send_to_peer(&buffer[..size], association.peer)
-                        .await
-                        .map_err(|error| EgressError {
-                            stage: "inbound-write",
-                            upstream: Some(association.target),
-                            message: format!("failed sending UDP downstream datagram: {error}"),
-                        })?;
-                    let mut fields = session_fields(
-                        association.session_id,
-                        association.inbound,
+                    relay_udp_response(
+                        &association,
                         self.tag(),
-                        association.peer,
                         association.target,
-                        association.target,
-                    );
-                    push_decision_fields(&mut fields, &association.decision);
-                    fields.push(("direction", "upstream-to-client".to_string()));
-                    fields.push((
-                        "bytes",
-                        association
-                            .downstream
-                            .payload_len(&buffer[..size])
-                            .to_string(),
-                    ));
-                    association
-                        .runtime
-                        .events()
-                        .record(IngressEventKind::UdpDatagram, fields);
+                        &buffer[..size],
+                        &[],
+                    )
+                    .await?;
                 }
                 Ok(UdpStep::Closed) => {
                     return Ok(UdpRelayOutcome {

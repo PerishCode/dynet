@@ -21,8 +21,9 @@ as `192.168.5.2` and `host.lima.internal`. The sample Mihomo config uses the
 IP address to avoid depending on DNS before the DNS path is validated.
 
 The sample uses Mihomo `redir-host` DNS mode so upstream DNS queries remain
-observable by `dynet`. `fake-ip` can be useful for other proxy labs, but it can
-hide DNS forwarding from this experiment by answering locally.
+observable by `dynet`. Host-side `dynet` uses a DNS-over-HTTPS upstream in the
+sample `dynet-lab.toml`, which keeps runtime resolution independent from local
+UDP/53 fake-DNS interception.
 
 Inside the VM, point systemd-resolved at Mihomo's local DNS listener:
 
@@ -88,6 +89,12 @@ the local nodes/groups under test. Use `next = "<group>"` for group-to-group
 TCP composition in connection direction; for example, `Tunnel.next = "Private"`
 means traffic first uses the Tunnel group's selected dialer node, then reaches
 the Private group's selected business egress node.
+
+If a capture frontend sends SOCKS5 TCP/UDP traffic to a previously observed
+fake-IP target, `dynet` restores the domain from its observed DNS map and
+re-resolves it before selecting and forwarding the egress target. Configure at
+least one real-answer DNS upstream, such as the sample DoH upstream, otherwise
+the restored target can still resolve back to a fake address.
 
 ## VM Setup
 
@@ -157,6 +164,24 @@ limactl shell dynet-lab sudo pkill mihomo || true
 limactl shell dynet-lab sudo mihomo -d /etc/mihomo -f /etc/mihomo/dynet.yaml
 ```
 
+To use the full local `vpn-config` node and rule set for experiments, generate
+the ignored local config first:
+
+```bash
+scripts/sync-vpn-config.py
+```
+
+The generated `dynet.toml` contains local node credentials and must stay
+untracked. The script maps the Clash rule buckets into dynet groups, keeps
+`MATCH` on `Private`, maps `Tunnel.next` to `Private`, and skips unsupported
+entries such as SSR nodes or reject-only rules instead of pretending they are
+enforceable. After syncing, start dynet with:
+
+```bash
+DYNET_RUNTIME_DB=target/dynet-lab.sqlite \
+  target/debug/dynet --config dynet.toml
+```
+
 ## Validation
 
 From the host, verify `dynet` is up:
@@ -190,6 +215,31 @@ For repeatable black-box validation with `dynet` and Mihomo already running:
 scripts/smoke/lab-blackbox.sh
 ```
 
+For browser-workflow validation, install Playwright in the VM once:
+
+```bash
+limactl shell dynet-lab sudo apt-get update
+limactl shell dynet-lab sudo apt-get install -y --no-install-recommends \
+  nodejs npm libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+  libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+  libxfixes3 libxrandr2 libgbm1 libasound2t64 libpango-1.0-0 \
+  libcairo2 libatspi2.0-0 libgtk-3-0 fonts-liberation ca-certificates
+limactl shell dynet-lab sudo npm install -g playwright
+limactl shell dynet-lab playwright install chromium
+```
+
+Then run a repeatable browser smoke:
+
+```bash
+scripts/smoke/lab-playwright.sh
+```
+
+This opens the configured URLs with headless Chromium from inside the VM,
+stores screenshots under `/tmp/dynet-playwright-lab`, and verifies that dynet
+observes traffic sessions plus matrix shadow decisions for each top-level host.
+It waits briefly after browser completion so TCP close events and byte counters
+can settle before API inspection.
+
 Optional environment overrides:
 
 ```bash
@@ -200,12 +250,24 @@ DYNET_LAB_UDP_PORT=443 \
 scripts/smoke/lab-blackbox.sh
 ```
 
+```bash
+DYNET_LAB_PLAYWRIGHT_URLS="https://example.com/ https://www.iana.org/" \
+DYNET_LAB_PLAYWRIGHT_EXPECT_GROUPS=Tunnel,Private \
+scripts/smoke/lab-playwright.sh
+```
+
 Use `DYNET_LAB_GUEST_CONTROL_URL` if the VM reaches the host at an address
 other than Lima's default `http://192.168.5.2:9977`.
 Use `DYNET_LAB_EXPECT_TCP_GROUPS=Tunnel,Private` to assert the TCP graph trace
 for a Tunnel group that exits through a Private group.
 The script ensures the Mihomo TUN route rule by default. Set
 `DYNET_LAB_ENSURE_TUN_RULE=0` to disable this check.
+It also flushes VM systemd-resolved DNS cache before taking the event baseline
+and uses `resolvectl query --cache=no` for DNS probes when available. DNS
+events are treated as auxiliary evidence because repeated VM/browser runs can
+hit resolver caches. The default hard assertions focus on TCP/UDP sessions and
+selection metadata. Set `DYNET_LAB_REQUIRE_DNS_EVIDENCE=1` for stricter DNS
+evidence checks, or `DYNET_LAB_FLUSH_DNS_CACHE=0` to disable the cache flush.
 
 Expected event evidence:
 

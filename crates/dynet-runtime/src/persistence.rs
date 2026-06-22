@@ -6,8 +6,9 @@ use sqlx::{
 };
 
 use crate::{
-    unix_ms, InboundKind, IngressEvent, IngressEventKind, SelectionContext, SelectionDecision,
-    TargetSource,
+    traffic_session::{session_update_from_event, TrafficSessionUpdate},
+    unix_ms, InboundKind, IngressEvent, IngressEventKind, MatrixShadowDecision, SelectionContext,
+    SelectionDecision,
 };
 
 mod bootstrap;
@@ -21,7 +22,7 @@ pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "6";
+const SCHEMA_VERSION: &str = "9";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {
@@ -84,6 +85,132 @@ impl RuntimeStore {
         .bind(fields_json)
         .execute(&self.pool)
         .await?;
+        if let Some(update) = session_update_from_event(event) {
+            self.upsert_traffic_session(update).await?;
+        }
+        Ok(())
+    }
+
+    async fn upsert_traffic_session(
+        &self,
+        update: TrafficSessionUpdate,
+    ) -> Result<(), RuntimeStoreError> {
+        sqlx::query(
+            "insert into runtime_traffic_sessions (
+                session_key,
+                session_id,
+                decision_id,
+                inbound,
+                node_protocol,
+                peer_addr,
+                target_addr,
+                target_ip,
+                target_port,
+                target_domain,
+                target_source,
+                upstream_addr,
+                selection_groups,
+                selection_nodes,
+                selection_trace,
+                started_at_unix_ms,
+                closed_at_unix_ms,
+                duration_ms,
+                close_reason,
+                error_stage,
+                error,
+                client_to_upstream_bytes,
+                upstream_to_client_bytes,
+                client_to_upstream_datagrams,
+                upstream_to_client_datagrams,
+                first_upstream_at_unix_ms,
+                first_downstream_at_unix_ms,
+                first_response_latency_ms,
+                last_observed_at_unix_ms
+             )
+             values (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12, ?13, ?14, ?15, ?16,
+                case when ?24 then ?25 else null end,
+                case when ?24 then max(?25 - ?16, 0) else null end,
+                ?17, ?18, ?19,
+                coalesce(?20, 0) + coalesce(?22, 0),
+                coalesce(?21, 0) + coalesce(?23, 0),
+                case when ?22 is null then 0 else 1 end,
+                case when ?23 is null then 0 else 1 end,
+                case when ?22 is null then null else ?25 end,
+                case when ?23 is null then null else ?25 end,
+                case when ?23 is null then null else max(?25 - ?16, 0) end,
+                ?25
+             )
+             on conflict(session_key) do update set
+                decision_id = coalesce(runtime_traffic_sessions.decision_id, excluded.decision_id),
+                node_protocol = coalesce(excluded.node_protocol, runtime_traffic_sessions.node_protocol),
+                peer_addr = coalesce(excluded.peer_addr, runtime_traffic_sessions.peer_addr),
+                target_addr = coalesce(excluded.target_addr, runtime_traffic_sessions.target_addr),
+                target_ip = coalesce(excluded.target_ip, runtime_traffic_sessions.target_ip),
+                target_port = coalesce(excluded.target_port, runtime_traffic_sessions.target_port),
+                target_domain = coalesce(excluded.target_domain, runtime_traffic_sessions.target_domain),
+                target_source = coalesce(excluded.target_source, runtime_traffic_sessions.target_source),
+                upstream_addr = coalesce(excluded.upstream_addr, runtime_traffic_sessions.upstream_addr),
+                selection_groups = coalesce(excluded.selection_groups, runtime_traffic_sessions.selection_groups),
+                selection_nodes = coalesce(excluded.selection_nodes, runtime_traffic_sessions.selection_nodes),
+                selection_trace = coalesce(excluded.selection_trace, runtime_traffic_sessions.selection_trace),
+                closed_at_unix_ms = coalesce(excluded.closed_at_unix_ms, runtime_traffic_sessions.closed_at_unix_ms),
+                duration_ms = coalesce(excluded.duration_ms, runtime_traffic_sessions.duration_ms),
+                close_reason = coalesce(excluded.close_reason, runtime_traffic_sessions.close_reason),
+                error_stage = coalesce(excluded.error_stage, runtime_traffic_sessions.error_stage),
+                error = coalesce(excluded.error, runtime_traffic_sessions.error),
+                client_to_upstream_bytes =
+                    case
+                        when ?20 is not null then ?20
+                        else runtime_traffic_sessions.client_to_upstream_bytes + coalesce(?22, 0)
+                    end,
+                upstream_to_client_bytes =
+                    case
+                        when ?21 is not null then ?21
+                        else runtime_traffic_sessions.upstream_to_client_bytes + coalesce(?23, 0)
+                    end,
+                client_to_upstream_datagrams =
+                    runtime_traffic_sessions.client_to_upstream_datagrams
+                    + case when ?22 is null then 0 else 1 end,
+                upstream_to_client_datagrams =
+                    runtime_traffic_sessions.upstream_to_client_datagrams
+                    + case when ?23 is null then 0 else 1 end,
+                first_upstream_at_unix_ms =
+                    coalesce(runtime_traffic_sessions.first_upstream_at_unix_ms, excluded.first_upstream_at_unix_ms),
+                first_downstream_at_unix_ms =
+                    coalesce(runtime_traffic_sessions.first_downstream_at_unix_ms, excluded.first_downstream_at_unix_ms),
+                first_response_latency_ms =
+                    coalesce(runtime_traffic_sessions.first_response_latency_ms, excluded.first_response_latency_ms),
+                last_observed_at_unix_ms = excluded.last_observed_at_unix_ms",
+        )
+        .bind(update.session_key)
+        .bind(u64_to_i64(update.session_id))
+        .bind(update.decision_id.map(u64_to_i64))
+        .bind(update.inbound)
+        .bind(update.node_protocol)
+        .bind(update.peer)
+        .bind(update.target)
+        .bind(update.target_ip)
+        .bind(update.target_port.map(i64::from))
+        .bind(update.target_domain)
+        .bind(update.target_source)
+        .bind(update.upstream)
+        .bind(update.selection_groups)
+        .bind(update.selection_nodes)
+        .bind(update.selection_trace)
+        .bind(u128_to_i64(update.observed_at_unix_ms))
+        .bind(update.close_reason)
+        .bind(update.error_stage)
+        .bind(update.error)
+        .bind(update.client_to_upstream_bytes.map(u64_to_i64))
+        .bind(update.upstream_to_client_bytes.map(u64_to_i64))
+        .bind(update.client_to_upstream_datagram.map(u64_to_i64))
+        .bind(update.upstream_to_client_datagram.map(u64_to_i64))
+        .bind(update.closes_session)
+        .bind(u128_to_i64(update.observed_at_unix_ms))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -126,6 +253,41 @@ impl RuntimeStore {
         .bind(decision.reason.as_str())
         .bind(decision.scheduler.as_str())
         .bind(usize_to_i64(decision.candidate_count))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(super) async fn insert_matrix_shadow(
+        &self,
+        decision: &MatrixShadowDecision,
+    ) -> Result<(), RuntimeStoreError> {
+        let candidates_json = serde_json::to_string(&decision.candidates)?;
+        sqlx::query(
+            "insert into matrix_shadow_decisions (
+                decision_id,
+                session_id,
+                observed_at_unix_ms,
+                inbound,
+                group_id,
+                actual_node_id,
+                shadow_node_id,
+                shadow_differs_from_actual,
+                shadow_reason,
+                candidates_json
+             )
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )
+        .bind(u64_to_i64(decision.decision_id))
+        .bind(u64_to_i64(decision.session_id))
+        .bind(u128_to_i64(decision.observed_at_unix_ms))
+        .bind(decision.inbound.as_str())
+        .bind(decision.group_id.as_str())
+        .bind(decision.actual_node_id.as_str())
+        .bind(decision.shadow_top_node_id.as_deref())
+        .bind(decision.shadow_differs_from_actual)
+        .bind(decision.shadow_reason.as_str())
+        .bind(candidates_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -223,16 +385,6 @@ impl InboundKind {
         match self {
             Self::Tcp => "tcp",
             Self::Udp => "udp",
-        }
-    }
-}
-
-impl TargetSource {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::FixedUpstream => "fixed-upstream",
-            Self::ObservedDns => "observed-dns",
-            Self::ExternalContext => "external-context",
         }
     }
 }
