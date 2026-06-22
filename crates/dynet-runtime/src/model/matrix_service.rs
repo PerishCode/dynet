@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     persistence::{ObservationSink, PersistenceStatsSnapshot},
@@ -8,7 +8,11 @@ use crate::{
 
 use super::{
     matrix_shadow::{score_candidates, MatrixShadowStore},
-    GroupId, MatrixCandidateInput, MatrixShadowDecision,
+    matrix_stats::{
+        error_signals_from_sessions, node_stats_from_sessions, target_stats_from_sessions,
+    },
+    GroupId, MatrixCandidateInput, MatrixErrorSignalStats, MatrixNodeStats, MatrixShadowDecision,
+    MatrixTargetNodeStats,
 };
 
 #[derive(Debug, Clone)]
@@ -67,8 +71,19 @@ impl MatrixService {
         group_id: &GroupId,
         actual: &SelectionDecision,
         candidates: Vec<MatrixCandidateInput>,
+        fingerprints_by_node: &BTreeMap<String, String>,
     ) {
-        let decision = score_candidates(observed_at_unix_ms, context, group_id, actual, candidates);
+        let node_stats = self.node_stats(fingerprints_by_node);
+        let target_node_stats = self.target_node_stats(fingerprints_by_node);
+        let decision = score_candidates(
+            observed_at_unix_ms,
+            context,
+            group_id,
+            actual,
+            candidates,
+            &node_stats,
+            &target_node_stats,
+        );
         self.inner.shadow_decisions.record(decision.clone());
         if let Some(sink) = &self.inner.observation_sink {
             sink.record_matrix_shadow(decision);
@@ -81,6 +96,27 @@ impl MatrixService {
 
     pub fn shadow_decisions(&self) -> Vec<MatrixShadowDecision> {
         self.inner.shadow_decisions.snapshot()
+    }
+
+    pub(crate) fn node_stats(
+        &self,
+        fingerprints_by_node: &BTreeMap<String, String>,
+    ) -> Vec<MatrixNodeStats> {
+        node_stats_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
+    }
+
+    pub(crate) fn target_node_stats(
+        &self,
+        fingerprints_by_node: &BTreeMap<String, String>,
+    ) -> Vec<MatrixTargetNodeStats> {
+        target_stats_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
+    }
+
+    pub(crate) fn error_signal_stats(
+        &self,
+        fingerprints_by_node: &BTreeMap<String, String>,
+    ) -> Vec<MatrixErrorSignalStats> {
+        error_signals_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
     }
 
     pub fn persistence_stats(&self) -> PersistenceStatsSnapshot {

@@ -8,9 +8,9 @@ use vless_prototype::{
 
 use crate::{
     egress::{
-        relay_udp_response, DirectEgress, EgressError, EgressNode, TcpDialConnection,
-        TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation,
-        UdpRelayOutcome,
+        count_downstream, relay_udp_response, DirectEgress, EgressError, EgressNode,
+        TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
+        UdpRelayAssociation, UdpRelayOutcome,
     },
     VlessConfig,
 };
@@ -41,7 +41,7 @@ impl VlessEgress {
 
     pub(super) async fn handle_tcp_via_dialer<D>(
         &self,
-        mut session: TcpRelaySession,
+        session: TcpRelaySession,
         dialer: &D,
     ) -> Result<TcpRelayOutcome, EgressError>
     where
@@ -60,13 +60,17 @@ impl VlessEgress {
             .connect_tcp_with_io(session.target, upstream_addr, upstream)
             .await
             .map_err(|error| vless_error(error, None))?;
+        let (mut downstream, byte_counts) = count_downstream(session.downstream);
         let (client_to_upstream, upstream_to_client) =
-            io::copy_bidirectional(&mut session.downstream, &mut upstream)
+            io::copy_bidirectional(&mut downstream, &mut upstream)
                 .await
-                .map_err(|error| EgressError {
-                    stage: "relay",
-                    upstream: Some(parts.upstream),
-                    message: format!("VLESS TCP relay failed: {error}"),
+                .map_err(|error| {
+                    EgressError::new(
+                        "relay",
+                        Some(parts.upstream),
+                        format!("VLESS TCP relay failed: {error}"),
+                    )
+                    .with_plaintext_bytes(byte_counts)
                 })?;
         Ok(TcpRelayOutcome {
             upstream: parts.upstream,
@@ -195,11 +199,7 @@ impl EgressNode for VlessEgress {
 }
 
 fn vless_error(error: vless_prototype::Error, upstream: Option<SocketAddr>) -> EgressError {
-    EgressError {
-        stage: error.stage(),
-        upstream,
-        message: error.to_string(),
-    }
+    EgressError::new(error.stage(), upstream, error.to_string())
 }
 
 enum VlessUdpStep {

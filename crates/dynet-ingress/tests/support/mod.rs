@@ -15,8 +15,8 @@ use aes_gcm::{
 };
 use dynet_runtime::{
     DnsUpstream, DnsUpstreamId, DnsUpstreamTransport, EventStore, ForwardGroup, ForwardNode,
-    GroupId, GroupMember, IngressEvent, IngressEventKind, NextRef, NodeId, RouteMatcher, RouteRule,
-    RuleId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
+    GroupId, GroupMember, GroupThresholds, IngressEvent, IngressEventKind, NextRef, NodeId,
+    RouteMatcher, RouteRule, RuleId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
 };
 use hkdf::Hkdf;
 use md5::{Digest, Md5};
@@ -308,16 +308,8 @@ pub fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
 pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     RuntimeSeed {
         nodes: vec![
-            ForwardNode {
-                id: NodeId::new("default-node"),
-                tag: "direct".to_string(),
-                enabled: true,
-            },
-            ForwardNode {
-                id: NodeId::new("routed-node"),
-                tag: "direct".to_string(),
-                enabled: true,
-            },
+            ForwardNode::new("default-node", "direct", true),
+            ForwardNode::new("routed-node", "direct", true),
         ],
         default_group_id: GroupId::new("default"),
         groups: vec![
@@ -325,12 +317,14 @@ pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
                 id: GroupId::new("default"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
+                thresholds: GroupThresholds::default(),
                 next: NextRef::direct_audit_outlet(),
             },
             ForwardGroup {
                 id: GroupId::new("routed"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
+                thresholds: GroupThresholds::default(),
                 next: NextRef::direct_audit_outlet(),
             },
         ],
@@ -373,15 +367,13 @@ pub fn chained_route_seed(dns_addr: SocketAddr) -> RuntimeSeed {
             group.next = NextRef::named("egress");
         }
     }
-    seed.nodes.push(ForwardNode {
-        id: NodeId::new("egress-node"),
-        tag: "direct".to_string(),
-        enabled: true,
-    });
+    seed.nodes
+        .push(ForwardNode::new("egress-node", "direct", true));
     seed.groups.push(ForwardGroup {
         id: GroupId::new("egress"),
         enabled: true,
         scheduler: SchedulerPolicy::SingleFirstEnabled,
+        thresholds: GroupThresholds::default(),
         next: NextRef::direct_audit_outlet(),
     });
     seed.group_members.push(GroupMember {

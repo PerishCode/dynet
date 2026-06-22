@@ -15,10 +15,12 @@ pub(crate) async fn relay_udp_response(
         .downstream
         .send_to_peer(payload, association.peer)
         .await
-        .map_err(|error| EgressError {
-            stage: "inbound-write",
-            upstream: Some(upstream),
-            message: format!("failed sending UDP downstream datagram: {error}"),
+        .map_err(|error| {
+            EgressError::new(
+                "inbound-write",
+                Some(upstream),
+                format!("failed sending UDP downstream datagram: {error}"),
+            )
         })?;
     let mut fields = session_fields(
         association.session_id,

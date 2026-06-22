@@ -68,7 +68,7 @@ events = [
     if event.get("id", 0) > baseline_id
 ]
 sessions = fetch("/api/v1/observability/sessions").get("sessions", [])
-shadows = fetch("/api/v1/observability/matrix-shadow").get("decisions", [])
+shadows = fetch("/api/v1/observability/matrix/shadow").get("decisions", [])
 
 event_session_ids = {
     int(fields["sessionId"])

@@ -1,9 +1,9 @@
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use dynet_runtime::{
-    ForwardGroup, ForwardNode, GroupId, GroupMember, InboundKind, IngressEventKind, NextRef,
-    NodeId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy, SelectionContext,
-    TargetContext,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, InboundKind,
+    IngressEventKind, NextRef, NodeId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
+    SelectionContext, TargetContext,
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -160,7 +160,7 @@ async fn persists_observations() {
     assert_eq!(shadow.actual_node_id, "default-node");
     assert_eq!(shadow.shadow_node_id, "default-node");
     assert_eq!(shadow.shadow_differs_from_actual, 0);
-    assert!(shadow.candidates_json.contains("priority-baseline"));
+    assert!(shadow.candidates_json.contains("stats-balanced-shadow"));
     assert_eq!(runtime.persistence_stats().dropped_observations, 0);
     assert_eq!(runtime.persistence_stats().sink_errors, 0);
 }
@@ -419,21 +419,9 @@ struct PersistedMatrixShadow {
 fn tunnel_seed() -> RuntimeSeed {
     RuntimeSeed {
         nodes: vec![
-            ForwardNode {
-                id: NodeId::new("airport-us-01"),
-                tag: "ss".to_string(),
-                enabled: true,
-            },
-            ForwardNode {
-                id: NodeId::new("airport-us-backup"),
-                tag: "ss".to_string(),
-                enabled: true,
-            },
-            ForwardNode {
-                id: NodeId::new("private-fixed-ip"),
-                tag: "ss".to_string(),
-                enabled: true,
-            },
+            ForwardNode::new("airport-us-01", "ss", true),
+            ForwardNode::new("airport-us-backup", "ss", true),
+            ForwardNode::new("private-fixed-ip", "ss", true),
         ],
         default_group_id: GroupId::new("Tunnel"),
         groups: vec![
@@ -441,12 +429,14 @@ fn tunnel_seed() -> RuntimeSeed {
                 id: GroupId::new("Tunnel"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
+                thresholds: GroupThresholds::default(),
                 next: NextRef::named("Private"),
             },
             ForwardGroup {
                 id: GroupId::new("Private"),
                 enabled: true,
                 scheduler: SchedulerPolicy::SingleFirstEnabled,
+                thresholds: GroupThresholds::default(),
                 next: NextRef::direct_audit_outlet(),
             },
         ],

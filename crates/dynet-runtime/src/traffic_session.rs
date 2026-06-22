@@ -8,6 +8,8 @@ use utoipa::ToSchema;
 
 use crate::{IngressEvent, IngressEventKind};
 
+const TRAFFIC_SESSION_LIMIT: usize = 1024;
+
 #[derive(Debug, Clone, Default)]
 pub struct TrafficSessionStore {
     inner: Arc<RwLock<BTreeMap<String, TrafficSession>>>,
@@ -36,6 +38,12 @@ pub struct TrafficSession {
     pub duration_ms: Option<u128>,
     pub close_reason: Option<String>,
     pub error_stage: Option<String>,
+    pub error_code: Option<String>,
+    pub error_class: Option<String>,
+    pub error_side: Option<String>,
+    pub error_phase: Option<String>,
+    pub error_protocol_phase: Option<String>,
+    pub error_score_impact: Option<String>,
     pub error: Option<String>,
     pub client_to_upstream_bytes: u64,
     pub upstream_to_client_bytes: u64,
@@ -67,6 +75,12 @@ pub(crate) struct TrafficSessionUpdate {
     pub selection_trace: Option<String>,
     pub close_reason: Option<String>,
     pub error_stage: Option<String>,
+    pub error_code: Option<String>,
+    pub error_class: Option<String>,
+    pub error_side: Option<String>,
+    pub error_phase: Option<String>,
+    pub error_protocol_phase: Option<String>,
+    pub error_score_impact: Option<String>,
     pub error: Option<String>,
     pub client_to_upstream_bytes: Option<u64>,
     pub upstream_to_client_bytes: Option<u64>,
@@ -97,11 +111,28 @@ impl TrafficSessionStore {
             .inner
             .write()
             .expect("traffic session store lock poisoned");
+        if !sessions.contains_key(&update.session_key) && sessions.len() == TRAFFIC_SESSION_LIMIT {
+            if let Some(oldest_key) = oldest_session_key(&sessions) {
+                sessions.remove(&oldest_key);
+            }
+        }
         let session = sessions
             .entry(update.session_key.clone())
             .or_insert_with(|| TrafficSession::new(&update));
         session.apply_update(update);
     }
+}
+
+fn oldest_session_key(sessions: &BTreeMap<String, TrafficSession>) -> Option<String> {
+    sessions
+        .iter()
+        .min_by(|left, right| {
+            left.1
+                .last_observed_at_unix_ms
+                .cmp(&right.1.last_observed_at_unix_ms)
+                .then_with(|| left.0.cmp(right.0))
+        })
+        .map(|(key, _)| key.clone())
 }
 
 impl TrafficSession {
@@ -127,6 +158,12 @@ impl TrafficSession {
             duration_ms: None,
             close_reason: None,
             error_stage: None,
+            error_code: None,
+            error_class: None,
+            error_side: None,
+            error_phase: None,
+            error_protocol_phase: None,
+            error_score_impact: None,
             error: None,
             client_to_upstream_bytes: 0,
             upstream_to_client_bytes: 0,
@@ -154,6 +191,12 @@ impl TrafficSession {
         set_if_some(&mut self.selection_trace, update.selection_trace);
         set_if_some(&mut self.close_reason, update.close_reason);
         set_if_some(&mut self.error_stage, update.error_stage);
+        set_if_some(&mut self.error_code, update.error_code);
+        set_if_some(&mut self.error_class, update.error_class);
+        set_if_some(&mut self.error_side, update.error_side);
+        set_if_some(&mut self.error_phase, update.error_phase);
+        set_if_some(&mut self.error_protocol_phase, update.error_protocol_phase);
+        set_if_some(&mut self.error_score_impact, update.error_score_impact);
         set_if_some(&mut self.error, update.error);
 
         if let Some(bytes) = update.client_to_upstream_bytes {
@@ -254,6 +297,12 @@ pub(crate) fn session_update_from_event(event: &IngressEvent) -> Option<TrafficS
         selection_trace: event.fields.get("selectionTrace").cloned(),
         close_reason: event.fields.get("closeReason").cloned(),
         error_stage: event.fields.get("errorStage").cloned(),
+        error_code: event.fields.get("errorCode").cloned(),
+        error_class: event.fields.get("errorClass").cloned(),
+        error_side: event.fields.get("errorSide").cloned(),
+        error_phase: event.fields.get("errorPhase").cloned(),
+        error_protocol_phase: event.fields.get("errorProtocolPhase").cloned(),
+        error_score_impact: event.fields.get("errorScoreImpact").cloned(),
         error: event.fields.get("error").cloned(),
         client_to_upstream_bytes: event
             .fields

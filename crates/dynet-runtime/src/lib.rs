@@ -20,17 +20,18 @@ pub use dns::{
 pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
     DnsHttpsEndpoint, DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId,
-    DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId, GroupMember, InboundKind,
-    MatrixService, MatrixShadowCandidate, MatrixShadowDecision, NextRef, NodeId, ObservedDnsMap,
-    RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext,
-    SelectionDecision, SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop,
-    SelectorMatrix, TargetContext, TargetSource,
+    DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds,
+    InboundKind, MatrixErrorSignalStats, MatrixNodeStats, MatrixService, MatrixShadowCandidate,
+    MatrixShadowDecision, MatrixTargetNodeStats, NextRef, NodeId, ObservedDnsMap, RouteMatcher,
+    RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision,
+    SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix,
+    TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
 pub use traffic_session::TrafficSession;
 
-use model::{default_dns_upstreams, DEFAULT_NODE_ID};
+use model::{default_dns_upstreams, select_active_candidate, DEFAULT_NODE_ID};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeState {
@@ -71,11 +72,7 @@ impl RuntimeState {
         dns_upstreams: Vec<DnsUpstream>,
         dns_policy: DnsRacePolicy,
     ) -> Self {
-        let node = ForwardNode {
-            id: NodeId::new(DEFAULT_NODE_ID),
-            tag: tag.into(),
-            enabled: true,
-        };
+        let node = ForwardNode::new(DEFAULT_NODE_ID, tag, true);
         let group = ForwardGroup::default_group();
         let member = GroupMember::default_member(node.id.clone(), group.id.clone());
         let nodes = NodeStore::single_node(node);
@@ -162,6 +159,24 @@ impl RuntimeState {
         &self.inner.matrix
     }
 
+    pub fn matrix_node_stats(&self) -> Vec<MatrixNodeStats> {
+        self.inner
+            .matrix
+            .node_stats(&self.inner.nodes.fingerprints_by_id())
+    }
+
+    pub fn matrix_target_node_stats(&self) -> Vec<MatrixTargetNodeStats> {
+        self.inner
+            .matrix
+            .target_node_stats(&self.inner.nodes.fingerprints_by_id())
+    }
+
+    pub fn matrix_error_signal_stats(&self) -> Vec<MatrixErrorSignalStats> {
+        self.inner
+            .matrix
+            .error_signal_stats(&self.inner.nodes.fingerprints_by_id())
+    }
+
     pub fn selector_matrix(&self) -> &SelectorMatrix {
         &self.inner.selector_matrix
     }
@@ -176,10 +191,22 @@ impl RuntimeState {
             .group_id
             .or_else(|| self.inner.groups.default_group_id())
             .ok_or_else(|| SelectionError::new("no default forwarding group is available"))?;
+        let node_fingerprints = self.inner.nodes.fingerprints_by_id();
+        let node_stats = self.inner.matrix.node_stats(&node_fingerprints);
+        let target_node_stats = self.inner.matrix.target_node_stats(&node_fingerprints);
         let selection = self
             .inner
             .groups
-            .select_graph(&group_id, &self.inner.nodes)
+            .select_graph_with(&group_id, &self.inner.nodes, |candidate_set| {
+                select_active_candidate(
+                    &context,
+                    &candidate_set.group_id,
+                    candidate_set.thresholds,
+                    &candidate_set.candidates,
+                    &node_stats,
+                    &target_node_stats,
+                )
+            })
             .map_err(SelectionError::new)?;
         let first_hop = selection
             .trace
@@ -208,6 +235,7 @@ impl RuntimeState {
                 &group_id,
                 &decision,
                 candidates,
+                &node_fingerprints,
             );
         }
         self.inner

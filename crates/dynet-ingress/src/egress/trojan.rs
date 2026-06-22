@@ -8,9 +8,9 @@ use trojan_prototype::{
 
 use crate::{
     egress::{
-        relay_udp_response, DirectEgress, EgressError, EgressNode, TcpDialConnection,
-        TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation,
-        UdpRelayOutcome,
+        count_downstream, relay_udp_response, DirectEgress, EgressError, EgressNode,
+        TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
+        UdpRelayAssociation, UdpRelayOutcome,
     },
     TrojanConfig,
 };
@@ -53,11 +53,12 @@ impl TrojanEgress {
             .await?;
         let upstream_addr = upstream.upstream();
         let upstream = upstream.into_io();
+        let (downstream, byte_counts) = count_downstream(session.downstream);
         let outcome = self
             .client
-            .relay_tcp_with_io(session.downstream, upstream_addr, upstream, session.target)
+            .relay_tcp_with_io(downstream, upstream_addr, upstream, session.target)
             .await
-            .map_err(|error| trojan_error(error, None))?;
+            .map_err(|error| trojan_error(error, None).with_plaintext_bytes(byte_counts))?;
         Ok(TcpRelayOutcome {
             upstream: outcome.upstream,
             client_to_upstream_bytes: outcome.client_to_upstream_bytes,
@@ -187,11 +188,7 @@ impl EgressNode for TrojanEgress {
 }
 
 fn trojan_error(error: trojan_prototype::Error, upstream: Option<SocketAddr>) -> EgressError {
-    EgressError {
-        stage: error.stage(),
-        upstream,
-        message: error.to_string(),
-    }
+    EgressError::new(error.stage(), upstream, error.to_string())
 }
 
 enum TrojanUdpStep {

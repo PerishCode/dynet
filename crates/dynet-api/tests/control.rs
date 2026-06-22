@@ -142,7 +142,7 @@ async fn matrix_shadow_snapshot() {
     let response = router(runtime)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/observability/matrix-shadow")
+                .uri("/api/v1/observability/matrix/shadow")
                 .body(Body::empty())
                 .expect("request builds"),
         )
@@ -162,8 +162,175 @@ async fn matrix_shadow_snapshot() {
     assert_eq!(payload["decisions"][0]["shadowDiffersFromActual"], false);
     assert_eq!(
         payload["decisions"][0]["candidates"][0]["reason"],
-        "priority-baseline"
+        "stats-balanced-shadow:no-history"
     );
+}
+
+#[tokio::test]
+async fn matrix_stats_snapshot() {
+    let runtime = RuntimeState::default();
+    runtime.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", "11".to_string()),
+            ("decisionId", "5".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("targetDomain", "GitHub.com".to_string()),
+            ("targetIp", "140.82.112.4".to_string()),
+            ("selectionGroups", "GitHub".to_string()),
+            ("selectionNodes", "airport-us-01".to_string()),
+        ],
+    );
+    runtime.events().record(
+        IngressEventKind::TcpClose,
+        [
+            ("sessionId", "11".to_string()),
+            ("decisionId", "5".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("clientToUpstreamBytes", "23".to_string()),
+            ("upstreamToClientBytes", "29".to_string()),
+            ("closeReason", "eof".to_string()),
+        ],
+    );
+
+    let response = router(runtime)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/observability/matrix/stats/nodes")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router handles request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body reads");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+    assert_eq!(payload["nodes"][0]["groupId"], "GitHub");
+    assert_eq!(payload["nodes"][0]["nodeId"], "airport-us-01");
+    assert_eq!(
+        payload["nodes"][0]["nodeFingerprint"],
+        "node-id:airport-us-01"
+    );
+    assert_eq!(payload["nodes"][0]["sessionCount"], 1);
+    assert_eq!(payload["nodes"][0]["successCount"], 1);
+    assert_eq!(payload["nodes"][0]["errorCount"], 0);
+    assert_eq!(payload["nodes"][0]["clientToUpstreamBytes"], 23);
+    assert_eq!(payload["nodes"][0]["upstreamToClientBytes"], 29);
+}
+
+#[tokio::test]
+async fn matrix_target_stats_snapshot() {
+    let runtime = RuntimeState::default();
+    runtime.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", "12".to_string()),
+            ("decisionId", "6".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("targetDomain", "GitHub.com".to_string()),
+            ("targetIp", "140.82.112.4".to_string()),
+            ("selectionGroups", "GitHub,Private".to_string()),
+            (
+                "selectionNodes",
+                "airport-us-01,private-fixed-ip".to_string(),
+            ),
+        ],
+    );
+    runtime.events().record(
+        IngressEventKind::TcpClose,
+        [
+            ("sessionId", "12".to_string()),
+            ("decisionId", "6".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("clientToUpstreamBytes", "41".to_string()),
+            ("upstreamToClientBytes", "43".to_string()),
+            ("closeReason", "eof".to_string()),
+        ],
+    );
+
+    let response = router(runtime)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/observability/matrix/stats/targets")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router handles request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body reads");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+    assert_eq!(payload["targets"].as_array().expect("targets").len(), 2);
+    assert_eq!(payload["targets"][0]["groupId"], "GitHub");
+    assert_eq!(payload["targets"][0]["nodeId"], "airport-us-01");
+    assert_eq!(payload["targets"][0]["targetScope"], "domain");
+    assert_eq!(payload["targets"][0]["targetValue"], "github.com");
+    assert_eq!(payload["targets"][0]["sessionCount"], 1);
+    assert_eq!(payload["targets"][1]["groupId"], "Private");
+    assert_eq!(payload["targets"][1]["nodeId"], "private-fixed-ip");
+    assert_eq!(payload["targets"][1]["targetValue"], "github.com");
+}
+
+#[tokio::test]
+async fn matrix_error_signals_snapshot() {
+    let runtime = RuntimeState::default();
+    for decision_id in ["21", "22"] {
+        runtime.events().record(
+            IngressEventKind::UdpError,
+            [
+                ("sessionId", "20".to_string()),
+                ("decisionId", decision_id.to_string()),
+                ("inbound", "socks5".to_string()),
+                ("nodeProtocol", "vless".to_string()),
+                ("targetDomain", "GitHub.GitHubAssets.com".to_string()),
+                ("targetIp", "185.199.108.215".to_string()),
+                ("targetPort", "443".to_string()),
+                ("selectionGroups", "GitHub".to_string()),
+                ("selectionNodes", "airport-vless-01".to_string()),
+                ("errorClass", "handshake-failed".to_string()),
+                ("errorCode", "vless-reality-handshake-eof".to_string()),
+                ("errorSide", "upstream".to_string()),
+                ("errorPhase", "handshake".to_string()),
+                ("errorProtocolPhase", "reality-handshake".to_string()),
+                ("errorScoreImpact", "hard-failure".to_string()),
+                ("error", "EOF during REALITY handshake".to_string()),
+            ],
+        );
+    }
+
+    let response = router(runtime)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/observability/matrix/signals/error")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router handles request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body reads");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+    assert_eq!(payload["signals"].as_array().expect("signals").len(), 1);
+    let signal = &payload["signals"][0];
+    assert_eq!(signal["groupId"], "GitHub");
+    assert_eq!(signal["nodeId"], "airport-vless-01");
+    assert_eq!(signal["targetScope"], "domain");
+    assert_eq!(signal["targetValue"], "github.githubassets.com");
+    assert_eq!(signal["nodeProtocol"], "vless");
+    assert_eq!(signal["errorClass"], "handshake-failed");
+    assert_eq!(signal["errorCode"], "vless-reality-handshake-eof");
+    assert_eq!(signal["attemptCount"], 2);
+    assert_eq!(signal["logicalSessionCount"], 1);
+    assert_eq!(signal["effectiveErrorMillis"], 2000);
 }
 
 #[tokio::test]
@@ -236,7 +403,19 @@ fn openapi_health_path() {
     assert!(document
         .paths
         .paths
-        .contains_key("/api/v1/observability/matrix-shadow"));
+        .contains_key("/api/v1/observability/matrix/shadow"));
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/observability/matrix/signals/error"));
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/observability/matrix/stats/nodes"));
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/observability/matrix/stats/targets"));
 }
 
 fn dns_a_response(query: &[u8], address: Ipv4Addr) -> Vec<u8> {

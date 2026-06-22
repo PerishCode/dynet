@@ -252,6 +252,22 @@ async fn upstream_error_event() {
         event_field(&events, IngressEventKind::TcpError, "nodeProtocol"),
         "direct"
     );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorCode"),
+        "connect-failed"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorClass"),
+        "connect-failed"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorPhase"),
+        "connect"
+    );
+    assert_eq!(
+        event_field(&events, IngressEventKind::TcpError, "errorScoreImpact"),
+        "hard-failure"
+    );
 }
 
 #[tokio::test]

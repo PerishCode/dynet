@@ -519,6 +519,7 @@ dependencies = [
  "dynet-ingress",
  "dynet-runtime",
  "serde",
+ "sha2",
  "toml",
 ]
 
