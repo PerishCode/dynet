@@ -160,7 +160,7 @@ async fn persists_observations() {
     assert_eq!(shadow.actual_node_id, "default-node");
     assert_eq!(shadow.shadow_node_id, "default-node");
     assert_eq!(shadow.shadow_differs_from_actual, 0);
-    assert!(shadow.candidates_json.contains("priority-baseline"));
+    assert!(shadow.candidates_json.contains("stats-balanced-shadow"));
     assert_eq!(runtime.persistence_stats().dropped_observations, 0);
     assert_eq!(runtime.persistence_stats().sink_errors, 0);
 }

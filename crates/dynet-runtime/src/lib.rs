@@ -21,10 +21,10 @@ pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
     DnsHttpsEndpoint, DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId,
     DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId, GroupMember, InboundKind,
-    MatrixService, MatrixShadowCandidate, MatrixShadowDecision, NextRef, NodeId, ObservedDnsMap,
-    RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext,
-    SelectionDecision, SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop,
-    SelectorMatrix, TargetContext, TargetSource,
+    MatrixNodeStats, MatrixService, MatrixShadowCandidate, MatrixShadowDecision, NextRef, NodeId,
+    ObservedDnsMap, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
+    SelectionContext, SelectionDecision, SelectionError, SelectionReason, SelectionTerminal,
+    SelectionTraceHop, SelectorMatrix, TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};

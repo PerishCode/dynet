@@ -9,10 +9,12 @@ use std::{
 mod cidr;
 mod matrix_service;
 mod matrix_shadow;
+mod matrix_stats;
 use cidr::ip_matches_cidr;
 pub use matrix_service::{MatrixService, SelectorMatrix};
 pub(crate) use matrix_shadow::MatrixCandidateInput;
 pub use matrix_shadow::{MatrixShadowCandidate, MatrixShadowDecision};
+pub use matrix_stats::MatrixNodeStats;
 
 pub(crate) const DEFAULT_NODE_ID: &str = "default-node";
 pub(crate) const DEFAULT_GROUP_ID: &str = "default";
@@ -478,7 +480,6 @@ impl fmt::Display for SelectionError {
 }
 
 impl std::error::Error for SelectionError {}
-
 pub(crate) fn default_dns_upstreams() -> Vec<DnsUpstream> {
     vec![
         DnsUpstream {

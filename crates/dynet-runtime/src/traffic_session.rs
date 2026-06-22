@@ -8,6 +8,8 @@ use utoipa::ToSchema;
 
 use crate::{IngressEvent, IngressEventKind};
 
+const TRAFFIC_SESSION_LIMIT: usize = 1024;
+
 #[derive(Debug, Clone, Default)]
 pub struct TrafficSessionStore {
     inner: Arc<RwLock<BTreeMap<String, TrafficSession>>>,
@@ -97,11 +99,28 @@ impl TrafficSessionStore {
             .inner
             .write()
             .expect("traffic session store lock poisoned");
+        if !sessions.contains_key(&update.session_key) && sessions.len() == TRAFFIC_SESSION_LIMIT {
+            if let Some(oldest_key) = oldest_session_key(&sessions) {
+                sessions.remove(&oldest_key);
+            }
+        }
         let session = sessions
             .entry(update.session_key.clone())
             .or_insert_with(|| TrafficSession::new(&update));
         session.apply_update(update);
     }
+}
+
+fn oldest_session_key(sessions: &BTreeMap<String, TrafficSession>) -> Option<String> {
+    sessions
+        .iter()
+        .min_by(|left, right| {
+            left.1
+                .last_observed_at_unix_ms
+                .cmp(&right.1.last_observed_at_unix_ms)
+                .then_with(|| left.0.cmp(right.0))
+        })
+        .map(|(key, _)| key.clone())
 }
 
 impl TrafficSession {

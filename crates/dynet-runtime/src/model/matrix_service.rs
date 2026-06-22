@@ -8,7 +8,8 @@ use crate::{
 
 use super::{
     matrix_shadow::{score_candidates, MatrixShadowStore},
-    GroupId, MatrixCandidateInput, MatrixShadowDecision,
+    matrix_stats::node_stats_from_sessions,
+    GroupId, MatrixCandidateInput, MatrixNodeStats, MatrixShadowDecision,
 };
 
 #[derive(Debug, Clone)]
@@ -68,7 +69,15 @@ impl MatrixService {
         actual: &SelectionDecision,
         candidates: Vec<MatrixCandidateInput>,
     ) {
-        let decision = score_candidates(observed_at_unix_ms, context, group_id, actual, candidates);
+        let node_stats = self.node_stats();
+        let decision = score_candidates(
+            observed_at_unix_ms,
+            context,
+            group_id,
+            actual,
+            candidates,
+            &node_stats,
+        );
         self.inner.shadow_decisions.record(decision.clone());
         if let Some(sink) = &self.inner.observation_sink {
             sink.record_matrix_shadow(decision);
@@ -81,6 +90,10 @@ impl MatrixService {
 
     pub fn shadow_decisions(&self) -> Vec<MatrixShadowDecision> {
         self.inner.shadow_decisions.snapshot()
+    }
+
+    pub fn node_stats(&self) -> Vec<MatrixNodeStats> {
+        node_stats_from_sessions(&self.traffic_sessions())
     }
 
     pub fn persistence_stats(&self) -> PersistenceStatsSnapshot {
