@@ -6,6 +6,14 @@ use std::{
     time::Duration,
 };
 
+mod cidr;
+mod matrix_service;
+mod matrix_shadow;
+use cidr::ip_matches_cidr;
+pub use matrix_service::{MatrixService, SelectorMatrix};
+pub(crate) use matrix_shadow::MatrixCandidateInput;
+pub use matrix_shadow::{MatrixShadowCandidate, MatrixShadowDecision};
+
 pub(crate) const DEFAULT_NODE_ID: &str = "default-node";
 pub(crate) const DEFAULT_GROUP_ID: &str = "default";
 
@@ -65,8 +73,21 @@ pub enum RouteMatcher {
 pub struct DnsUpstream {
     pub id: DnsUpstreamId,
     pub address: SocketAddr,
+    pub transport: DnsUpstreamTransport,
     pub enabled: bool,
     pub priority: u32,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DnsUpstreamTransport {
+    Udp,
+    Https(DnsHttpsEndpoint),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DnsHttpsEndpoint {
+    pub host: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -95,9 +116,6 @@ pub enum NextRef {
 pub struct ObservedDnsMap {
     inner: Arc<RwLock<BTreeMap<String, Vec<IpAddr>>>>,
 }
-
-#[derive(Debug, Clone, Default)]
-pub struct SelectorMatrix;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TargetContext {
@@ -345,6 +363,15 @@ impl ObservedDnsMap {
             .expect("observed DNS map lock poisoned")
             .clone()
     }
+
+    pub fn domain_for_ip(&self, address: IpAddr) -> Option<String> {
+        self.inner
+            .read()
+            .expect("observed DNS map lock poisoned")
+            .iter()
+            .find(|(_, answers)| answers.contains(&address))
+            .map(|(domain, _)| domain.clone())
+    }
 }
 
 impl SchedulerPolicy {
@@ -426,6 +453,16 @@ impl SelectionTerminal {
     }
 }
 
+impl TargetSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FixedUpstream => "fixed-upstream",
+            Self::ObservedDns => "observed-dns",
+            Self::ExternalContext => "external-context",
+        }
+    }
+}
+
 impl SelectionError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
@@ -447,39 +484,16 @@ pub(crate) fn default_dns_upstreams() -> Vec<DnsUpstream> {
         DnsUpstream {
             id: DnsUpstreamId::new("cloudflare"),
             address: SocketAddr::from(([1, 1, 1, 1], 53)),
+            transport: DnsUpstreamTransport::Udp,
             enabled: true,
             priority: 0,
         },
         DnsUpstream {
             id: DnsUpstreamId::new("google"),
             address: SocketAddr::from(([8, 8, 8, 8], 53)),
+            transport: DnsUpstreamTransport::Udp,
             enabled: true,
             priority: 1,
         },
     ]
-}
-
-fn ip_matches_cidr(address: IpAddr, cidr: &str) -> bool {
-    let Some((base, prefix)) = cidr.split_once('/') else {
-        return false;
-    };
-    match (address, base.parse::<IpAddr>(), prefix.parse::<u8>()) {
-        (IpAddr::V4(address), Ok(IpAddr::V4(base)), Ok(prefix)) if prefix <= 32 => {
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            u32::from(address) & mask == u32::from(base) & mask
-        }
-        (IpAddr::V6(address), Ok(IpAddr::V6(base)), Ok(prefix)) if prefix <= 128 => {
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u128::MAX << (128 - prefix)
-            };
-            u128::from(address) & mask == u128::from(base) & mask
-        }
-        _ => false,
-    }
 }

@@ -1,4 +1,5 @@
 .task/
+.playwright-cli/
 dynet.toml
 dynet.sqlite*
 target/

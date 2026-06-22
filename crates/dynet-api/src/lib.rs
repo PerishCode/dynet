@@ -1,5 +1,5 @@
 use axum::{extract::State, routing::get, Json, Router};
-use dynet_runtime::{IngressEvent, RuntimeState};
+use dynet_runtime::{IngressEvent, MatrixShadowDecision, RuntimeState, TrafficSession};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use utoipa::{OpenApi, ToSchema};
@@ -9,8 +9,23 @@ pub const API_PREFIX: &str = "/api/v1";
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(health, list_events, list_observed_dns),
-    components(schemas(EventsResponse, HealthResponse, ObservedDnsEntry, ObservedDnsResponse)),
+    paths(
+        health,
+        list_events,
+        list_observed_dns,
+        list_traffic_sessions,
+        list_matrix_shadow
+    ),
+    components(schemas(
+        EventsResponse,
+        HealthResponse,
+        ObservedDnsEntry,
+        ObservedDnsResponse,
+        TrafficSessionsResponse,
+        TrafficSession,
+        MatrixShadowResponse,
+        MatrixShadowDecision
+    )),
     tags((name = "health", description = "Control-plane liveness"))
 )]
 pub struct ApiDoc;
@@ -47,6 +62,18 @@ pub struct ObservedDnsResponse {
     pub entries: Vec<ObservedDnsEntry>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficSessionsResponse {
+    pub sessions: Vec<TrafficSession>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixShadowResponse {
+    pub decisions: Vec<MatrixShadowDecision>,
+}
+
 impl HealthResponse {
     pub fn healthy() -> Self {
         Self {
@@ -68,6 +95,11 @@ pub fn router(runtime: RuntimeState) -> Router {
         .route("/api/v1/dns/observed", get(list_observed_dns))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/health", get(health))
+        .route(
+            "/api/v1/observability/matrix-shadow",
+            get(list_matrix_shadow),
+        )
+        .route("/api/v1/observability/sessions", get(list_traffic_sessions))
         .with_state(ApiState::new(runtime))
 }
 
@@ -112,6 +144,34 @@ pub async fn list_observed_dns(State(state): State<ApiState>) -> Json<ObservedDn
         })
         .collect();
     Json(ObservedDnsResponse { entries })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/observability/sessions",
+    tag = "observability",
+    responses(
+        (status = 200, description = "Recent traffic session summaries", body = TrafficSessionsResponse)
+    )
+)]
+pub async fn list_traffic_sessions(State(state): State<ApiState>) -> Json<TrafficSessionsResponse> {
+    Json(TrafficSessionsResponse {
+        sessions: state.runtime.matrix().traffic_sessions(),
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/observability/matrix-shadow",
+    tag = "observability",
+    responses(
+        (status = 200, description = "Recent matrix shadow decisions", body = MatrixShadowResponse)
+    )
+)]
+pub async fn list_matrix_shadow(State(state): State<ApiState>) -> Json<MatrixShadowResponse> {
+    Json(MatrixShadowResponse {
+        decisions: state.runtime.matrix().shadow_decisions(),
+    })
 }
 
 #[utoipa::path(

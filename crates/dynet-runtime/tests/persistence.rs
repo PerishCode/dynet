@@ -108,14 +108,45 @@ async fn persists_observations() {
 
     runtime.events().record(
         IngressEventKind::TcpAccept,
-        [("sessionId", "1".to_string())],
+        [
+            ("sessionId", "1".to_string()),
+            ("decisionId", "1".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("nodeProtocol", "direct".to_string()),
+            ("target", "127.0.0.1:80".to_string()),
+            ("targetIp", "127.0.0.1".to_string()),
+            ("targetPort", "80".to_string()),
+            ("targetSource", "fixed-upstream".to_string()),
+            ("selectionGroups", "default".to_string()),
+            ("selectionNodes", "default-node".to_string()),
+            ("selectionTrace", "default:default-node->direct".to_string()),
+        ],
+    );
+    runtime.events().record(
+        IngressEventKind::TcpClose,
+        [
+            ("sessionId", "1".to_string()),
+            ("decisionId", "1".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("clientToUpstreamBytes", "13".to_string()),
+            ("upstreamToClientBytes", "21".to_string()),
+            ("closeReason", "eof".to_string()),
+        ],
     );
     runtime
         .select(selection_context(1))
         .expect("selection succeeds");
 
-    fixture.wait_for_count("runtime_events", 1).await;
+    fixture.wait_for_count("runtime_events", 2).await;
     fixture.wait_for_count("selection_decisions", 1).await;
+    fixture.wait_for_count("matrix_shadow_decisions", 1).await;
+    fixture.wait_for_count("runtime_traffic_sessions", 1).await;
+    let session = fixture.traffic_session().await;
+    assert_eq!(session.session_key, "tcp:1:1");
+    assert_eq!(session.client_to_upstream_bytes, 13);
+    assert_eq!(session.upstream_to_client_bytes, 21);
+    assert_eq!(session.close_reason, "eof");
+    assert_eq!(session.target_source, "fixed-upstream");
     let decision = fixture.selection_decision().await;
     assert_eq!(decision.group_id, "default");
     assert_eq!(decision.node_id, "default-node");
@@ -123,6 +154,13 @@ async fn persists_observations() {
     assert_eq!(decision.reason, "single-node");
     assert_eq!(decision.scheduler, "single-first-enabled");
     assert_eq!(decision.candidate_count, 1);
+    let shadow = fixture.matrix_shadow().await;
+    assert_eq!(shadow.decision_id, 1);
+    assert_eq!(shadow.session_id, 1);
+    assert_eq!(shadow.actual_node_id, "default-node");
+    assert_eq!(shadow.shadow_node_id, "default-node");
+    assert_eq!(shadow.shadow_differs_from_actual, 0);
+    assert!(shadow.candidates_json.contains("priority-baseline"));
     assert_eq!(runtime.persistence_stats().dropped_observations, 0);
     assert_eq!(runtime.persistence_stats().sink_errors, 0);
 }
@@ -167,6 +205,18 @@ async fn seeds_group_next_graph() {
     );
     assert_eq!(decision.terminal.kind(), "direct");
     assert_eq!(decision.terminal.label(), "direct");
+    let shadow = runtime.matrix().shadow_decisions();
+    assert_eq!(shadow.len(), 1);
+    assert_eq!(shadow[0].actual_node_id, "airport-us-01");
+    assert_eq!(
+        shadow[0].shadow_top_node_id.as_deref(),
+        Some("airport-us-01")
+    );
+    assert_eq!(shadow[0].candidates.len(), 2);
+    assert_eq!(shadow[0].candidates[0].node_id, "airport-us-01");
+    assert_eq!(shadow[0].candidates[0].priority, 0);
+    assert_eq!(shadow[0].candidates[1].node_id, "airport-us-backup");
+    assert_eq!(shadow[0].candidates[1].priority, 10);
 }
 
 #[tokio::test]
@@ -218,6 +268,25 @@ impl StoreFixture {
             time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(self.count_rows(table).await, expected);
+    }
+
+    async fn traffic_session(&self) -> StoredTrafficSession {
+        let row = sqlx::query(
+            "select session_key, client_to_upstream_bytes, upstream_to_client_bytes,
+                close_reason, target_source
+             from runtime_traffic_sessions
+             limit 1",
+        )
+        .fetch_one(&self.inspector)
+        .await
+        .expect("traffic session row");
+        StoredTrafficSession {
+            session_key: row.get("session_key"),
+            client_to_upstream_bytes: row.get("client_to_upstream_bytes"),
+            upstream_to_client_bytes: row.get("upstream_to_client_bytes"),
+            close_reason: row.get("close_reason"),
+            target_source: row.get("target_source"),
+        }
     }
 
     async fn insert_complete_bootstrap(&self, tag: &str) {
@@ -296,6 +365,35 @@ impl StoreFixture {
             candidate_count: row.get("candidate_count"),
         }
     }
+
+    async fn matrix_shadow(&self) -> PersistedMatrixShadow {
+        let row = sqlx::query(
+            "select decision_id, session_id, actual_node_id, shadow_node_id,
+                shadow_differs_from_actual, candidates_json
+             from matrix_shadow_decisions
+             limit 1",
+        )
+        .fetch_one(&self.inspector)
+        .await
+        .expect("matrix shadow row");
+        PersistedMatrixShadow {
+            decision_id: row.get("decision_id"),
+            session_id: row.get("session_id"),
+            actual_node_id: row.get("actual_node_id"),
+            shadow_node_id: row.get("shadow_node_id"),
+            shadow_differs_from_actual: row.get("shadow_differs_from_actual"),
+            candidates_json: row.get("candidates_json"),
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct StoredTrafficSession {
+    session_key: String,
+    client_to_upstream_bytes: i64,
+    upstream_to_client_bytes: i64,
+    close_reason: String,
+    target_source: String,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -308,11 +406,26 @@ struct PersistedSelectionDecision {
     candidate_count: i64,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct PersistedMatrixShadow {
+    decision_id: i64,
+    session_id: i64,
+    actual_node_id: String,
+    shadow_node_id: String,
+    shadow_differs_from_actual: i64,
+    candidates_json: String,
+}
+
 fn tunnel_seed() -> RuntimeSeed {
     RuntimeSeed {
         nodes: vec![
             ForwardNode {
                 id: NodeId::new("airport-us-01"),
+                tag: "ss".to_string(),
+                enabled: true,
+            },
+            ForwardNode {
+                id: NodeId::new("airport-us-backup"),
                 tag: "ss".to_string(),
                 enabled: true,
             },
@@ -343,6 +456,12 @@ fn tunnel_seed() -> RuntimeSeed {
                 node_id: NodeId::new("airport-us-01"),
                 enabled: true,
                 priority: 0,
+            },
+            GroupMember {
+                group_id: GroupId::new("Tunnel"),
+                node_id: NodeId::new("airport-us-backup"),
+                enabled: true,
+                priority: 10,
             },
             GroupMember {
                 group_id: GroupId::new("Private"),

@@ -9,8 +9,10 @@ TCP_URLS="${DYNET_LAB_TCP_URLS:-http://example.com/ http://example.org/}"
 UDP_HOST="${DYNET_LAB_UDP_HOST:-1.1.1.1}"
 UDP_PORT="${DYNET_LAB_UDP_PORT:-443}"
 REQUIRE_UDP="${DYNET_LAB_REQUIRE_UDP:-1}"
+REQUIRE_DNS_EVIDENCE="${DYNET_LAB_REQUIRE_DNS_EVIDENCE:-0}"
 EXPECT_TCP_GROUPS="${DYNET_LAB_EXPECT_TCP_GROUPS:-}"
 ENSURE_TUN_RULE="${DYNET_LAB_ENSURE_TUN_RULE:-1}"
+FLUSH_DNS_CACHE="${DYNET_LAB_FLUSH_DNS_CACHE:-1}"
 TUN_TABLE="${DYNET_LAB_TUN_TABLE:-2022}"
 TUN_RULE_PREF="${DYNET_LAB_TUN_RULE_PREF:-9000}"
 TUN_DEVICE="${DYNET_LAB_TUN_DEVICE:-Meta}"
@@ -36,8 +38,16 @@ validate_config() {
     echo "DYNET_LAB_REQUIRE_UDP must be 0 or 1" >&2
     exit 1
   fi
+  if [[ "${REQUIRE_DNS_EVIDENCE}" != "0" && "${REQUIRE_DNS_EVIDENCE}" != "1" ]]; then
+    echo "DYNET_LAB_REQUIRE_DNS_EVIDENCE must be 0 or 1" >&2
+    exit 1
+  fi
   if [[ "${ENSURE_TUN_RULE}" != "0" && "${ENSURE_TUN_RULE}" != "1" ]]; then
     echo "DYNET_LAB_ENSURE_TUN_RULE must be 0 or 1" >&2
+    exit 1
+  fi
+  if [[ "${FLUSH_DNS_CACHE}" != "0" && "${FLUSH_DNS_CACHE}" != "1" ]]; then
+    echo "DYNET_LAB_FLUSH_DNS_CACHE must be 0 or 1" >&2
     exit 1
   fi
   if ! [[ "${TUN_TABLE}" =~ ^[1-9][0-9]*$ ]]; then
@@ -62,7 +72,7 @@ PY
 
 check_events() {
   EVENTS_JSON="$(curl -fsS "${CONTROL_URL}/api/v1/events")" \
-    python3 - "${BASELINE_EVENTS}" "${DOMAINS}" "${TCP_URLS}" "${REQUIRE_UDP}" "${EXPECT_TCP_GROUPS}" <<'PY'
+    python3 - "${BASELINE_EVENTS}" "${DOMAINS}" "${TCP_URLS}" "${REQUIRE_UDP}" "${REQUIRE_DNS_EVIDENCE}" "${EXPECT_TCP_GROUPS}" <<'PY'
 import json
 import os
 import sys
@@ -76,7 +86,8 @@ tcp_hosts = [
     if urlparse(url).hostname
 ]
 require_udp = sys.argv[4] == "1"
-expect_tcp_groups = sys.argv[5]
+require_dns_evidence = sys.argv[5] == "1"
+expect_tcp_groups = sys.argv[6]
 
 payload = json.loads(os.environ["EVENTS_JSON"])
 events = payload.get("events", [])[baseline:]
@@ -86,15 +97,6 @@ def fields(event):
 
 def kind(event):
     return event.get("kind")
-
-missing_dns = []
-for domain in domains:
-    if not any(
-        kind(event) in {"dns-query", "dns-response"}
-        and fields(event).get("queryName", "").rstrip(".").lower() == domain
-        for event in events
-    ):
-        missing_dns.append(domain)
 
 missing_tcp = []
 for host in tcp_hosts:
@@ -117,8 +119,6 @@ if expect_tcp_groups and not any(
     missing_tcp.append(f"selectionGroups={expect_tcp_groups}")
 
 missing = []
-if missing_dns:
-    missing.append("DNS query/response for " + ", ".join(missing_dns))
 if missing_tcp:
     missing.append("SOCKS5 TCP accept for " + ", ".join(missing_tcp))
 if require_udp and not any(
@@ -129,12 +129,35 @@ if require_udp and not any(
     for event in events
 ):
     missing.append("SOCKS5 UDP datagram")
-if not any(
-    kind(event) == "dns-response"
-    and fields(event).get("answerIps")
-    for event in events
-):
-    missing.append("DNS response with answer IPs")
+if require_dns_evidence:
+    missing_dns = []
+    for domain in domains:
+        has_dns_event = any(
+            kind(event) in {"dns-query", "dns-response"}
+            and fields(event).get("queryName", "").rstrip(".").lower() == domain
+            for event in events
+        )
+        has_observed_tcp = domain in tcp_hosts and any(
+            kind(event) in {"tcp-accept", "tcp-close"}
+            and fields(event).get("targetDomain", "").rstrip(".").lower() == domain
+            and fields(event).get("targetSource") == "observed-dns"
+            for event in events
+        )
+        if not has_dns_event and not has_observed_tcp:
+            missing_dns.append(domain)
+    if missing_dns:
+        missing.append("DNS evidence for " + ", ".join(missing_dns))
+    if not any(
+        kind(event) == "dns-response"
+        and fields(event).get("answerIps")
+        for event in events
+    ):
+        if not any(
+            kind(event) in {"tcp-accept", "tcp-close"}
+            and fields(event).get("targetSource") == "observed-dns"
+            for event in events
+        ):
+            missing.append("DNS response with answer IPs")
 
 if missing:
     raise SystemExit("missing expected lab events: " + "; ".join(missing))
@@ -155,7 +178,11 @@ wait_for_events() {
 
 vm_dns() {
   local domain="$1"
-  limactl shell "${VM}" getent hosts "${domain}" >/dev/null
+  if limactl shell "${VM}" bash -lc 'command -v resolvectl >/dev/null 2>&1'; then
+    limactl shell "${VM}" resolvectl query --cache=no -4 "${domain}" >/dev/null
+  else
+    limactl shell "${VM}" getent hosts "${domain}" >/dev/null
+  fi
 }
 
 vm_tcp() {
@@ -189,6 +216,15 @@ ensure_tun_rule() {
   fi
 }
 
+flush_dns_cache() {
+  if [[ "${FLUSH_DNS_CACHE}" != "1" ]]; then
+    return
+  fi
+  if limactl shell "${VM}" bash -lc 'command -v resolvectl >/dev/null 2>&1'; then
+    limactl shell "${VM}" sudo resolvectl flush-caches
+  fi
+}
+
 require_cmd curl
 require_cmd limactl
 require_cmd python3
@@ -197,6 +233,7 @@ validate_config
 curl -fsS "${CONTROL_URL}/api/v1/health" >/dev/null
 limactl shell "${VM}" curl -fsS --max-time 5 "${GUEST_CONTROL_URL}/api/v1/health" >/dev/null
 ensure_tun_rule
+flush_dns_cache
 
 BASELINE_EVENTS="$(event_count)"
 

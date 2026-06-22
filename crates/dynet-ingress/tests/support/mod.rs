@@ -5,7 +5,7 @@ use std::{
     env,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -14,9 +14,9 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use dynet_runtime::{
-    DnsUpstream, DnsUpstreamId, EventStore, ForwardGroup, ForwardNode, GroupId, GroupMember,
-    IngressEvent, IngressEventKind, NextRef, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
-    RuntimeState, RuntimeStore, SchedulerPolicy,
+    DnsUpstream, DnsUpstreamId, DnsUpstreamTransport, EventStore, ForwardGroup, ForwardNode,
+    GroupId, GroupMember, IngressEvent, IngressEventKind, NextRef, NodeId, RouteMatcher, RouteRule,
+    RuleId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
 };
 use hkdf::Hkdf;
 use md5::{Digest, Md5};
@@ -51,13 +51,30 @@ pub async fn unused_udp_addr() -> SocketAddr {
 }
 
 pub async fn spawn_dns_a(address: Ipv4Addr) -> SocketAddr {
+    spawn_dns_a_sequence(vec![address]).await
+}
+
+pub async fn spawn_dns_a_sequence(addresses: Vec<Ipv4Addr>) -> SocketAddr {
+    assert!(
+        !addresses.is_empty(),
+        "DNS answer sequence must not be empty"
+    );
     let dns = UdpSocket::bind(local_addr()).await.expect("bind dns");
     let dns_addr = dns.local_addr().expect("dns addr");
+    let next_index = AtomicUsize::new(0);
     tokio::spawn(async move {
         let mut buffer = [0_u8; 1024];
-        let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
-        let response = dns_a_response(&buffer[..size], address);
-        dns.send_to(&response, peer).await.expect("send response");
+        loop {
+            let (size, peer) = dns.recv_from(&mut buffer).await.expect("recv query");
+            let index = next_index.fetch_add(1, Ordering::SeqCst);
+            let address = addresses
+                .get(index)
+                .or_else(|| addresses.last())
+                .copied()
+                .expect("DNS answer sequence is not empty");
+            let response = dns_a_response(&buffer[..size], address);
+            dns.send_to(&response, peer).await.expect("send response");
+        }
     });
     dns_addr
 }
@@ -281,6 +298,7 @@ pub fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
         vec![DnsUpstream {
             id: DnsUpstreamId::new("test"),
             address: upstream,
+            transport: DnsUpstreamTransport::Udp,
             enabled: true,
             priority: 0,
         }],
@@ -340,6 +358,7 @@ pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
         dns_upstreams: vec![DnsUpstream {
             id: DnsUpstreamId::new("test"),
             address: dns_addr,
+            transport: DnsUpstreamTransport::Udp,
             enabled: true,
             priority: 0,
         }],

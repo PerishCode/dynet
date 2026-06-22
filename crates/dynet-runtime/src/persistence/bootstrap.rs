@@ -3,8 +3,9 @@ use std::net::SocketAddr;
 use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
 
 use crate::{
-    DnsRacePolicy, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId, GroupMember,
-    NextRef, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
+    DnsHttpsEndpoint, DnsRacePolicy, DnsUpstream, DnsUpstreamId, DnsUpstreamTransport,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef, NodeId, RouteMatcher, RouteRule,
+    RuleId, RuntimeSeed, SchedulerPolicy,
 };
 
 use super::{
@@ -169,7 +170,9 @@ impl RuntimeStore {
 
     async fn load_dns_upstreams(&self) -> Result<Vec<DnsUpstream>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, address, enabled, priority from runtime_dns_upstreams order by priority, id",
+            "select id, address, transport, host, path, enabled, priority
+             from runtime_dns_upstreams
+             order by priority, id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -298,12 +301,39 @@ fn row_to_dns_upstream(row: SqliteRow) -> Result<DnsUpstream, RuntimeStoreError>
             message: "priority must fit u32".to_string(),
         }
     })?;
+    let transport = dns_transport_from_row(&id, &row)?;
     Ok(DnsUpstream {
         id: DnsUpstreamId::new(id),
         address,
+        transport,
         enabled,
         priority,
     })
+}
+
+fn dns_transport_from_row(
+    id: &str,
+    row: &SqliteRow,
+) -> Result<DnsUpstreamTransport, RuntimeStoreError> {
+    match row.get::<String, _>("transport").as_str() {
+        "udp" => Ok(DnsUpstreamTransport::Udp),
+        "https" => {
+            let host = row.get::<Option<String>, _>("host").ok_or_else(|| {
+                RuntimeStoreError::InvalidDnsUpstream {
+                    id: id.to_string(),
+                    message: "host is required for HTTPS DNS upstream".to_string(),
+                }
+            })?;
+            let path = row
+                .get::<Option<String>, _>("path")
+                .unwrap_or_else(|| "/dns-query".to_string());
+            Ok(DnsUpstreamTransport::Https(DnsHttpsEndpoint { host, path }))
+        }
+        other => Err(RuntimeStoreError::InvalidDnsUpstream {
+            id: id.to_string(),
+            message: format!("transport {other:?} is unsupported"),
+        }),
+    }
 }
 
 async fn insert_node(
@@ -401,14 +431,25 @@ async fn insert_dns_upstream(
     upstream: &DnsUpstream,
 ) -> Result<(), RuntimeStoreError> {
     let enabled = if upstream.enabled { 1_i64 } else { 0_i64 };
+    let (transport, host, path) = match &upstream.transport {
+        DnsUpstreamTransport::Udp => ("udp", None, None),
+        DnsUpstreamTransport::Https(endpoint) => (
+            "https",
+            Some(endpoint.host.as_str()),
+            Some(endpoint.path.as_str()),
+        ),
+    };
     sqlx::query(
         "insert into runtime_dns_upstreams (
-            id, address, enabled, priority, updated_at_unix_ms
+            id, address, transport, host, path, enabled, priority, updated_at_unix_ms
          )
-         values (?1, ?2, ?3, ?4, ?5)",
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(upstream.id.as_str())
     .bind(upstream.address.to_string())
+    .bind(transport)
+    .bind(host)
+    .bind(path)
     .bind(enabled)
     .bind(i64::from(upstream.priority))
     .bind(super::unix_ms_i64())

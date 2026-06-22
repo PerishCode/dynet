@@ -6,7 +6,9 @@ use std::{
 
 use tokio::{net::UdpSocket, sync::mpsc, time};
 
-use crate::{unix_ms, DnsUpstream, RuntimeState};
+use crate::{unix_ms, DnsUpstream, DnsUpstreamTransport, RuntimeState};
+
+mod https;
 
 const DNS_DATAGRAM_LIMIT: usize = 65_535;
 const DNS_CLASS_IN: u16 = 1;
@@ -68,21 +70,34 @@ impl RuntimeState {
         let deadline = time::sleep(policy.timeout);
         tokio::pin!(deadline);
         let mut last_error = None;
+        let mut fake_candidate = None;
         loop {
             tokio::select! {
                 _ = &mut deadline => {
+                    if let Some(resolution) = fake_candidate {
+                        self.record_dns_resolution(&resolution);
+                        return Ok(resolution);
+                    }
                     return Err(DnsResolveError::new(
                         last_error.unwrap_or_else(|| "timed out waiting for DNS upstream response".to_string()),
                     ));
                 }
                 received = rx.recv() => {
                     let Some(result) = received else {
+                        if let Some(resolution) = fake_candidate {
+                            self.record_dns_resolution(&resolution);
+                            return Ok(resolution);
+                        }
                         return Err(DnsResolveError::new(
                             last_error.unwrap_or_else(|| "all DNS upstreams failed".to_string()),
                         ));
                     };
                     match result {
                         Ok(resolution) => {
+                            if only_fake_answers(&resolution) {
+                                fake_candidate.get_or_insert(resolution);
+                                continue;
+                            }
                             self.record_dns_resolution(&resolution);
                             return Ok(resolution);
                         }
@@ -195,6 +210,28 @@ async fn query_upstream(
     query_info: Option<DnsQueryInfo>,
     timeout: Duration,
 ) -> Result<DnsResolution, DnsResolveError> {
+    match &upstream.transport {
+        DnsUpstreamTransport::Udp => query_udp_upstream(upstream, query, query_info, timeout).await,
+        DnsUpstreamTransport::Https(endpoint) => {
+            https::query_https_upstream(
+                upstream.clone(),
+                endpoint.host.clone(),
+                endpoint.path.clone(),
+                query,
+                query_info,
+                timeout,
+            )
+            .await
+        }
+    }
+}
+
+async fn query_udp_upstream(
+    upstream: DnsUpstream,
+    query: Vec<u8>,
+    query_info: Option<DnsQueryInfo>,
+    timeout: Duration,
+) -> Result<DnsResolution, DnsResolveError> {
     let bind = if upstream.address.is_ipv4() {
         SocketAddr::from(([0, 0, 0, 0], 0))
     } else {
@@ -232,7 +269,22 @@ async fn query_upstream(
         })?;
     response.truncate(size);
     let response_info = sniff_dns_response(&response);
-    if let (Some(query), Some(response)) = (&query_info, &response_info) {
+    validate_response_info(&upstream, &query_info, &response_info)?;
+    Ok(DnsResolution {
+        response,
+        upstream,
+        source,
+        query_info,
+        response_info,
+    })
+}
+
+fn validate_response_info(
+    upstream: &DnsUpstream,
+    query_info: &Option<DnsQueryInfo>,
+    response_info: &Option<DnsResponseInfo>,
+) -> Result<(), DnsResolveError> {
+    if let (Some(query), Some(response)) = (query_info, response_info) {
         if query.transaction_id != response.transaction_id {
             return Err(DnsResolveError::new(format!(
                 "DNS response transaction id mismatch from upstream {}",
@@ -245,13 +297,7 @@ async fn query_upstream(
             upstream.id
         )));
     }
-    Ok(DnsResolution {
-        response,
-        upstream,
-        source,
-        query_info,
-        response_info,
-    })
+    Ok(())
 }
 
 fn build_a_query(domain: &str) -> Result<Vec<u8>, DnsResolveError> {
@@ -290,6 +336,23 @@ fn enabled_upstreams(mut upstreams: Vec<DnsUpstream>) -> Vec<DnsUpstream> {
             .then_with(|| left.id.cmp(&right.id))
     });
     upstreams
+}
+
+fn only_fake_answers(resolution: &DnsResolution) -> bool {
+    resolution
+        .response_info
+        .as_ref()
+        .is_some_and(|info| !info.answer_ips.is_empty() && info.answer_ips.iter().all(is_fake_ip))
+}
+
+fn is_fake_ip(address: &IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let octets = address.octets();
+            octets[0] == 198 && matches!(octets[1], 18 | 19)
+        }
+        IpAddr::V6(_) => false,
+    }
 }
 
 fn transaction_id(packet: &[u8]) -> Option<u16> {

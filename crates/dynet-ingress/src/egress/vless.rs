@@ -8,10 +8,11 @@ use vless_prototype::{
 
 use crate::{
     egress::{
-        DirectEgress, EgressError, EgressNode, TcpDialConnection, TcpDialTarget, TcpDialer,
-        TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation, UdpRelayOutcome,
+        relay_udp_response, DirectEgress, EgressError, EgressNode, TcpDialConnection,
+        TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation,
+        UdpRelayOutcome,
     },
-    push_decision_fields, session_fields, IngressEventKind, VlessConfig,
+    VlessConfig,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -125,33 +126,7 @@ impl VlessEgress {
                         .map_err(|error| vless_error(error, Some(upstream)))?;
                 }
                 Ok(VlessUdpStep::Upstream(payload)) => {
-                    association
-                        .downstream
-                        .send_to_peer(&payload, association.peer)
-                        .await
-                        .map_err(|error| EgressError {
-                            stage: "inbound-write",
-                            upstream: Some(upstream),
-                            message: format!("failed sending UDP downstream datagram: {error}"),
-                        })?;
-                    let mut fields = session_fields(
-                        association.session_id,
-                        association.inbound,
-                        self.tag(),
-                        association.peer,
-                        association.target,
-                        upstream,
-                    );
-                    push_decision_fields(&mut fields, &association.decision);
-                    fields.push(("direction", "upstream-to-client".to_string()));
-                    fields.push((
-                        "bytes",
-                        association.downstream.payload_len(&payload).to_string(),
-                    ));
-                    association
-                        .runtime
-                        .events()
-                        .record(IngressEventKind::UdpDatagram, fields);
+                    relay_udp_response(&association, self.tag(), upstream, &payload, &[]).await?;
                 }
                 Ok(VlessUdpStep::Closed) => {
                     return Ok(UdpRelayOutcome {

@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    DnsRacePolicy, DnsUpstream, ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef,
-    RouteRule, RuntimeSeed,
+    DnsRacePolicy, DnsUpstream, DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId,
+    GroupMember, NextRef, RouteRule, RuntimeSeed,
 };
 
 use super::RuntimeStoreError;
@@ -61,6 +61,7 @@ pub(super) fn validate_bootstrap(
             "at least one enabled DNS upstream is required".to_string(),
         ));
     }
+    validate_dns_upstreams(dns_upstreams)?;
     if dns_policy.timeout.is_zero() {
         return Err(RuntimeStoreError::InvalidBootstrap(
             "dns_race_timeout_ms must be positive".to_string(),
@@ -158,6 +159,26 @@ fn validate_unique_dns_ids(dns_upstreams: &[DnsUpstream]) -> Result<(), RuntimeS
                 "DNS upstream id {:?} is duplicated",
                 upstream.id.as_str()
             )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_dns_upstreams(dns_upstreams: &[DnsUpstream]) -> Result<(), RuntimeStoreError> {
+    for upstream in dns_upstreams {
+        if let DnsUpstreamTransport::Https(endpoint) = &upstream.transport {
+            if endpoint.host.trim().is_empty() {
+                return Err(RuntimeStoreError::InvalidDnsUpstream {
+                    id: upstream.id.as_str().to_string(),
+                    message: "HTTPS DNS upstream host must not be empty".to_string(),
+                });
+            }
+            if !endpoint.path.starts_with('/') {
+                return Err(RuntimeStoreError::InvalidDnsUpstream {
+                    id: upstream.id.as_str().to_string(),
+                    message: "HTTPS DNS upstream path must start with '/'".to_string(),
+                });
+            }
         }
     }
     Ok(())

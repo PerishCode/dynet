@@ -9,7 +9,8 @@ use utoipa::OpenApi;
 
 use dynet_api::{router, ApiDoc};
 use dynet_runtime::{
-    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, IngressEventKind, RuntimeState,
+    DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId, DnsUpstreamTransport, InboundKind,
+    IngressEventKind, RuntimeState, SelectionContext, TargetContext,
 };
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -73,6 +74,99 @@ async fn events_snapshot() {
 }
 
 #[tokio::test]
+async fn traffic_sessions_snapshot() {
+    let runtime = RuntimeState::default();
+    runtime.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", "7".to_string()),
+            ("decisionId", "3".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("nodeProtocol", "direct".to_string()),
+            ("peer", "127.0.0.1:50000".to_string()),
+            ("target", "127.0.0.1:80".to_string()),
+            ("targetIp", "127.0.0.1".to_string()),
+            ("targetPort", "80".to_string()),
+            ("targetSource", "fixed-upstream".to_string()),
+            ("selectionGroups", "default".to_string()),
+            ("selectionNodes", "default-node".to_string()),
+            ("selectionTrace", "default:default-node->direct".to_string()),
+        ],
+    );
+    runtime.events().record(
+        IngressEventKind::TcpClose,
+        [
+            ("sessionId", "7".to_string()),
+            ("decisionId", "3".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("clientToUpstreamBytes", "11".to_string()),
+            ("upstreamToClientBytes", "17".to_string()),
+            ("closeReason", "eof".to_string()),
+        ],
+    );
+
+    let response = router(runtime)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/observability/sessions")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router handles request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body reads");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+    assert_eq!(payload["sessions"][0]["sessionId"], 7);
+    assert_eq!(payload["sessions"][0]["decisionId"], 3);
+    assert_eq!(payload["sessions"][0]["targetSource"], "fixed-upstream");
+    assert_eq!(payload["sessions"][0]["clientToUpstreamBytes"], 11);
+    assert_eq!(payload["sessions"][0]["upstreamToClientBytes"], 17);
+    assert_eq!(payload["sessions"][0]["closeReason"], "eof");
+}
+
+#[tokio::test]
+async fn matrix_shadow_snapshot() {
+    let runtime = RuntimeState::default();
+    runtime
+        .select(SelectionContext {
+            session_id: 9,
+            inbound: InboundKind::Tcp,
+            target: TargetContext::fixed_upstream(SocketAddr::from(([127, 0, 0, 1], 80))),
+        })
+        .expect("selection succeeds");
+
+    let response = router(runtime)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/observability/matrix-shadow")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router handles request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body reads");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+    assert_eq!(payload["decisions"][0]["decisionId"], 1);
+    assert_eq!(payload["decisions"][0]["sessionId"], 9);
+    assert_eq!(payload["decisions"][0]["actualNodeId"], "default-node");
+    assert_eq!(payload["decisions"][0]["shadowTopNodeId"], "default-node");
+    assert!(payload["decisions"][0].get("shadowNodeId").is_none());
+    assert_eq!(payload["decisions"][0]["shadowDiffersFromActual"], false);
+    assert_eq!(
+        payload["decisions"][0]["candidates"][0]["reason"],
+        "priority-baseline"
+    );
+}
+
+#[tokio::test]
 async fn observed_dns_snapshot() {
     let dns = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -89,6 +183,7 @@ async fn observed_dns_snapshot() {
         vec![DnsUpstream {
             id: DnsUpstreamId::new("test"),
             address: dns_addr,
+            transport: DnsUpstreamTransport::Udp,
             enabled: true,
             priority: 0,
         }],
@@ -134,6 +229,14 @@ fn openapi_health_path() {
     assert!(document.paths.paths.contains_key("/api/v1/dns/observed"));
     assert!(document.paths.paths.contains_key("/api/v1/events"));
     assert!(document.paths.paths.contains_key("/api/v1/health"));
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/observability/sessions"));
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/observability/matrix-shadow"));
 }
 
 fn dns_a_response(query: &[u8], address: Ipv4Addr) -> Vec<u8> {

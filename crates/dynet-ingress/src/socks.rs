@@ -9,10 +9,9 @@ use tokio::{
 
 use crate::{
     egress::{EgressNode, TcpRelaySession, UdpDownstream, UdpRelayAssociation},
-    push_decision_fields, push_endpoint_fields, IngressEventKind, Socks5IngressConfig,
-    DATAGRAM_LIMIT,
+    push_decision_fields, push_endpoint_fields, push_target_context_fields, IngressEventKind,
+    Socks5IngressConfig, DATAGRAM_LIMIT,
 };
-
 mod events;
 mod protocol;
 use events::{
@@ -24,7 +23,6 @@ use protocol::{
     SocksRequest, SOCKS_CMD_BIND, SOCKS_CMD_CONNECT, SOCKS_CMD_UDP_ASSOCIATE,
     SOCKS_REPLY_COMMAND_NOT_SUPPORTED, SOCKS_REPLY_SUCCEEDED,
 };
-
 const UDP_CHANNEL_DEPTH: usize = 64;
 
 pub async fn run_socks5<O>(
@@ -136,7 +134,12 @@ where
 {
     let target_context = resolve_destination(&runtime, &request.destination).await?;
     let target = target_context.address;
-    let decision = select_target(&runtime, session_id, InboundKind::Tcp, target_context)?;
+    let decision = select_target(
+        &runtime,
+        session_id,
+        InboundKind::Tcp,
+        target_context.clone(),
+    )?;
     write_reply(
         &mut client,
         SOCKS_REPLY_SUCCEEDED,
@@ -151,6 +154,7 @@ where
         target,
         &request.destination,
     );
+    push_target_context_fields(&mut fields, &target_context);
     push_decision_fields(&mut fields, &decision);
     runtime.events().record(IngressEventKind::TcpAccept, fields);
     let session = TcpRelaySession {
@@ -167,6 +171,7 @@ where
                 target,
                 &request.destination,
             );
+            push_target_context_fields(&mut fields, &target_context);
             push_decision_fields(&mut fields, &decision);
             fields.push(("upstream", outcome.upstream.to_string()));
             push_endpoint_fields(&mut fields, "upstream", outcome.upstream);
@@ -292,22 +297,26 @@ where
                 let packet = parse_udp_packet(&buffer[..size])?;
                 let target_context = resolve_destination(&task.runtime, &packet.destination).await?;
                 let target = target_context.address;
+                let response_target = response_target_for_destination(&packet.destination, target);
                 let key = (udp_peer, target);
                 let sender = if let Some(sender) = associations.get(&key) {
                     sender.clone()
                 } else {
                     let decision =
-                        select_target(&task.runtime, task.session_id, InboundKind::Udp, target_context)?;
+                        select_target(&task.runtime, task.session_id, InboundKind::Udp, target_context.clone())?;
                     let (tx, rx) = mpsc::channel(UDP_CHANNEL_DEPTH);
                     let sender = UdpAssociationSender {
                         node_protocol: task.egress.decision_tag(&decision),
                         decision: decision.clone(),
+                        target_context: target_context.clone(),
                         tx,
                     };
                     associations.insert(key, sender.clone());
                     spawn_socks_udp_association(SocksUdpAssociationTask {
                         udp_peer,
                         target,
+                        target_context: target_context.clone(),
+                        response_target,
                         destination: packet.destination.clone(),
                         downstream: task.downstream.clone(),
                         downstream_rx: rx,
@@ -327,6 +336,7 @@ where
                     target,
                     &packet.destination,
                 );
+                push_target_context_fields(&mut fields, &sender.target_context);
                 push_decision_fields(&mut fields, &sender.decision);
                 fields.push(("udpPeer", udp_peer.to_string()));
                 fields.push(("direction", "client-to-upstream".to_string()));
@@ -343,6 +353,8 @@ where
 struct SocksUdpAssociationTask<O> {
     udp_peer: SocketAddr,
     target: SocketAddr,
+    target_context: TargetContext,
+    response_target: SocketAddr,
     destination: SocksDestination,
     downstream: Arc<UdpSocket>,
     downstream_rx: mpsc::Receiver<Vec<u8>>,
@@ -362,6 +374,8 @@ where
         let SocksUdpAssociationTask {
             udp_peer,
             target,
+            target_context,
+            response_target,
             destination,
             downstream,
             downstream_rx,
@@ -381,7 +395,7 @@ where
             idle_timeout,
             downstream: UdpDownstream::Socks5 {
                 socket: downstream,
-                response_target: target,
+                response_target,
             },
             downstream_rx,
             decision: decision.clone(),
@@ -391,6 +405,7 @@ where
             Ok(outcome) => {
                 let mut fields =
                     socks_session_fields(session_id, node_protocol, udp_peer, target, &destination);
+                push_target_context_fields(&mut fields, &target_context);
                 push_decision_fields(&mut fields, &decision);
                 fields.push(("upstream", outcome.upstream.to_string()));
                 push_endpoint_fields(&mut fields, "upstream", outcome.upstream);
@@ -438,7 +453,9 @@ async fn resolve_destination(
     destination: &SocksDestination,
 ) -> Result<TargetContext, SocksError> {
     match destination {
-        SocksDestination::Socket(address) => Ok(TargetContext::external_context(*address, None)),
+        SocksDestination::Socket(address) => {
+            Ok(resolve_socket_destination(runtime, *address).await)
+        }
         SocksDestination::Domain { domain, port } => {
             let address = runtime
                 .resolve_domain_a(domain, *port)
@@ -454,9 +471,30 @@ async fn resolve_destination(
     }
 }
 
+async fn resolve_socket_destination(runtime: &RuntimeState, address: SocketAddr) -> TargetContext {
+    let Some(domain) = runtime.dns_map().domain_for_ip(address.ip()) else {
+        return TargetContext::external_context(address, None);
+    };
+    match runtime.resolve_domain_a(&domain, address.port()).await {
+        Ok(restored) => TargetContext::dynet_dns(restored, domain),
+        Err(_) => TargetContext::external_context(address, Some(domain)),
+    }
+}
+
+fn response_target_for_destination(
+    destination: &SocksDestination,
+    target: SocketAddr,
+) -> SocketAddr {
+    match destination {
+        SocksDestination::Socket(address) => *address,
+        SocksDestination::Domain { .. } => target,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct UdpAssociationSender {
     node_protocol: &'static str,
     decision: dynet_runtime::SelectionDecision,
+    target_context: TargetContext,
     tx: mpsc::Sender<Vec<u8>>,
 }
