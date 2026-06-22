@@ -62,7 +62,7 @@ fn active_score(
         return score;
     }
     if let Some(stats) = aggregate {
-        score -= i64::from(stats.error_rate_ppm) * ERROR_RATE_WEIGHT;
+        score -= i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT;
         score -= latency_penalty(stats.avg_first_response_latency_ms) * LATENCY_WEIGHT;
         score -= u64_penalty(stats.active_session_count) * ACTIVE_SESSION_WEIGHT;
         score -= u64_penalty(stats.session_count) * RECENT_USAGE_WEIGHT;
@@ -76,7 +76,7 @@ fn target_penalty(stats: &MatrixTargetNodeStats) -> i64 {
     const ACTIVE_SESSION_WEIGHT: i64 = 10_000;
     const RECENT_USAGE_WEIGHT: i64 = 10;
 
-    i64::from(stats.error_rate_ppm) * ERROR_RATE_WEIGHT
+    i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT
         + latency_penalty(stats.avg_first_response_latency_ms) * LATENCY_WEIGHT
         + u64_penalty(stats.active_session_count) * ACTIVE_SESSION_WEIGHT
         + u64_penalty(stats.session_count) * RECENT_USAGE_WEIGHT
@@ -89,9 +89,10 @@ fn capped_node(stats: &MatrixNodeStats, thresholds: GroupThresholds) -> bool {
 }
 
 fn cooled_target(stats: &MatrixTargetNodeStats, thresholds: GroupThresholds) -> bool {
-    let completed = stats.success_count + stats.error_count;
-    completed >= thresholds.min_samples
-        && success_rate_ppm(stats.success_count, completed) < thresholds.min_success_rate_ppm
+    let completed_millis = stats.success_count.saturating_mul(1_000) + stats.effective_error_millis;
+    completed_millis >= thresholds.min_samples.saturating_mul(1_000)
+        && weighted_success_rate_ppm(stats.success_count, completed_millis)
+            < thresholds.min_success_rate_ppm
 }
 
 fn matching_target_stats<'a>(
@@ -128,11 +129,12 @@ fn target_scope(context: &SelectionContext) -> (String, String) {
     ("ip".to_string(), context.target.address.ip().to_string())
 }
 
-fn success_rate_ppm(success: u64, total: u64) -> u32 {
-    if total == 0 {
+fn weighted_success_rate_ppm(success: u64, completed_millis: u64) -> u32 {
+    if completed_millis == 0 {
         return 0;
     }
-    u32::try_from(u128::from(success) * 1_000_000 / u128::from(total)).unwrap_or(u32::MAX)
+    u32::try_from(u128::from(success) * 1_000_000_000 / u128::from(completed_millis))
+        .unwrap_or(u32::MAX)
 }
 
 fn latency_penalty(value: Option<u128>) -> i64 {

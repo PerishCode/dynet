@@ -174,7 +174,7 @@ fn stats_balanced_score(
         - i64::try_from(rank).unwrap_or(i64::MAX);
     if let Some(stats) = target_stats {
         return priority_score
-            - i64::from(stats.error_rate_ppm) * ERROR_RATE_WEIGHT
+            - i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT
             - u128_to_score_penalty(
                 stats
                     .avg_first_response_latency_ms
@@ -188,7 +188,7 @@ fn stats_balanced_score(
         return priority_score;
     };
     priority_score
-        - i64::from(stats.error_rate_ppm) * ERROR_RATE_WEIGHT
+        - i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT
         - u128_to_score_penalty(
             stats
                 .avg_first_response_latency_ms
@@ -205,11 +205,12 @@ fn stats_balanced_reason(
 ) -> String {
     if let Some(stats) = target_stats {
         return format!(
-            "stats-balanced-shadow:target={}:{},sessions={},errors={},active={},latencyMs={}",
+            "stats-balanced-shadow:target={}:{},sessions={},errors={},effectiveErrors={},active={},latencyMs={}",
             stats.target_scope,
             stats.target_value,
             stats.session_count,
             stats.error_count,
+            stats.effective_error_count,
             stats.active_session_count,
             stats
                 .avg_first_response_latency_ms
@@ -221,9 +222,10 @@ fn stats_balanced_reason(
         return "stats-balanced-shadow:no-history".to_string();
     };
     format!(
-        "stats-balanced-shadow:sessions={},errors={},active={},latencyMs={}",
+        "stats-balanced-shadow:sessions={},errors={},effectiveErrors={},active={},latencyMs={}",
         stats.session_count,
         stats.error_count,
+        stats.effective_error_count,
         stats.active_session_count,
         stats
             .avg_first_response_latency_ms

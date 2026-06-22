@@ -104,7 +104,7 @@ fn shadow_scoring_uses_stats() {
     assert_eq!(shadow[0].shadow_reason, "stats-balanced-shadow");
     assert_eq!(
         shadow[0].candidates[0].reason,
-        "stats-balanced-shadow:sessions=1,errors=0,active=0,latencyMs=none"
+        "stats-balanced-shadow:sessions=1,errors=0,effectiveErrors=0,active=0,latencyMs=none"
     );
 }
 
@@ -157,7 +157,7 @@ fn target_stats_group_local() {
     let shadow = runtime.matrix().shadow_decisions();
     assert_eq!(
         shadow[0].candidates[0].reason,
-        "stats-balanced-shadow:target=domain:github.com,sessions=1,errors=0,active=0,latencyMs=none"
+        "stats-balanced-shadow:target=domain:github.com,sessions=1,errors=0,effectiveErrors=0,active=0,latencyMs=none"
     );
 }
 
@@ -203,6 +203,42 @@ async fn github_cools_failed_target() {
 }
 
 #[tokio::test]
+async fn github_ignores_client_abort() {
+    let runtime = runtime_from_seed(github_seed()).await;
+    record_github_error(&runtime, "airport-primary", "client-aborted", 4096);
+
+    let stats = runtime.matrix_target_node_stats();
+    assert_eq!(stats[0].error_count, 1);
+    assert_eq!(stats[0].effective_error_count, 0);
+    assert_eq!(stats[0].effective_error_rate_ppm, 0);
+
+    let decision = runtime
+        .select(github_context(2))
+        .expect("selection succeeds");
+
+    assert_eq!(decision.group_id.as_str(), "GitHub");
+    assert_eq!(decision.node_id.as_str(), "airport-primary");
+}
+
+#[tokio::test]
+async fn github_softens_interrupted_response() {
+    let runtime = runtime_from_seed(github_seed()).await;
+    record_github_error(&runtime, "airport-primary", "response-interrupted", 4096);
+
+    let stats = runtime.matrix_target_node_stats();
+    assert_eq!(stats[0].error_count, 1);
+    assert_eq!(stats[0].effective_error_count, 1);
+    assert_eq!(stats[0].effective_error_rate_ppm, 250_000);
+
+    let decision = runtime
+        .select(github_context(2))
+        .expect("selection succeeds");
+
+    assert_eq!(decision.group_id.as_str(), "GitHub");
+    assert_eq!(decision.node_id.as_str(), "airport-primary");
+}
+
+#[tokio::test]
 async fn github_keeps_active_target() {
     let runtime = runtime_from_seed(github_seed()).await;
     runtime.events().record(
@@ -231,6 +267,51 @@ async fn github_keeps_active_target() {
 
     assert_eq!(decision.group_id.as_str(), "GitHub");
     assert_eq!(decision.node_id.as_str(), "airport-primary");
+}
+
+fn record_github_error(
+    runtime: &RuntimeState,
+    node_id: &'static str,
+    error_class: &'static str,
+    upstream_to_client_bytes: u64,
+) {
+    runtime.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", "1".to_string()),
+            ("decisionId", "1".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("targetDomain", "github.com".to_string()),
+            ("targetIp", "140.82.112.4".to_string()),
+            ("selectionGroups", "GitHub".to_string()),
+            ("selectionNodes", node_id.to_string()),
+        ],
+    );
+    runtime.events().record(
+        IngressEventKind::TcpError,
+        [
+            ("sessionId", "1".to_string()),
+            ("decisionId", "1".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("errorClass", error_class.to_string()),
+            ("error", "synthetic browser outcome".to_string()),
+            (
+                "upstreamToClientBytes",
+                upstream_to_client_bytes.to_string(),
+            ),
+        ],
+    );
+}
+
+fn github_context(session_id: u64) -> SelectionContext {
+    SelectionContext {
+        session_id,
+        inbound: InboundKind::Tcp,
+        target: TargetContext::external_context(
+            "140.82.112.4:443".parse().expect("socket address"),
+            Some("github.com".to_string()),
+        ),
+    }
 }
 
 #[tokio::test]

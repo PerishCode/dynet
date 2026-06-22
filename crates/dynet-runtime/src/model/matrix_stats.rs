@@ -14,8 +14,11 @@ pub struct MatrixNodeStats {
     pub session_count: u64,
     pub success_count: u64,
     pub error_count: u64,
+    pub effective_error_count: u64,
+    pub effective_error_millis: u64,
     pub active_session_count: u64,
     pub error_rate_ppm: u32,
+    pub effective_error_rate_ppm: u32,
     pub avg_first_response_latency_ms: Option<u128>,
     pub client_to_upstream_bytes: u64,
     pub upstream_to_client_bytes: u64,
@@ -35,8 +38,11 @@ pub struct MatrixTargetNodeStats {
     pub session_count: u64,
     pub success_count: u64,
     pub error_count: u64,
+    pub effective_error_count: u64,
+    pub effective_error_millis: u64,
     pub active_session_count: u64,
     pub error_rate_ppm: u32,
+    pub effective_error_rate_ppm: u32,
     pub avg_first_response_latency_ms: Option<u128>,
     pub client_to_upstream_bytes: u64,
     pub upstream_to_client_bytes: u64,
@@ -50,6 +56,7 @@ struct MatrixNodeStatsAccumulator {
     session_count: u64,
     success_count: u64,
     error_count: u64,
+    effective_error_millis: u64,
     active_session_count: u64,
     first_response_latency_total_ms: u128,
     first_response_latency_count: u64,
@@ -149,6 +156,7 @@ impl MatrixNodeStatsAccumulator {
         self.session_count += 1;
         if session.error.is_some() {
             self.error_count += 1;
+            self.effective_error_millis += effective_error_millis(session);
         } else if session.closed_at_unix_ms.is_some() {
             self.success_count += 1;
         } else {
@@ -180,8 +188,14 @@ impl MatrixNodeStatsAccumulator {
             session_count: self.session_count,
             success_count: self.success_count,
             error_count: self.error_count,
+            effective_error_count: millis_to_count(self.effective_error_millis),
+            effective_error_millis: self.effective_error_millis,
             active_session_count: self.active_session_count,
             error_rate_ppm: rate_ppm(self.error_count, self.session_count),
+            effective_error_rate_ppm: effective_rate_ppm(
+                self.effective_error_millis,
+                self.session_count,
+            ),
             avg_first_response_latency_ms: (self.first_response_latency_count > 0).then(|| {
                 self.first_response_latency_total_ms / u128::from(self.first_response_latency_count)
             }),
@@ -210,8 +224,14 @@ impl MatrixNodeStatsAccumulator {
             session_count: self.session_count,
             success_count: self.success_count,
             error_count: self.error_count,
+            effective_error_count: millis_to_count(self.effective_error_millis),
+            effective_error_millis: self.effective_error_millis,
             active_session_count: self.active_session_count,
             error_rate_ppm: rate_ppm(self.error_count, self.session_count),
+            effective_error_rate_ppm: effective_rate_ppm(
+                self.effective_error_millis,
+                self.session_count,
+            ),
             avg_first_response_latency_ms: (self.first_response_latency_count > 0).then(|| {
                 self.first_response_latency_total_ms / u128::from(self.first_response_latency_count)
             }),
@@ -246,10 +266,34 @@ fn node_fingerprint(node_id: &str, fingerprints_by_node: &BTreeMap<String, Strin
         .unwrap_or_else(|| format!("node-id:{node_id}"))
 }
 
+fn effective_error_millis(session: &TrafficSession) -> u64 {
+    match session.error_class.as_deref() {
+        Some("client-aborted") => 0,
+        Some("response-interrupted") if session.upstream_to_client_bytes > 0 => 250,
+        Some("no-response-before-first-byte") => 750,
+        Some("response-interrupted") => 750,
+        Some("handshake-failed") => 1_000,
+        Some("connect-failed" | "protocol-invalid" | "request-write-failed") => 1_000,
+        Some("unknown-failure") | Some(_) | None => 1_000,
+    }
+}
+
+fn millis_to_count(value: u64) -> u64 {
+    value.div_ceil(1_000)
+}
+
 fn rate_ppm(numerator: u64, denominator: u64) -> u32 {
     if denominator == 0 {
         return 0;
     }
     let rate = u128::from(numerator) * 1_000_000 / u128::from(denominator);
+    u32::try_from(rate).unwrap_or(u32::MAX)
+}
+
+fn effective_rate_ppm(error_millis: u64, sessions: u64) -> u32 {
+    if sessions == 0 {
+        return 0;
+    }
+    let rate = u128::from(error_millis) * 1_000 / u128::from(sessions);
     u32::try_from(rate).unwrap_or(u32::MAX)
 }
