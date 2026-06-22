@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -51,6 +51,32 @@ pub struct MatrixTargetNodeStats {
     pub last_observed_at_unix_ms: u128,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixErrorSignalStats {
+    pub group_id: String,
+    pub node_id: String,
+    pub node_fingerprint: String,
+    pub target_scope: String,
+    pub target_value: String,
+    pub node_protocol: String,
+    pub error_class: String,
+    pub error_code: String,
+    pub error_side: String,
+    pub error_phase: String,
+    pub error_protocol_phase: String,
+    pub error_score_impact: String,
+    pub attempt_count: u64,
+    pub logical_session_count: u64,
+    pub effective_error_count: u64,
+    pub effective_error_millis: u64,
+    pub client_to_upstream_bytes: u64,
+    pub upstream_to_client_bytes: u64,
+    pub client_to_upstream_datagrams: u64,
+    pub upstream_to_client_datagrams: u64,
+    pub last_observed_at_unix_ms: u128,
+}
+
 #[derive(Debug, Default)]
 struct MatrixNodeStatsAccumulator {
     session_count: u64,
@@ -60,6 +86,18 @@ struct MatrixNodeStatsAccumulator {
     active_session_count: u64,
     first_response_latency_total_ms: u128,
     first_response_latency_count: u64,
+    client_to_upstream_bytes: u64,
+    upstream_to_client_bytes: u64,
+    client_to_upstream_datagrams: u64,
+    upstream_to_client_datagrams: u64,
+    last_observed_at_unix_ms: u128,
+}
+
+#[derive(Debug, Default)]
+struct MatrixErrorSignalAccumulator {
+    attempt_count: u64,
+    logical_session_ids: BTreeSet<u64>,
+    effective_error_millis: u64,
     client_to_upstream_bytes: u64,
     upstream_to_client_bytes: u64,
     client_to_upstream_datagrams: u64,
@@ -133,6 +171,100 @@ pub(crate) fn target_stats_from_sessions(
         .collect()
 }
 
+pub(crate) fn error_signals_from_sessions(
+    sessions: &[TrafficSession],
+    fingerprints_by_node: &BTreeMap<String, String>,
+) -> Vec<MatrixErrorSignalStats> {
+    let mut stats = BTreeMap::<
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ),
+        MatrixErrorSignalAccumulator,
+    >::new();
+    for session in sessions {
+        if session.error.is_none() {
+            continue;
+        }
+        let Some(pairs) = selection_pairs(session) else {
+            continue;
+        };
+        let (target_scope, target_value) =
+            target_scope(session).unwrap_or_else(|| ("unknown".to_string(), String::new()));
+        let node_protocol = optional_value(&session.node_protocol);
+        let error_class = optional_value(&session.error_class);
+        let error_code = optional_value(&session.error_code);
+        let error_side = optional_value(&session.error_side);
+        let error_phase = optional_value(&session.error_phase);
+        let error_protocol_phase = optional_value(&session.error_protocol_phase);
+        let error_score_impact = optional_value(&session.error_score_impact);
+        for (group_id, node_id) in pairs {
+            stats
+                .entry((
+                    group_id,
+                    node_id,
+                    target_scope.clone(),
+                    target_value.clone(),
+                    node_protocol.clone(),
+                    error_class.clone(),
+                    error_code.clone(),
+                    error_side.clone(),
+                    error_phase.clone(),
+                    error_protocol_phase.clone(),
+                    error_score_impact.clone(),
+                ))
+                .or_default()
+                .record(session);
+        }
+    }
+    stats
+        .into_iter()
+        .map(
+            |(
+                (
+                    group_id,
+                    node_id,
+                    target_scope,
+                    target_value,
+                    node_protocol,
+                    error_class,
+                    error_code,
+                    error_side,
+                    error_phase,
+                    error_protocol_phase,
+                    error_score_impact,
+                ),
+                accumulator,
+            )| {
+                let node_fingerprint = node_fingerprint(&node_id, fingerprints_by_node);
+                accumulator.finish(
+                    group_id,
+                    node_id,
+                    node_fingerprint,
+                    target_scope,
+                    target_value,
+                    node_protocol,
+                    error_class,
+                    error_code,
+                    error_side,
+                    error_phase,
+                    error_protocol_phase,
+                    error_score_impact,
+                )
+            },
+        )
+        .collect()
+}
+
 fn selection_pairs(session: &TrafficSession) -> Option<Vec<(String, String)>> {
     let groups = split_list(session.selection_groups.as_deref()?);
     let nodes = split_list(session.selection_nodes.as_deref()?);
@@ -149,6 +281,15 @@ fn split_list(value: &str) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn optional_value(value: &Option<String>) -> String {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 impl MatrixNodeStatsAccumulator {
@@ -235,6 +376,63 @@ impl MatrixNodeStatsAccumulator {
             avg_first_response_latency_ms: (self.first_response_latency_count > 0).then(|| {
                 self.first_response_latency_total_ms / u128::from(self.first_response_latency_count)
             }),
+            client_to_upstream_bytes: self.client_to_upstream_bytes,
+            upstream_to_client_bytes: self.upstream_to_client_bytes,
+            client_to_upstream_datagrams: self.client_to_upstream_datagrams,
+            upstream_to_client_datagrams: self.upstream_to_client_datagrams,
+            last_observed_at_unix_ms: self.last_observed_at_unix_ms,
+        }
+    }
+}
+
+impl MatrixErrorSignalAccumulator {
+    fn record(&mut self, session: &TrafficSession) {
+        self.attempt_count += 1;
+        self.logical_session_ids.insert(session.session_id);
+        self.effective_error_millis += effective_error_millis(session);
+        self.client_to_upstream_bytes += session.client_to_upstream_bytes;
+        self.upstream_to_client_bytes += session.upstream_to_client_bytes;
+        self.client_to_upstream_datagrams += session.client_to_upstream_datagrams;
+        self.upstream_to_client_datagrams += session.upstream_to_client_datagrams;
+        self.last_observed_at_unix_ms = self
+            .last_observed_at_unix_ms
+            .max(session.last_observed_at_unix_ms);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        self,
+        group_id: String,
+        node_id: String,
+        node_fingerprint: String,
+        target_scope: String,
+        target_value: String,
+        node_protocol: String,
+        error_class: String,
+        error_code: String,
+        error_side: String,
+        error_phase: String,
+        error_protocol_phase: String,
+        error_score_impact: String,
+    ) -> MatrixErrorSignalStats {
+        MatrixErrorSignalStats {
+            group_id,
+            node_id,
+            node_fingerprint,
+            target_scope,
+            target_value,
+            node_protocol,
+            error_class,
+            error_code,
+            error_side,
+            error_phase,
+            error_protocol_phase,
+            error_score_impact,
+            attempt_count: self.attempt_count,
+            logical_session_count: u64::try_from(self.logical_session_ids.len())
+                .unwrap_or(u64::MAX),
+            effective_error_count: millis_to_count(self.effective_error_millis),
+            effective_error_millis: self.effective_error_millis,
             client_to_upstream_bytes: self.client_to_upstream_bytes,
             upstream_to_client_bytes: self.upstream_to_client_bytes,
             client_to_upstream_datagrams: self.client_to_upstream_datagrams,

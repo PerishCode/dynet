@@ -21,11 +21,11 @@ pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
     DnsHttpsEndpoint, DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId,
     DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds,
-    InboundKind, MatrixNodeStats, MatrixService, MatrixShadowCandidate, MatrixShadowDecision,
-    MatrixTargetNodeStats, NextRef, NodeId, ObservedDnsMap, RouteMatcher, RouteRule, RuleId,
-    RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
-    SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix, TargetContext,
-    TargetSource,
+    InboundKind, MatrixErrorSignalStats, MatrixNodeStats, MatrixService, MatrixShadowCandidate,
+    MatrixShadowDecision, MatrixTargetNodeStats, NextRef, NodeId, ObservedDnsMap, RouteMatcher,
+    RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision,
+    SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix,
+    TargetContext, TargetSource,
 };
 pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
@@ -169,6 +169,12 @@ impl RuntimeState {
         self.inner
             .matrix
             .target_node_stats(&self.inner.nodes.fingerprints_by_id())
+    }
+
+    pub fn matrix_error_signal_stats(&self) -> Vec<MatrixErrorSignalStats> {
+        self.inner
+            .matrix
+            .error_signal_stats(&self.inner.nodes.fingerprints_by_id())
     }
 
     pub fn selector_matrix(&self) -> &SelectorMatrix {

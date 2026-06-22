@@ -8,8 +8,11 @@ use crate::{
 
 use super::{
     matrix_shadow::{score_candidates, MatrixShadowStore},
-    matrix_stats::{node_stats_from_sessions, target_stats_from_sessions},
-    GroupId, MatrixCandidateInput, MatrixNodeStats, MatrixShadowDecision, MatrixTargetNodeStats,
+    matrix_stats::{
+        error_signals_from_sessions, node_stats_from_sessions, target_stats_from_sessions,
+    },
+    GroupId, MatrixCandidateInput, MatrixErrorSignalStats, MatrixNodeStats, MatrixShadowDecision,
+    MatrixTargetNodeStats,
 };
 
 #[derive(Debug, Clone)]
@@ -107,6 +110,13 @@ impl MatrixService {
         fingerprints_by_node: &BTreeMap<String, String>,
     ) -> Vec<MatrixTargetNodeStats> {
         target_stats_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
+    }
+
+    pub(crate) fn error_signal_stats(
+        &self,
+        fingerprints_by_node: &BTreeMap<String, String>,
+    ) -> Vec<MatrixErrorSignalStats> {
+        error_signals_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
     }
 
     pub fn persistence_stats(&self) -> PersistenceStatsSnapshot {

@@ -18,7 +18,7 @@ pub(crate) use matrix_active::select_active_candidate;
 pub use matrix_service::{MatrixService, SelectorMatrix};
 pub(crate) use matrix_shadow::MatrixCandidateInput;
 pub use matrix_shadow::{MatrixShadowCandidate, MatrixShadowDecision};
-pub use matrix_stats::{MatrixNodeStats, MatrixTargetNodeStats};
+pub use matrix_stats::{MatrixErrorSignalStats, MatrixNodeStats, MatrixTargetNodeStats};
 
 pub(crate) const DEFAULT_NODE_ID: &str = "default-node";
 pub(crate) const DEFAULT_GROUP_ID: &str = "default";
