@@ -11,6 +11,7 @@ use tokio::{
 use crate::{EgressNodeConfig, DATAGRAM_LIMIT};
 
 mod graph;
+mod observation;
 mod shadowsocks;
 mod trojan;
 mod udp_downstream;
@@ -19,6 +20,7 @@ mod vless;
 mod vmess;
 
 pub(crate) use graph::GraphEgress;
+pub(crate) use observation::{count_downstream, push_egress_error_fields, EgressError};
 use shadowsocks::ShadowsocksEgress;
 use trojan::TrojanEgress;
 pub(crate) use udp_downstream::UdpDownstream;
@@ -99,13 +101,6 @@ pub(crate) struct UdpRelayAssociation {
 pub(crate) struct UdpRelayOutcome {
     pub upstream: SocketAddr,
     pub close_reason: &'static str,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct EgressError {
-    pub stage: &'static str,
-    pub upstream: Option<SocketAddr>,
-    pub message: String,
 }
 
 pub(crate) trait EgressNode: Clone + Send + Sync + 'static {
@@ -198,14 +193,14 @@ impl EgressMedium {
             Self::Trojan(egress) => egress.handle_udp_via_dialer(association, dialer).await,
             Self::Vless(egress) => egress.handle_udp_via_dialer(association, dialer).await,
             Self::Vmess(egress) => egress.handle_udp_via_dialer(association, dialer).await,
-            Self::Direct(_) | Self::Shadowsocks(_) => Err(EgressError {
-                stage: "egress-select",
-                upstream: None,
-                message: format!(
+            Self::Direct(_) | Self::Shadowsocks(_) => Err(EgressError::new(
+                "egress-select",
+                None,
+                format!(
                     "UDP final egress {} does not support TCP-dialer underlay",
                     self.tag()
                 ),
-            }),
+            )),
         }
     }
 }
@@ -281,21 +276,25 @@ impl EgressNode for DirectEgress {
     ) -> Result<UdpRelayOutcome, EgressError> {
         let upstream_socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
             .await
-            .map_err(|error| EgressError {
-                stage: "egress-bind",
-                upstream: None,
-                message: format!("failed to bind UDP egress socket: {error}"),
+            .map_err(|error| {
+                EgressError::new(
+                    "egress-bind",
+                    None,
+                    format!("failed to bind UDP egress socket: {error}"),
+                )
             })?;
         upstream_socket
             .connect(association.target)
             .await
-            .map_err(|error| EgressError {
-                stage: "egress-connect",
-                upstream: Some(association.target),
-                message: format!(
-                    "failed connecting UDP target {}: {error}",
-                    association.target
-                ),
+            .map_err(|error| {
+                EgressError::new(
+                    "egress-connect",
+                    Some(association.target),
+                    format!(
+                        "failed connecting UDP target {}: {error}",
+                        association.target
+                    ),
+                )
             })?;
         let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
         loop {
@@ -310,14 +309,13 @@ impl EgressNode for DirectEgress {
             .await;
             match step {
                 Ok(UdpStep::Downstream(payload)) => {
-                    upstream_socket
-                        .send(&payload)
-                        .await
-                        .map_err(|error| EgressError {
-                            stage: "egress-write",
-                            upstream: Some(association.target),
-                            message: format!("failed sending UDP target datagram: {error}"),
-                        })?;
+                    upstream_socket.send(&payload).await.map_err(|error| {
+                        EgressError::new(
+                            "egress-write",
+                            Some(association.target),
+                            format!("failed sending UDP target datagram: {error}"),
+                        )
+                    })?;
                 }
                 Ok(UdpStep::Upstream(size)) => {
                     relay_udp_response(
@@ -349,7 +347,7 @@ impl EgressNode for DirectEgress {
 impl DirectEgress {
     async fn handle_tcp_with_dialer<D>(
         &self,
-        mut session: TcpRelaySession,
+        session: TcpRelaySession,
         dialer: &D,
     ) -> Result<TcpRelayOutcome, EgressError>
     where
@@ -359,13 +357,17 @@ impl DirectEgress {
             .dial_tcp(TcpDialTarget::Socket(session.target))
             .await?
             .into_io();
+        let (mut downstream, byte_counts) = count_downstream(session.downstream);
         let (client_to_upstream, upstream_to_client) =
-            io::copy_bidirectional(&mut session.downstream, &mut upstream)
+            io::copy_bidirectional(&mut downstream, &mut upstream)
                 .await
-                .map_err(|error| EgressError {
-                    stage: "relay",
-                    upstream: Some(session.target),
-                    message: format!("TCP relay failed: {error}"),
+                .map_err(|error| {
+                    EgressError::new(
+                        "relay",
+                        Some(session.target),
+                        format!("TCP relay failed: {error}"),
+                    )
+                    .with_plaintext_bytes(byte_counts)
                 })?;
         Ok(TcpRelayOutcome {
             upstream: session.target,
@@ -380,15 +382,19 @@ impl TcpDialer for DirectEgress {
     async fn dial_tcp(&self, target: TcpDialTarget) -> Result<TcpDialConnection, EgressError> {
         let upstream = target.upstream();
         let label = target.label();
-        let stream = target.connect().await.map_err(|error| EgressError {
-            stage: "egress-connect",
-            upstream,
-            message: format!("failed dialing TCP target {label}: {error}"),
+        let stream = target.connect().await.map_err(|error| {
+            EgressError::new(
+                "egress-connect",
+                upstream,
+                format!("failed dialing TCP target {label}: {error}"),
+            )
         })?;
-        let upstream = stream.peer_addr().map_err(|error| EgressError {
-            stage: "egress-connect",
-            upstream,
-            message: format!("failed reading TCP target address {label}: {error}"),
+        let upstream = stream.peer_addr().map_err(|error| {
+            EgressError::new(
+                "egress-connect",
+                upstream,
+                format!("failed reading TCP target address {label}: {error}"),
+            )
         })?;
         Ok(TcpDialConnection::TcpStream { stream, upstream })
     }
@@ -402,15 +408,19 @@ impl TcpDialTarget {
                 let label = self.label();
                 let mut addresses = tokio::net::lookup_host((host.as_str(), *port))
                     .await
-                    .map_err(|error| EgressError {
-                        stage: "egress-resolve",
-                        upstream: None,
-                        message: format!("failed resolving TCP target {label}: {error}"),
+                    .map_err(|error| {
+                        EgressError::new(
+                            "egress-resolve",
+                            None,
+                            format!("failed resolving TCP target {label}: {error}"),
+                        )
                     })?;
-                addresses.next().ok_or_else(|| EgressError {
-                    stage: "egress-resolve",
-                    upstream: None,
-                    message: format!("TCP target {label} resolved no addresses"),
+                addresses.next().ok_or_else(|| {
+                    EgressError::new(
+                        "egress-resolve",
+                        None,
+                        format!("TCP target {label} resolved no addresses"),
+                    )
                 })
             }
         }

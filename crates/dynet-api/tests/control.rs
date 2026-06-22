@@ -175,6 +175,8 @@ async fn matrix_stats_snapshot() {
             ("sessionId", "11".to_string()),
             ("decisionId", "5".to_string()),
             ("inbound", "tcp".to_string()),
+            ("targetDomain", "GitHub.com".to_string()),
+            ("targetIp", "140.82.112.4".to_string()),
             ("selectionGroups", "GitHub".to_string()),
             ("selectionNodes", "airport-us-01".to_string()),
         ],
@@ -208,11 +210,71 @@ async fn matrix_stats_snapshot() {
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
     assert_eq!(payload["nodes"][0]["groupId"], "GitHub");
     assert_eq!(payload["nodes"][0]["nodeId"], "airport-us-01");
+    assert_eq!(
+        payload["nodes"][0]["nodeFingerprint"],
+        "node-id:airport-us-01"
+    );
     assert_eq!(payload["nodes"][0]["sessionCount"], 1);
     assert_eq!(payload["nodes"][0]["successCount"], 1);
     assert_eq!(payload["nodes"][0]["errorCount"], 0);
     assert_eq!(payload["nodes"][0]["clientToUpstreamBytes"], 23);
     assert_eq!(payload["nodes"][0]["upstreamToClientBytes"], 29);
+}
+
+#[tokio::test]
+async fn matrix_target_stats_snapshot() {
+    let runtime = RuntimeState::default();
+    runtime.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", "12".to_string()),
+            ("decisionId", "6".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("targetDomain", "GitHub.com".to_string()),
+            ("targetIp", "140.82.112.4".to_string()),
+            ("selectionGroups", "GitHub,Private".to_string()),
+            (
+                "selectionNodes",
+                "airport-us-01,private-fixed-ip".to_string(),
+            ),
+        ],
+    );
+    runtime.events().record(
+        IngressEventKind::TcpClose,
+        [
+            ("sessionId", "12".to_string()),
+            ("decisionId", "6".to_string()),
+            ("inbound", "tcp".to_string()),
+            ("clientToUpstreamBytes", "41".to_string()),
+            ("upstreamToClientBytes", "43".to_string()),
+            ("closeReason", "eof".to_string()),
+        ],
+    );
+
+    let response = router(runtime)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/observability/matrix-target-stats")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router handles request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body reads");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+    assert_eq!(payload["targets"].as_array().expect("targets").len(), 2);
+    assert_eq!(payload["targets"][0]["groupId"], "GitHub");
+    assert_eq!(payload["targets"][0]["nodeId"], "airport-us-01");
+    assert_eq!(payload["targets"][0]["targetScope"], "domain");
+    assert_eq!(payload["targets"][0]["targetValue"], "github.com");
+    assert_eq!(payload["targets"][0]["sessionCount"], 1);
+    assert_eq!(payload["targets"][1]["groupId"], "Private");
+    assert_eq!(payload["targets"][1]["nodeId"], "private-fixed-ip");
+    assert_eq!(payload["targets"][1]["targetValue"], "github.com");
 }
 
 #[tokio::test]
@@ -290,6 +352,10 @@ fn openapi_health_path() {
         .paths
         .paths
         .contains_key("/api/v1/observability/matrix-stats"));
+    assert!(document
+        .paths
+        .paths
+        .contains_key("/api/v1/observability/matrix-target-stats"));
 }
 
 fn dns_a_response(query: &[u8], address: Ipv4Addr) -> Vec<u8> {

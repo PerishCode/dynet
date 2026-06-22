@@ -6,16 +6,19 @@ use std::{
 
 use dynet_ingress::{EgressNodeConfig, ShadowsocksConfig, TrojanConfig, VlessConfig, VmessConfig};
 use dynet_runtime::{
-    ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef, NodeId, RouteMatcher, RouteRule,
-    RuleId, RuntimeSeed, SchedulerPolicy,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, NextRef, NodeId,
+    RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
 };
 use serde::Deserialize;
 
 use crate::{method_config::parse_shadowsocks_method, ForwardingConfig};
 
 mod dns_upstream;
+mod group_thresholds;
+mod node_fingerprint;
 mod validation;
 use dns_upstream::FileDnsUpstreamConfig;
+use group_thresholds::load_thresholds;
 use validation::{validate_execution_node, validate_thresholds};
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +30,7 @@ pub(crate) struct FileForwardingConfig {
     rules: Option<Vec<FileRouteRuleConfig>>,
     dns_upstreams: Option<Vec<FileDnsUpstreamConfig>>,
     dns_race_timeout_ms: Option<u64>,
+    thresholds: Option<FileGroupThresholds>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +52,9 @@ struct FileGroupThresholds {
     min_confidence: Option<f64>,
     max_explore_ratio: Option<f64>,
     failure_cooldown_secs: Option<u64>,
+    min_success_rate: Option<f64>,
+    min_samples: Option<u64>,
+    max_active_sessions: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +128,7 @@ impl FileForwardingConfig {
             self.rules,
             self.dns_upstreams,
             self.dns_race_timeout_ms,
+            self.thresholds,
         )
     }
 }
@@ -132,10 +140,13 @@ fn build_graph(
     rules: Option<Vec<FileRouteRuleConfig>>,
     dns_upstreams: Option<Vec<FileDnsUpstreamConfig>>,
     dns_race_timeout_ms: Option<u64>,
+    thresholds: Option<FileGroupThresholds>,
 ) -> Result<ForwardingConfig, String> {
     let default_group = default_group.unwrap_or_else(|| groups[0].id.clone());
     let (runtime_nodes, node_execution_configs) = load_nodes(nodes)?;
-    let (runtime_groups, group_members) = load_groups(groups)?;
+    validate_thresholds("forwarding", thresholds.as_ref())?;
+    let default_thresholds = load_thresholds(thresholds, GroupThresholds::default())?;
+    let (runtime_groups, group_members) = load_groups(groups, default_thresholds)?;
     let route_rules = rules
         .unwrap_or_default()
         .into_iter()
@@ -199,6 +210,7 @@ fn load_nodes(
 
 fn load_groups(
     groups: Vec<FileForwardGroupConfig>,
+    default_thresholds: GroupThresholds,
 ) -> Result<(Vec<ForwardGroup>, Vec<GroupMember>), String> {
     let mut runtime_groups = Vec::with_capacity(groups.len());
     let mut group_members = Vec::new();
@@ -209,11 +221,13 @@ fn load_groups(
         let next = group
             .next
             .map_or_else(NextRef::direct_audit_outlet, NextRef::named);
+        let thresholds = load_thresholds(group.thresholds, default_thresholds)?;
         push_group_members(&id, group.members, &mut group_members)?;
         runtime_groups.push(ForwardGroup {
             id: GroupId::new(id),
             enabled: group.enabled.unwrap_or(true),
             scheduler: SchedulerPolicy::SingleFirstEnabled,
+            thresholds,
             next,
         });
     }
@@ -295,13 +309,10 @@ impl FileForwardNodeConfig {
         let id = non_empty("forwarding.nodes[].id", self.id.clone())?;
         let enabled = self.enabled.unwrap_or(true);
         let tag = self.kind.clone();
+        let fingerprint = self.stable_fingerprint();
         let node_config = self.load_execution_config()?;
         Ok((
-            ForwardNode {
-                id: NodeId::new(id),
-                tag,
-                enabled,
-            },
+            ForwardNode::with_fingerprint(id, tag, enabled, fingerprint),
             node_config,
         ))
     }

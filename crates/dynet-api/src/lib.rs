@@ -1,6 +1,7 @@
 use axum::{extract::State, routing::get, Json, Router};
 use dynet_runtime::{
-    IngressEvent, MatrixNodeStats, MatrixShadowDecision, RuntimeState, TrafficSession,
+    IngressEvent, MatrixNodeStats, MatrixShadowDecision, MatrixTargetNodeStats, RuntimeState,
+    TrafficSession,
 };
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -17,7 +18,8 @@ pub const API_PREFIX: &str = "/api/v1";
         list_observed_dns,
         list_traffic_sessions,
         list_matrix_shadow,
-        list_matrix_stats
+        list_matrix_stats,
+        list_matrix_target_stats
     ),
     components(schemas(
         EventsResponse,
@@ -29,7 +31,9 @@ pub const API_PREFIX: &str = "/api/v1";
         MatrixShadowResponse,
         MatrixShadowDecision,
         MatrixStatsResponse,
-        MatrixNodeStats
+        MatrixNodeStats,
+        MatrixTargetStatsResponse,
+        MatrixTargetNodeStats
     )),
     tags((name = "health", description = "Control-plane liveness"))
 )]
@@ -85,6 +89,12 @@ pub struct MatrixStatsResponse {
     pub nodes: Vec<MatrixNodeStats>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixTargetStatsResponse {
+    pub targets: Vec<MatrixTargetNodeStats>,
+}
+
 impl HealthResponse {
     pub fn healthy() -> Self {
         Self {
@@ -111,6 +121,10 @@ pub fn router(runtime: RuntimeState) -> Router {
             get(list_matrix_shadow),
         )
         .route("/api/v1/observability/matrix-stats", get(list_matrix_stats))
+        .route(
+            "/api/v1/observability/matrix-target-stats",
+            get(list_matrix_target_stats),
+        )
         .route("/api/v1/observability/sessions", get(list_traffic_sessions))
         .with_state(ApiState::new(runtime))
 }
@@ -196,7 +210,23 @@ pub async fn list_matrix_shadow(State(state): State<ApiState>) -> Json<MatrixSha
 )]
 pub async fn list_matrix_stats(State(state): State<ApiState>) -> Json<MatrixStatsResponse> {
     Json(MatrixStatsResponse {
-        nodes: state.runtime.matrix().node_stats(),
+        nodes: state.runtime.matrix_node_stats(),
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/observability/matrix-target-stats",
+    tag = "observability",
+    responses(
+        (status = 200, description = "Recent target-scoped node stats derived from traffic sessions", body = MatrixTargetStatsResponse)
+    )
+)]
+pub async fn list_matrix_target_stats(
+    State(state): State<ApiState>,
+) -> Json<MatrixTargetStatsResponse> {
+    Json(MatrixTargetStatsResponse {
+        targets: state.runtime.matrix_target_node_stats(),
     })
 }
 

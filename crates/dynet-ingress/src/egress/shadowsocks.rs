@@ -6,9 +6,9 @@ use tokio::{io, time};
 use crate::{ShadowsocksConfig, ShadowsocksMethod, DATAGRAM_LIMIT};
 
 use super::{
-    relay_udp_response, udp_step, DirectEgress, EgressError, EgressNode, TcpDialConnection,
-    TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession, UdpRelayAssociation,
-    UdpRelayOutcome, UdpStep,
+    count_downstream, relay_udp_response, udp_step, DirectEgress, EgressError, EgressNode,
+    TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
+    UdpRelayAssociation, UdpRelayOutcome, UdpStep,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -49,11 +49,12 @@ impl ShadowsocksEgress {
             .await?;
         let upstream_addr = upstream.upstream();
         let upstream = upstream.into_io();
+        let (downstream, byte_counts) = count_downstream(session.downstream);
         let outcome = self
             .client
-            .relay_tcp_with_io(session.downstream, upstream_addr, upstream, session.target)
+            .relay_tcp_with_io(downstream, upstream_addr, upstream, session.target)
             .await
-            .map_err(|error| shadowsocks_error(error, None))?;
+            .map_err(|error| shadowsocks_error(error, None).with_plaintext_bytes(byte_counts))?;
         Ok(TcpRelayOutcome {
             upstream: outcome.upstream,
             client_to_upstream_bytes: outcome.client_to_upstream_bytes,
@@ -103,26 +104,32 @@ impl EgressNode for ShadowsocksEgress {
     ) -> Result<UdpRelayOutcome, EgressError> {
         let upstream_socket = tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
             .await
-            .map_err(|error| EgressError {
-                stage: "egress-bind",
-                upstream: None,
-                message: format!("failed to bind Shadowsocks UDP socket: {error}"),
+            .map_err(|error| {
+                EgressError::new(
+                    "egress-bind",
+                    None,
+                    format!("failed to bind Shadowsocks UDP socket: {error}"),
+                )
             })?;
         upstream_socket
             .connect(self.client.server_endpoint())
             .await
-            .map_err(|error| EgressError {
-                stage: "egress-connect",
-                upstream: None,
-                message: format!(
-                    "failed connecting Shadowsocks UDP server {}: {error}",
-                    self.client.server_endpoint()
-                ),
+            .map_err(|error| {
+                EgressError::new(
+                    "egress-connect",
+                    None,
+                    format!(
+                        "failed connecting Shadowsocks UDP server {}: {error}",
+                        self.client.server_endpoint()
+                    ),
+                )
             })?;
-        let upstream = upstream_socket.peer_addr().map_err(|error| EgressError {
-            stage: "egress-connect",
-            upstream: None,
-            message: format!("failed reading Shadowsocks UDP server address: {error}"),
+        let upstream = upstream_socket.peer_addr().map_err(|error| {
+            EgressError::new(
+                "egress-connect",
+                None,
+                format!("failed reading Shadowsocks UDP server address: {error}"),
+            )
         })?;
         let mut udp_session = self.client.udp_session();
         let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
@@ -141,14 +148,13 @@ impl EgressNode for ShadowsocksEgress {
                     let packet = udp_session
                         .encode_udp_datagram(association.target, &payload)
                         .map_err(|error| shadowsocks_error(error, Some(upstream)))?;
-                    upstream_socket
-                        .send(&packet)
-                        .await
-                        .map_err(|error| EgressError {
-                            stage: "egress-write",
-                            upstream: Some(upstream),
-                            message: format!("failed sending Shadowsocks UDP packet: {error}"),
-                        })?;
+                    upstream_socket.send(&packet).await.map_err(|error| {
+                        EgressError::new(
+                            "egress-write",
+                            Some(upstream),
+                            format!("failed sending Shadowsocks UDP packet: {error}"),
+                        )
+                    })?;
                 }
                 Ok(UdpStep::Upstream(size)) => {
                     self.handle_udp_response(
@@ -198,26 +204,32 @@ impl ShadowsocksEgress {
         let final_server = self.resolve_udp_server().await?;
         let upstream_socket = tokio::net::UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
             .await
-            .map_err(|error| EgressError {
-                stage: "egress-bind",
-                upstream: None,
-                message: format!("failed to bind Shadowsocks UDP socket: {error}"),
+            .map_err(|error| {
+                EgressError::new(
+                    "egress-bind",
+                    None,
+                    format!("failed to bind Shadowsocks UDP socket: {error}"),
+                )
             })?;
         upstream_socket
             .connect(underlay.client.server_endpoint())
             .await
-            .map_err(|error| EgressError {
-                stage: "egress-connect",
-                upstream: None,
-                message: format!(
-                    "failed connecting Shadowsocks UDP underlay server {}: {error}",
-                    underlay.client.server_endpoint()
-                ),
+            .map_err(|error| {
+                EgressError::new(
+                    "egress-connect",
+                    None,
+                    format!(
+                        "failed connecting Shadowsocks UDP underlay server {}: {error}",
+                        underlay.client.server_endpoint()
+                    ),
+                )
             })?;
-        let upstream = upstream_socket.peer_addr().map_err(|error| EgressError {
-            stage: "egress-connect",
-            upstream: None,
-            message: format!("failed reading Shadowsocks UDP underlay address: {error}"),
+        let upstream = upstream_socket.peer_addr().map_err(|error| {
+            EgressError::new(
+                "egress-connect",
+                None,
+                format!("failed reading Shadowsocks UDP underlay address: {error}"),
+            )
         })?;
         let mut final_session = self.client.udp_session();
         let mut underlay_session = underlay.client.udp_session();
@@ -320,14 +332,13 @@ impl ShadowsocksEgress {
             outer_packet.len(),
             Some(upstream),
         )?;
-        upstream_socket
-            .send(&outer_packet)
-            .await
-            .map_err(|error| EgressError {
-                stage: "egress-udp-outer-write",
-                upstream: Some(upstream),
-                message: format!("failed sending Shadowsocks UDP underlay packet: {error}"),
-            })?;
+        upstream_socket.send(&outer_packet).await.map_err(|error| {
+            EgressError::new(
+                "egress-udp-outer-write",
+                Some(upstream),
+                format!("failed sending Shadowsocks UDP underlay packet: {error}"),
+            )
+        })?;
         Ok(())
     }
 
@@ -355,15 +366,19 @@ impl ShadowsocksEgress {
         let mut addresses =
             tokio::net::lookup_host((self.client.server_host(), self.client.server_port()))
                 .await
-                .map_err(|error| EgressError {
-                    stage: "egress-udp-inner-resolve",
-                    upstream: None,
-                    message: format!("failed resolving Shadowsocks UDP server {label}: {error}"),
+                .map_err(|error| {
+                    EgressError::new(
+                        "egress-udp-inner-resolve",
+                        None,
+                        format!("failed resolving Shadowsocks UDP server {label}: {error}"),
+                    )
                 })?;
-        addresses.next().ok_or_else(|| EgressError {
-            stage: "egress-udp-inner-resolve",
-            upstream: None,
-            message: format!("Shadowsocks UDP server {label} resolved no addresses"),
+        addresses.next().ok_or_else(|| {
+            EgressError::new(
+                "egress-udp-inner-resolve",
+                None,
+                format!("Shadowsocks UDP server {label} resolved no addresses"),
+            )
         })
     }
 }
@@ -379,11 +394,7 @@ fn shadowsocks_error(
     error: shadowsocks_prototype::Error,
     upstream: Option<SocketAddr>,
 ) -> EgressError {
-    EgressError {
-        stage: error.stage(),
-        upstream,
-        message: error.to_string(),
-    }
+    EgressError::new(error.stage(), upstream, error.to_string())
 }
 
 fn shadowsocks_chain_error(
@@ -391,11 +402,7 @@ fn shadowsocks_chain_error(
     error: shadowsocks_prototype::Error,
     upstream: Option<SocketAddr>,
 ) -> EgressError {
-    EgressError {
-        stage,
-        upstream,
-        message: error.to_string(),
-    }
+    EgressError::new(stage, upstream, error.to_string())
 }
 
 fn ensure_datagram_limit(
@@ -406,9 +413,9 @@ fn ensure_datagram_limit(
     if size <= DATAGRAM_LIMIT {
         return Ok(());
     }
-    Err(EgressError {
+    Err(EgressError::new(
         stage,
         upstream,
-        message: format!("encoded UDP packet exceeds {DATAGRAM_LIMIT} bytes: {size}"),
-    })
+        format!("encoded UDP packet exceeds {DATAGRAM_LIMIT} bytes: {size}"),
+    ))
 }

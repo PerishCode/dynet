@@ -7,14 +7,18 @@ use std::{
 };
 
 mod cidr;
+mod forward_node;
+mod matrix_active;
 mod matrix_service;
 mod matrix_shadow;
 mod matrix_stats;
+mod target_context;
 use cidr::ip_matches_cidr;
+pub(crate) use matrix_active::select_active_candidate;
 pub use matrix_service::{MatrixService, SelectorMatrix};
 pub(crate) use matrix_shadow::MatrixCandidateInput;
 pub use matrix_shadow::{MatrixShadowCandidate, MatrixShadowDecision};
-pub use matrix_stats::MatrixNodeStats;
+pub use matrix_stats::{MatrixNodeStats, MatrixTargetNodeStats};
 
 pub(crate) const DEFAULT_NODE_ID: &str = "default-node";
 pub(crate) const DEFAULT_GROUP_ID: &str = "default";
@@ -36,6 +40,7 @@ pub struct ForwardNode {
     pub id: NodeId,
     pub tag: String,
     pub enabled: bool,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -43,6 +48,7 @@ pub struct ForwardGroup {
     pub id: GroupId,
     pub enabled: bool,
     pub scheduler: SchedulerPolicy,
+    pub thresholds: GroupThresholds,
     pub next: NextRef,
 }
 
@@ -106,6 +112,13 @@ pub enum DnsRaceStrategy {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SchedulerPolicy {
     SingleFirstEnabled,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct GroupThresholds {
+    pub min_success_rate_ppm: u32,
+    pub min_samples: u64,
+    pub max_active_sessions: Option<u64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -266,6 +279,7 @@ impl ForwardGroup {
             id: GroupId::new(DEFAULT_GROUP_ID),
             enabled: true,
             scheduler: SchedulerPolicy::SingleFirstEnabled,
+            thresholds: GroupThresholds::default(),
             next: NextRef::DirectAuditOutlet,
         }
     }
@@ -301,39 +315,9 @@ impl RouteMatcher {
     }
 }
 
-impl TargetContext {
-    pub fn fixed_upstream(address: SocketAddr) -> Self {
-        Self {
-            address,
-            domain: None,
-            source: TargetSource::FixedUpstream,
-        }
-    }
-
-    pub fn external_context(address: SocketAddr, domain: Option<String>) -> Self {
-        Self {
-            address,
-            domain,
-            source: TargetSource::ExternalContext,
-        }
-    }
-
-    pub fn dynet_dns(address: SocketAddr, domain: String) -> Self {
-        Self {
-            address,
-            domain: Some(domain),
-            source: TargetSource::ObservedDns,
-        }
-    }
-}
-
 impl RuntimeSeed {
     pub fn single_node(tag: impl Into<String>) -> Self {
-        let node = ForwardNode {
-            id: NodeId::new(DEFAULT_NODE_ID),
-            tag: tag.into(),
-            enabled: true,
-        };
+        let node = ForwardNode::new(DEFAULT_NODE_ID, tag, true);
         let group = ForwardGroup::default_group();
         let member = GroupMember::default_member(node.id.clone(), group.id.clone());
         Self {
@@ -380,6 +364,16 @@ impl SchedulerPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SingleFirstEnabled => "single-first-enabled",
+        }
+    }
+}
+
+impl Default for GroupThresholds {
+    fn default() -> Self {
+        Self {
+            min_success_rate_ppm: 980_000,
+            min_samples: 1,
+            max_active_sessions: None,
         }
     }
 }

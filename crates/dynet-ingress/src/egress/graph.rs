@@ -32,20 +32,22 @@ impl GraphEgress {
         decision: &SelectionDecision,
     ) -> Result<&EgressMedium, EgressError> {
         let hop = decision.trace.last().ok_or_else(|| chained_error("TCP"))?;
-        self.nodes
-            .get(hop.node_id.as_str())
-            .ok_or_else(|| EgressError {
-                stage: "egress-select",
-                upstream: None,
-                message: format!("selection node {} has no execution egress", hop.node_id),
-            })
+        self.nodes.get(hop.node_id.as_str()).ok_or_else(|| {
+            EgressError::new(
+                "egress-select",
+                None,
+                format!("selection node {} has no execution egress", hop.node_id),
+            )
+        })
     }
 
     fn egress_for_node(&self, node_id: &str) -> Result<&EgressMedium, EgressError> {
-        self.nodes.get(node_id).ok_or_else(|| EgressError {
-            stage: "egress-select",
-            upstream: None,
-            message: format!("selection node {node_id} has no execution egress"),
+        self.nodes.get(node_id).ok_or_else(|| {
+            EgressError::new(
+                "egress-select",
+                None,
+                format!("selection node {node_id} has no execution egress"),
+            )
         })
     }
 
@@ -54,25 +56,27 @@ impl GraphEgress {
         decision: &SelectionDecision,
     ) -> Result<TcpDialerMedium<'_>, EgressError> {
         if decision.trace.len() != 2 {
-            return Err(EgressError {
-                stage: "egress-select",
-                upstream: None,
-                message: format!(
+            return Err(EgressError::new(
+                "egress-select",
+                None,
+                format!(
                     "TCP graph execution supports exactly one dialer hop, got {} hops",
                     decision.trace.len()
                 ),
-            });
+            ));
         }
         let head = decision.trace.first().ok_or_else(|| chained_error("TCP"))?;
         self.egress_for_node(head.node_id.as_str())?
             .tcp_dialer()
-            .ok_or_else(|| EgressError {
-                stage: "egress-select",
-                upstream: None,
-                message: format!(
-                    "TCP chained graph dialer node {} has no TCP dialer",
-                    head.node_id
-                ),
+            .ok_or_else(|| {
+                EgressError::new(
+                    "egress-select",
+                    None,
+                    format!(
+                        "TCP chained graph dialer node {} has no TCP dialer",
+                        head.node_id
+                    ),
+                )
             })
     }
 }
@@ -138,9 +142,9 @@ impl EgressNode for GraphEgress {
 }
 
 fn chained_error(protocol: &str) -> EgressError {
-    EgressError {
-        stage: "egress-select",
-        upstream: None,
-        message: format!("{protocol} chained graph execution is not implemented"),
-    }
+    EgressError::new(
+        "egress-select",
+        None,
+        format!("{protocol} chained graph execution is not implemented"),
+    )
 }

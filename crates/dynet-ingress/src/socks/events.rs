@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use dynet_runtime::RuntimeState;
 
 use crate::{
-    egress::EgressError, push_decision_fields, push_endpoint_fields, session_fields,
-    IngressEventKind,
+    egress::{push_egress_error_fields, EgressError},
+    push_decision_fields, push_endpoint_fields, session_fields, IngressEventKind,
 };
 
 use super::protocol::SocksDestination;
@@ -52,8 +52,7 @@ pub(super) fn egress_error_fields(
     if let Some(decision) = decision {
         push_decision_fields(&mut fields, decision);
     }
-    fields.push(("errorStage", error.stage.to_string()));
-    fields.push(("error", error.message));
+    push_egress_error_fields(&mut fields, node_protocol, &error);
     fields
 }
 

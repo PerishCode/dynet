@@ -7,8 +7,8 @@ use dynet_ingress::{
     TrojanConfig, VlessConfig, VmessConfig,
 };
 use dynet_runtime::{
-    ForwardGroup, ForwardNode, GroupId, GroupMember, IngressEventKind, NextRef, NodeId,
-    SchedulerPolicy,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, IngressEventKind, NextRef,
+    NodeId, SchedulerPolicy,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -366,15 +366,13 @@ async fn rejects_extra_tcp_hop() {
             group.next = NextRef::named("third");
         }
     }
-    seed.nodes.push(ForwardNode {
-        id: NodeId::new("third-node"),
-        tag: "direct".to_string(),
-        enabled: true,
-    });
+    seed.nodes
+        .push(ForwardNode::new("third-node", "direct", true));
     seed.groups.push(ForwardGroup {
         id: GroupId::new("third"),
         enabled: true,
         scheduler: SchedulerPolicy::SingleFirstEnabled,
+        thresholds: GroupThresholds::default(),
         next: NextRef::direct_audit_outlet(),
     });
     seed.group_members.push(GroupMember {

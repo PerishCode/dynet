@@ -4,8 +4,8 @@ use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
 
 use crate::{
     DnsHttpsEndpoint, DnsRacePolicy, DnsUpstream, DnsUpstreamId, DnsUpstreamTransport,
-    ForwardGroup, ForwardNode, GroupId, GroupMember, NextRef, NodeId, RouteMatcher, RouteRule,
-    RuleId, RuntimeSeed, SchedulerPolicy,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, NextRef, NodeId,
+    RouteMatcher, RouteRule, RuleId, RuntimeSeed,
 };
 
 use super::{
@@ -13,6 +13,9 @@ use super::{
     validation::{validate_bootstrap, validate_seed},
     RuntimeStore, RuntimeStoreError, SCHEMA_VERSION,
 };
+
+mod row_value;
+use row_value::{bool_from_i64, scheduler_from_str, u32_from_i64, u64_to_i64};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct RuntimeBootstrap {
@@ -28,7 +31,7 @@ pub(crate) struct RuntimeBootstrap {
 impl RuntimeStore {
     pub async fn load_nodes(&self) -> Result<Vec<ForwardNode>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, tag, enabled from runtime_nodes order by case when id = 'default-node' then 0 else 1 end, id",
+            "select id, tag, enabled, fingerprint from runtime_nodes order by case when id = 'default-node' then 0 else 1 end, id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -143,7 +146,9 @@ impl RuntimeStore {
 
     async fn load_groups(&self) -> Result<Vec<ForwardGroup>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, enabled, scheduler, next from runtime_forward_groups order by id",
+            "select id, enabled, scheduler, min_success_rate_ppm, min_samples, max_active_sessions, next
+             from runtime_forward_groups
+             order by id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -184,6 +189,7 @@ fn row_to_node(row: SqliteRow) -> Result<ForwardNode, RuntimeStoreError> {
     let id = row.get::<String, _>("id");
     let tag = row.get::<String, _>("tag");
     let enabled = row.get::<i64, _>("enabled");
+    let fingerprint = row.get::<String, _>("fingerprint");
     if enabled != 0 && enabled != 1 {
         return Err(RuntimeStoreError::InvalidNode {
             id,
@@ -194,6 +200,7 @@ fn row_to_node(row: SqliteRow) -> Result<ForwardNode, RuntimeStoreError> {
         id: NodeId::new(id),
         tag,
         enabled: enabled == 1,
+        fingerprint,
     })
 }
 
@@ -212,9 +219,30 @@ fn row_to_group(row: SqliteRow) -> Result<ForwardGroup, RuntimeStoreError> {
         }
     })?;
     Ok(ForwardGroup {
-        id: GroupId::new(id),
+        id: GroupId::new(id.clone()),
         enabled,
         scheduler,
+        thresholds: GroupThresholds {
+            min_success_rate_ppm: u32_from_i64(row.get::<i64, _>("min_success_rate_ppm"))
+                .ok_or_else(|| RuntimeStoreError::InvalidGroup {
+                    id: id.clone(),
+                    message: "min_success_rate_ppm must fit u32".to_string(),
+                })?,
+            min_samples: u64::try_from(row.get::<i64, _>("min_samples")).map_err(|_| {
+                RuntimeStoreError::InvalidGroup {
+                    id: id.clone(),
+                    message: "min_samples must fit u64".to_string(),
+                }
+            })?,
+            max_active_sessions: row
+                .get::<Option<i64>, _>("max_active_sessions")
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| RuntimeStoreError::InvalidGroup {
+                    id: id.clone(),
+                    message: "max_active_sessions must fit u64".to_string(),
+                })?,
+        },
         next: NextRef::named(row.get::<String, _>("next")),
     })
 }
@@ -342,12 +370,13 @@ async fn insert_node(
 ) -> Result<(), RuntimeStoreError> {
     let enabled = if node.enabled { 1_i64 } else { 0_i64 };
     sqlx::query(
-        "insert into runtime_nodes (id, tag, enabled, updated_at_unix_ms)
-         values (?1, ?2, ?3, ?4)",
+        "insert into runtime_nodes (id, tag, enabled, fingerprint, updated_at_unix_ms)
+         values (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(node.id.as_str())
     .bind(&node.tag)
     .bind(enabled)
+    .bind(&node.fingerprint)
     .bind(super::unix_ms_i64())
     .execute(&mut **transaction)
     .await?;
@@ -361,13 +390,16 @@ async fn insert_group(
     let enabled = if group.enabled { 1_i64 } else { 0_i64 };
     sqlx::query(
         "insert into runtime_forward_groups (
-            id, enabled, scheduler, next, updated_at_unix_ms
+            id, enabled, scheduler, min_success_rate_ppm, min_samples, max_active_sessions, next, updated_at_unix_ms
          )
-         values (?1, ?2, ?3, ?4, ?5)",
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(group.id.as_str())
     .bind(enabled)
     .bind(group.scheduler.as_str())
+    .bind(i64::from(group.thresholds.min_success_rate_ppm))
+    .bind(i64::try_from(group.thresholds.min_samples).unwrap_or(i64::MAX))
+    .bind(group.thresholds.max_active_sessions.map(u64_to_i64))
     .bind(group.next.label())
     .bind(super::unix_ms_i64())
     .execute(&mut **transaction)
@@ -456,23 +488,4 @@ async fn insert_dns_upstream(
     .execute(&mut **transaction)
     .await?;
     Ok(())
-}
-
-fn bool_from_i64(value: i64) -> Option<bool> {
-    match value {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
-    }
-}
-
-fn u32_from_i64(value: i64) -> Option<u32> {
-    u32::try_from(value).ok()
-}
-
-fn scheduler_from_str(value: &str) -> Option<SchedulerPolicy> {
-    match value {
-        "single-first-enabled" => Some(SchedulerPolicy::SingleFirstEnabled),
-        _ => None,
-    }
 }

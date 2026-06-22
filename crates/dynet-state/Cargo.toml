@@ -10,4 +10,5 @@ description = "Current dynet application state and configuration."
 dynet-ingress = { path = "../dynet-ingress" }
 dynet-runtime = { path = "../dynet-runtime" }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 toml = "0.8"

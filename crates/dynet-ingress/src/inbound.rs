@@ -8,7 +8,10 @@ use tokio::{
     sync::{mpsc, Semaphore},
 };
 
-use crate::egress::{EgressError, EgressNode, TcpRelaySession, UdpDownstream, UdpRelayAssociation};
+use crate::egress::{
+    push_egress_error_fields, EgressError, EgressNode, TcpRelaySession, UdpDownstream,
+    UdpRelayAssociation,
+};
 use crate::{
     push_decision_fields, push_target_context_fields, session_fields, IngressEventKind,
     TcpRelayConfig, UdpRelayConfig, DATAGRAM_LIMIT,
@@ -346,8 +349,7 @@ fn error_fields(
     if let Some(decision) = decision {
         push_decision_fields(&mut fields, decision);
     }
-    fields.push(("errorStage", error.stage.to_string()));
-    fields.push(("error", error.message));
+    push_egress_error_fields(&mut fields, egress, &error);
     fields
 }
 

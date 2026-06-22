@@ -22,7 +22,7 @@ pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "9";
+const SCHEMA_VERSION: &str = "12";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {
@@ -117,6 +117,12 @@ impl RuntimeStore {
                 duration_ms,
                 close_reason,
                 error_stage,
+                error_code,
+                error_class,
+                error_side,
+                error_phase,
+                error_protocol_phase,
+                error_score_impact,
                 error,
                 client_to_upstream_bytes,
                 upstream_to_client_bytes,
@@ -130,17 +136,17 @@ impl RuntimeStore {
              values (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                 ?11, ?12, ?13, ?14, ?15, ?16,
-                case when ?24 then ?25 else null end,
-                case when ?24 then max(?25 - ?16, 0) else null end,
-                ?17, ?18, ?19,
-                coalesce(?20, 0) + coalesce(?22, 0),
-                coalesce(?21, 0) + coalesce(?23, 0),
-                case when ?22 is null then 0 else 1 end,
-                case when ?23 is null then 0 else 1 end,
-                case when ?22 is null then null else ?25 end,
-                case when ?23 is null then null else ?25 end,
-                case when ?23 is null then null else max(?25 - ?16, 0) end,
-                ?25
+                case when ?30 then ?31 else null end,
+                case when ?30 then max(?31 - ?16, 0) else null end,
+                ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                coalesce(?26, 0) + coalesce(?28, 0),
+                coalesce(?27, 0) + coalesce(?29, 0),
+                case when ?28 is null then 0 else 1 end,
+                case when ?29 is null then 0 else 1 end,
+                case when ?28 is null then null else ?31 end,
+                case when ?29 is null then null else ?31 end,
+                case when ?29 is null then null else max(?31 - ?16, 0) end,
+                ?31
              )
              on conflict(session_key) do update set
                 decision_id = coalesce(runtime_traffic_sessions.decision_id, excluded.decision_id),
@@ -159,23 +165,29 @@ impl RuntimeStore {
                 duration_ms = coalesce(excluded.duration_ms, runtime_traffic_sessions.duration_ms),
                 close_reason = coalesce(excluded.close_reason, runtime_traffic_sessions.close_reason),
                 error_stage = coalesce(excluded.error_stage, runtime_traffic_sessions.error_stage),
+                error_code = coalesce(excluded.error_code, runtime_traffic_sessions.error_code),
+                error_class = coalesce(excluded.error_class, runtime_traffic_sessions.error_class),
+                error_side = coalesce(excluded.error_side, runtime_traffic_sessions.error_side),
+                error_phase = coalesce(excluded.error_phase, runtime_traffic_sessions.error_phase),
+                error_protocol_phase = coalesce(excluded.error_protocol_phase, runtime_traffic_sessions.error_protocol_phase),
+                error_score_impact = coalesce(excluded.error_score_impact, runtime_traffic_sessions.error_score_impact),
                 error = coalesce(excluded.error, runtime_traffic_sessions.error),
                 client_to_upstream_bytes =
                     case
-                        when ?20 is not null then ?20
-                        else runtime_traffic_sessions.client_to_upstream_bytes + coalesce(?22, 0)
+                        when ?26 is not null then ?26
+                        else runtime_traffic_sessions.client_to_upstream_bytes + coalesce(?28, 0)
                     end,
                 upstream_to_client_bytes =
                     case
-                        when ?21 is not null then ?21
-                        else runtime_traffic_sessions.upstream_to_client_bytes + coalesce(?23, 0)
+                        when ?27 is not null then ?27
+                        else runtime_traffic_sessions.upstream_to_client_bytes + coalesce(?29, 0)
                     end,
                 client_to_upstream_datagrams =
                     runtime_traffic_sessions.client_to_upstream_datagrams
-                    + case when ?22 is null then 0 else 1 end,
+                    + case when ?28 is null then 0 else 1 end,
                 upstream_to_client_datagrams =
                     runtime_traffic_sessions.upstream_to_client_datagrams
-                    + case when ?23 is null then 0 else 1 end,
+                    + case when ?29 is null then 0 else 1 end,
                 first_upstream_at_unix_ms =
                     coalesce(runtime_traffic_sessions.first_upstream_at_unix_ms, excluded.first_upstream_at_unix_ms),
                 first_downstream_at_unix_ms =
@@ -202,6 +214,12 @@ impl RuntimeStore {
         .bind(u128_to_i64(update.observed_at_unix_ms))
         .bind(update.close_reason)
         .bind(update.error_stage)
+        .bind(update.error_code)
+        .bind(update.error_class)
+        .bind(update.error_side)
+        .bind(update.error_phase)
+        .bind(update.error_protocol_phase)
+        .bind(update.error_score_impact)
         .bind(update.error)
         .bind(update.client_to_upstream_bytes.map(u64_to_i64))
         .bind(update.upstream_to_client_bytes.map(u64_to_i64))

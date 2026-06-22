@@ -53,6 +53,7 @@ pub(super) fn validate_thresholds(
     for (name, value) in [
         ("min_confidence", thresholds.min_confidence),
         ("max_explore_ratio", thresholds.max_explore_ratio),
+        ("min_success_rate", thresholds.min_success_rate),
     ] {
         if let Some(value) = value {
             if !(0.0..=1.0).contains(&value) {
@@ -61,6 +62,16 @@ pub(super) fn validate_thresholds(
                 ));
             }
         }
+    }
+    if thresholds.min_samples == Some(0) {
+        return Err(format!(
+            "forwarding group {id:?} thresholds.min_samples must be positive"
+        ));
+    }
+    if thresholds.max_active_sessions == Some(0) {
+        return Err(format!(
+            "forwarding group {id:?} thresholds.max_active_sessions must be positive"
+        ));
     }
     let _ = thresholds.failure_cooldown_secs;
     Ok(())

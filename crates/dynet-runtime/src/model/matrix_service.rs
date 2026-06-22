@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     persistence::{ObservationSink, PersistenceStatsSnapshot},
@@ -8,8 +8,8 @@ use crate::{
 
 use super::{
     matrix_shadow::{score_candidates, MatrixShadowStore},
-    matrix_stats::node_stats_from_sessions,
-    GroupId, MatrixCandidateInput, MatrixNodeStats, MatrixShadowDecision,
+    matrix_stats::{node_stats_from_sessions, target_stats_from_sessions},
+    GroupId, MatrixCandidateInput, MatrixNodeStats, MatrixShadowDecision, MatrixTargetNodeStats,
 };
 
 #[derive(Debug, Clone)]
@@ -68,8 +68,10 @@ impl MatrixService {
         group_id: &GroupId,
         actual: &SelectionDecision,
         candidates: Vec<MatrixCandidateInput>,
+        fingerprints_by_node: &BTreeMap<String, String>,
     ) {
-        let node_stats = self.node_stats();
+        let node_stats = self.node_stats(fingerprints_by_node);
+        let target_node_stats = self.target_node_stats(fingerprints_by_node);
         let decision = score_candidates(
             observed_at_unix_ms,
             context,
@@ -77,6 +79,7 @@ impl MatrixService {
             actual,
             candidates,
             &node_stats,
+            &target_node_stats,
         );
         self.inner.shadow_decisions.record(decision.clone());
         if let Some(sink) = &self.inner.observation_sink {
@@ -92,8 +95,18 @@ impl MatrixService {
         self.inner.shadow_decisions.snapshot()
     }
 
-    pub fn node_stats(&self) -> Vec<MatrixNodeStats> {
-        node_stats_from_sessions(&self.traffic_sessions())
+    pub(crate) fn node_stats(
+        &self,
+        fingerprints_by_node: &BTreeMap<String, String>,
+    ) -> Vec<MatrixNodeStats> {
+        node_stats_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
+    }
+
+    pub(crate) fn target_node_stats(
+        &self,
+        fingerprints_by_node: &BTreeMap<String, String>,
+    ) -> Vec<MatrixTargetNodeStats> {
+        target_stats_from_sessions(&self.traffic_sessions(), fingerprints_by_node)
     }
 
     pub fn persistence_stats(&self) -> PersistenceStatsSnapshot {

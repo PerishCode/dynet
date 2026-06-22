@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     model::MatrixCandidateInput, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId,
-    GroupMember, NextRef, NodeId, RouteRule, SelectionTerminal, SelectionTraceHop, TargetContext,
-    DEFAULT_NODE_ID,
+    GroupMember, GroupThresholds, NextRef, NodeId, RouteRule, SchedulerPolicy, SelectionTerminal,
+    SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +64,14 @@ pub(crate) struct GroupSelection {
     pub(crate) terminal: SelectionTerminal,
     pub(crate) scheduler: crate::SchedulerPolicy,
     pub(crate) candidate_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct GroupCandidateSet {
+    pub(crate) group_id: GroupId,
+    pub(crate) scheduler: SchedulerPolicy,
+    pub(crate) thresholds: GroupThresholds,
+    pub(crate) candidates: Vec<MatrixCandidateInput>,
 }
 
 impl NodeStore {
@@ -131,6 +139,16 @@ impl NodeStore {
             .cloned()
             .collect()
     }
+
+    pub(crate) fn fingerprints_by_id(&self) -> BTreeMap<String, String> {
+        self.inner
+            .read()
+            .expect("node store lock poisoned")
+            .nodes
+            .values()
+            .map(|node| (node.id.as_str().to_string(), node.fingerprint.clone()))
+            .collect()
+    }
 }
 
 impl GroupStore {
@@ -184,11 +202,15 @@ impl GroupStore {
             .clone()
     }
 
-    pub(crate) fn select_graph(
+    pub(crate) fn select_graph_with<F>(
         &self,
         group_id: &GroupId,
         nodes: &NodeStore,
-    ) -> Result<GroupSelection, String> {
+        mut select_node: F,
+    ) -> Result<GroupSelection, String>
+    where
+        F: FnMut(&GroupCandidateSet) -> Option<NodeId>,
+    {
         let store = self.inner.read().expect("group store lock poisoned");
         let mut current = group_id.clone();
         let mut seen = BTreeMap::<GroupId, ()>::new();
@@ -197,7 +219,7 @@ impl GroupStore {
             if seen.insert(current.clone(), ()).is_some() {
                 return Err(format!("group next cycle includes {current}"));
             }
-            let hop = select_group_hop(&store, &current, nodes)?;
+            let hop = select_group_hop(&store, &current, nodes, &mut select_node)?;
             let next = hop.next.clone();
             trace.push(hop);
             match next {
@@ -278,6 +300,7 @@ fn select_group_hop(
     store: &GroupStoreInner,
     group_id: &GroupId,
     nodes: &NodeStore,
+    select_node: &mut impl FnMut(&GroupCandidateSet) -> Option<NodeId>,
 ) -> Result<SelectionTraceHop, String> {
     let group = store
         .groups
@@ -294,12 +317,27 @@ fn select_group_hop(
         .iter()
         .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
         .collect::<Vec<_>>();
-    let selected = candidates
-        .first()
-        .ok_or_else(|| format!("forwarding group {group_id} has no enabled node"))?;
+    if candidates.is_empty() {
+        return Err(format!("forwarding group {group_id} has no enabled node"));
+    }
+    let candidate_inputs = candidates
+        .iter()
+        .map(|member| MatrixCandidateInput {
+            node_id: member.node_id.clone(),
+            priority: member.priority,
+        })
+        .collect::<Vec<_>>();
+    let selected_node = select_node(&GroupCandidateSet {
+        group_id: group.id.clone(),
+        scheduler: group.scheduler,
+        thresholds: group.thresholds,
+        candidates: candidate_inputs,
+    })
+    .filter(|selected| candidates.iter().any(|member| member.node_id == *selected))
+    .unwrap_or_else(|| candidates[0].node_id.clone());
     Ok(SelectionTraceHop {
         group_id: group.id.clone(),
-        node_id: selected.node_id.clone(),
+        node_id: selected_node,
         next: group.next.clone(),
         scheduler: group.scheduler,
         candidate_count: candidates.len(),
