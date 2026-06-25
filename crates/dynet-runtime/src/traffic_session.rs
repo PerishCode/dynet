@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 
 use crate::{IngressEvent, IngressEventKind};
 
-const TRAFFIC_SESSION_LIMIT: usize = 1024;
+pub(crate) const TRAFFIC_SESSION_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct TrafficSessionStore {
@@ -90,6 +90,25 @@ pub(crate) struct TrafficSessionUpdate {
 }
 
 impl TrafficSessionStore {
+    pub(crate) fn from_sessions(sessions: Vec<TrafficSession>) -> Self {
+        let store = Self::default();
+        {
+            let mut inner = store
+                .inner
+                .write()
+                .expect("traffic session store lock poisoned");
+            for session in sessions.into_iter().rev().take(TRAFFIC_SESSION_LIMIT).rev() {
+                if inner.len() == TRAFFIC_SESSION_LIMIT {
+                    if let Some(oldest_key) = oldest_session_key(&inner) {
+                        inner.remove(&oldest_key);
+                    }
+                }
+                inner.insert(session.session_key.clone(), session);
+            }
+        }
+        store
+    }
+
     pub(crate) fn record_event(&self, event: &IngressEvent) {
         let Some(update) = session_update_from_event(event) else {
             return;

@@ -34,7 +34,7 @@ dns:          127.0.0.1:1053
 runtime DNS:  1.1.1.1:53, 8.8.8.8:53
 tcp:          127.0.0.1:18080 -> 93.184.216.34:80
 udp:          127.0.0.1:18443 -> 1.1.1.1:443
-socks5:       127.0.0.1:1080
+socks5:       127.0.0.1:11080
 ```
 
 Cold-start bind/upstream values can be overridden with environment variables:
@@ -79,7 +79,7 @@ idle_timeout_ms = 30000
 max_sessions = 1024
 
 [ingress.socks5]
-bind = "127.0.0.1:1080"
+bind = "127.0.0.1:11080"
 udp_advertise_ip = "192.168.5.2"
 udp_idle_timeout_ms = 30000
 max_sessions = 1024
@@ -99,6 +99,20 @@ members = ["default-node"]
 
 For a local Linux VM capture experiment using Mihomo TUN as the external
 capture frontend, see `docs/lab/mihomo-tun.md`.
+
+For local long-running validation, `scripts/dynetctl.sh` manages one stamped
+background dynet process:
+
+```bash
+scripts/dynetctl.sh start
+scripts/dynetctl.sh status
+scripts/dynetctl.sh log -f
+scripts/dynetctl.sh stop
+```
+
+The script defaults to `dynet.toml`, `target/dynet-user-sim.sqlite`, and logs
+under `.tmp/logs/`. The running process carries a `--process-stamp=...` argv
+marker so `status` and `stop` do not rely on port scans alone.
 
 For the first protocol-backed experiment, `dynet.toml` can hold a local
 dual-protocol Shadowsocks node. Keep `dynet.toml` uncommitted.

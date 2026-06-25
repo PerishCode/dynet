@@ -16,7 +16,7 @@ mod target_context;
 use cidr::ip_matches_cidr;
 pub(crate) use matrix_active::select_active_candidate;
 pub use matrix_service::{MatrixService, SelectorMatrix};
-pub(crate) use matrix_shadow::MatrixCandidateInput;
+pub(crate) use matrix_shadow::{MatrixCandidateInput, MATRIX_SHADOW_LIMIT};
 pub use matrix_shadow::{MatrixShadowCandidate, MatrixShadowDecision};
 pub use matrix_stats::{MatrixErrorSignalStats, MatrixNodeStats, MatrixTargetNodeStats};
 

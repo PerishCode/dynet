@@ -12,7 +12,7 @@ The target flow is:
 Linux app in VM
   -> Mihomo TUN capture
   -> Mihomo DNS module -> host dynet DNS 127.0.0.1:1053
-  -> Mihomo SOCKS5 proxy -> host dynet SOCKS5 127.0.0.1:1080
+  -> Mihomo SOCKS5 proxy -> host dynet SOCKS5 127.0.0.1:11080
   -> dynet forwarding
 ```
 

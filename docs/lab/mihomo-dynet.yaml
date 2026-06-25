@@ -39,7 +39,7 @@ proxies:
   - name: dynet-socks5
     type: socks5
     server: 192.168.5.2
-    port: 1080
+    port: 11080
     udp: true
 
 proxy-groups:

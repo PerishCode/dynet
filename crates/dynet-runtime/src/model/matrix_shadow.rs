@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::{
@@ -11,14 +11,14 @@ use super::{
     SelectionDecision,
 };
 
-const MATRIX_SHADOW_LIMIT: usize = 1024;
+pub(crate) const MATRIX_SHADOW_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct MatrixShadowStore {
     inner: Arc<RwLock<VecDeque<MatrixShadowDecision>>>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixShadowDecision {
     pub decision_id: u64,
@@ -33,7 +33,7 @@ pub struct MatrixShadowDecision {
     pub candidates: Vec<MatrixShadowCandidate>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixShadowCandidate {
     pub node_id: String,
@@ -51,6 +51,23 @@ pub(crate) struct MatrixCandidateInput {
 }
 
 impl MatrixShadowStore {
+    pub(crate) fn from_decisions(decisions: Vec<MatrixShadowDecision>) -> Self {
+        let store = Self::default();
+        {
+            let mut inner = store
+                .inner
+                .write()
+                .expect("matrix shadow store lock poisoned");
+            for decision in decisions.into_iter().rev().take(MATRIX_SHADOW_LIMIT).rev() {
+                if inner.len() == MATRIX_SHADOW_LIMIT {
+                    inner.pop_front();
+                }
+                inner.push_back(decision);
+            }
+        }
+        store
+    }
+
     pub(crate) fn record(&self, decision: MatrixShadowDecision) {
         let mut decisions = self
             .inner
@@ -164,14 +181,19 @@ fn stats_balanced_score(
     target_stats: Option<&&MatrixTargetNodeStats>,
 ) -> i64 {
     const PRIORITY_WEIGHT: i64 = 1_000_000_000;
+    const NO_HISTORY_SCORE: i64 = 4_000_000_000_000;
     const ERROR_RATE_WEIGHT: i64 = 100;
     const LATENCY_WEIGHT: i64 = 1_000;
     const ACTIVE_SESSION_WEIGHT: i64 = 10_000;
     const RECENT_USAGE_WEIGHT: i64 = 10;
 
-    let priority_score = 1_000_000_000_000_i64
-        - i64::from(priority) * PRIORITY_WEIGHT
-        - i64::try_from(rank).unwrap_or(i64::MAX);
+    let priority_penalty =
+        i64::from(priority) * PRIORITY_WEIGHT + i64::try_from(rank).unwrap_or(i64::MAX);
+    if target_stats.is_none() && stats.is_none() {
+        return NO_HISTORY_SCORE - priority_penalty;
+    }
+
+    let priority_score = 1_000_000_000_000_i64 - priority_penalty;
     if let Some(stats) = target_stats {
         return priority_score
             - i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT

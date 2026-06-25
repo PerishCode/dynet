@@ -24,6 +24,16 @@ ROUTED_RULESETS = {
     "tunnel": "Tunnel",
     "direct": "Direct",
 }
+FALLBACK_ROUTE_SUFFIXES = {
+    "geojs.io",
+    "ifconfig.me",
+    "ip2location.com",
+    "ip.sb",
+    "ipify.org",
+    "ipinfo.io",
+    "iplocation.net",
+    "db-ip.com",
+}
 SUPPORTED_NODE_TYPES = {"ss", "trojan", "vmess", "vless"}
 
 
@@ -231,6 +241,9 @@ def load_rules(vpn_config):
             except ValueError as error:
                 skipped[str(error)] += 1
                 continue
+            if matcher in {"domain-exact", "domain-suffix"} and value in FALLBACK_ROUTE_SUFFIXES:
+                skipped["fallback-owned-domain"] += 1
+                continue
             rules.append(
                 {
                     "id": f"{ruleset}-{index:04d}",
@@ -315,13 +328,13 @@ idle_timeout_ms = 30000
 max_sessions = 1024
 
 [ingress.socks5]
-bind = "127.0.0.1:1080"
+bind = "127.0.0.1:11080"
 udp_advertise_ip = "192.168.5.2"
 udp_idle_timeout_ms = 30000
 max_sessions = 1024
 
 [forwarding]
-default_group = "Private"
+default_group = "Tunnel"
 dns_race_timeout_ms = 5000
 
 [[forwarding.dns_upstreams]]

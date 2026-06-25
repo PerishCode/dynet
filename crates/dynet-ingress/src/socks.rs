@@ -5,6 +5,7 @@ use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream, UdpSocket},
     sync::{mpsc, Semaphore},
+    time::{sleep, Duration},
 };
 
 use crate::{
@@ -24,7 +25,6 @@ use protocol::{
     SOCKS_REPLY_COMMAND_NOT_SUPPORTED, SOCKS_REPLY_SUCCEEDED,
 };
 const UDP_CHANNEL_DEPTH: usize = 64;
-
 pub async fn run_socks5<O>(
     config: Socks5IngressConfig,
     egress: O,
@@ -38,10 +38,14 @@ where
         .map_err(|error| format!("failed to bind SOCKS5 ingress {}: {error}", config.bind))?;
     let capacity = Arc::new(Semaphore::new(config.max_sessions));
     loop {
-        let (client, peer) = listener
-            .accept()
-            .await
-            .map_err(|error| format!("failed accepting SOCKS5 connection: {error}"))?;
+        let (client, peer) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("dynet: socks5 accept failed: {error}");
+                sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let Ok(permit) = capacity.clone().try_acquire_owned() else {
             let session_id = runtime.events().next_session_id();
             record_socks_error(
@@ -73,7 +77,6 @@ where
         });
     }
 }
-
 async fn handle_client<O>(
     mut client: TcpStream,
     peer: SocketAddr,
@@ -120,7 +123,6 @@ where
         }
     }
 }
-
 async fn handle_connect<O>(
     mut client: TcpStream,
     peer: SocketAddr,
@@ -204,7 +206,6 @@ where
         }
     }
 }
-
 async fn handle_udp_associate<O>(
     mut control: TcpStream,
     peer: SocketAddr,
@@ -252,7 +253,6 @@ where
     })
     .await
 }
-
 fn spawn_udp_control_watch(mut control: TcpStream) -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel(1);
     tokio::spawn(async move {
@@ -262,7 +262,6 @@ fn spawn_udp_control_watch(mut control: TcpStream) -> mpsc::Receiver<()> {
     });
     rx
 }
-
 struct SocksUdpLoop<O> {
     downstream: Arc<UdpSocket>,
     egress: O,

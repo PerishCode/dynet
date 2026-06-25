@@ -119,7 +119,7 @@ run_udp_smoke() {
 }
 
 run_socks5_smoke() {
-  curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:1080 "http://${TCP_HOST}/" >/dev/null
+  curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:11080 "http://${TCP_HOST}/" >/dev/null
 }
 
 write_config() {

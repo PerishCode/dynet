@@ -166,6 +166,19 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
     .execute(pool)
     .await?;
     sqlx::query(
+        "create index if not exists runtime_traffic_sessions_recent_completed_idx
+         on runtime_traffic_sessions (last_observed_at_unix_ms desc, session_key desc)
+         where closed_at_unix_ms is not null or error is not null",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "create index if not exists matrix_shadow_decisions_recent_idx
+         on matrix_shadow_decisions (observed_at_unix_ms desc, row_id desc)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
         "insert into runtime_meta (key, value)
          values ('schema_version', ?1)
          on conflict(key) do update set value = excluded.value",

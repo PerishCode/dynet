@@ -30,7 +30,7 @@ pub(crate) fn select_active_candidate(
 }
 
 fn active_rollout_group(group_id: &GroupId) -> bool {
-    matches!(group_id.as_str(), "GitHub" | "Common")
+    matches!(group_id.as_str(), "GitHub" | "Common" | "Tunnel")
 }
 
 fn active_score(
@@ -41,18 +41,27 @@ fn active_score(
     aggregate: Option<&MatrixNodeStats>,
 ) -> i64 {
     const PRIORITY_WEIGHT: i64 = 1_000_000_000;
-    const ERROR_RATE_WEIGHT: i64 = 100;
-    const LATENCY_WEIGHT: i64 = 1_000;
-    const ACTIVE_SESSION_WEIGHT: i64 = 10_000;
-    const RECENT_USAGE_WEIGHT: i64 = 10;
+    const NO_HISTORY_SCORE: i64 = 4_000_000_000_000;
     const COOLDOWN_PENALTY: i64 = 2_000_000_000_000;
     const CONCURRENCY_CAP_PENALTY: i64 = 3_000_000_000_000;
+
+    if target.is_none() && aggregate.is_none() {
+        return NO_HISTORY_SCORE
+            - i64::from(priority) * PRIORITY_WEIGHT
+            - i64::try_from(rank).unwrap_or(i64::MAX);
+    }
 
     let mut score = 1_000_000_000_000_i64
         - i64::from(priority) * PRIORITY_WEIGHT
         - i64::try_from(rank).unwrap_or(i64::MAX);
     if aggregate.is_some_and(|stats| capped_node(stats, thresholds)) {
         score -= CONCURRENCY_CAP_PENALTY;
+    }
+    if let Some(stats) = aggregate {
+        score -= aggregate_penalty(stats);
+        if cooled_node(stats, thresholds) {
+            score -= COOLDOWN_PENALTY;
+        }
     }
     if let Some(stats) = target {
         score -= target_penalty(stats);
@@ -61,13 +70,19 @@ fn active_score(
         }
         return score;
     }
-    if let Some(stats) = aggregate {
-        score -= i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT;
-        score -= latency_penalty(stats.avg_first_response_latency_ms) * LATENCY_WEIGHT;
-        score -= u64_penalty(stats.active_session_count) * ACTIVE_SESSION_WEIGHT;
-        score -= u64_penalty(stats.session_count) * RECENT_USAGE_WEIGHT;
-    }
     score
+}
+
+fn aggregate_penalty(stats: &MatrixNodeStats) -> i64 {
+    const ERROR_RATE_WEIGHT: i64 = 100;
+    const LATENCY_WEIGHT: i64 = 1_000;
+    const ACTIVE_SESSION_WEIGHT: i64 = 10_000;
+    const RECENT_USAGE_WEIGHT: i64 = 10;
+
+    i64::from(stats.effective_error_rate_ppm) * ERROR_RATE_WEIGHT
+        + latency_penalty(stats.avg_first_response_latency_ms) * LATENCY_WEIGHT
+        + u64_penalty(stats.active_session_count) * ACTIVE_SESSION_WEIGHT
+        + u64_penalty(stats.session_count) * RECENT_USAGE_WEIGHT
 }
 
 fn target_penalty(stats: &MatrixTargetNodeStats) -> i64 {
@@ -86,6 +101,13 @@ fn capped_node(stats: &MatrixNodeStats, thresholds: GroupThresholds) -> bool {
     thresholds
         .max_active_sessions
         .is_some_and(|limit| stats.active_session_count >= limit)
+}
+
+fn cooled_node(stats: &MatrixNodeStats, thresholds: GroupThresholds) -> bool {
+    let completed_millis = stats.success_count.saturating_mul(1_000) + stats.effective_error_millis;
+    completed_millis >= thresholds.min_samples.saturating_mul(1_000)
+        && weighted_success_rate_ppm(stats.success_count, completed_millis)
+            < thresholds.min_success_rate_ppm
 }
 
 fn cooled_target(stats: &MatrixTargetNodeStats, thresholds: GroupThresholds) -> bool {
