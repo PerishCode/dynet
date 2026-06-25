@@ -65,20 +65,40 @@ fn spawn_ingress(
     execution_nodes: BTreeMap<String, EgressNodeConfig>,
     runtime: RuntimeState,
 ) {
-    tokio::spawn(dynet_ingress::run_dns(config.dns, runtime.clone()));
-    tokio::spawn(dynet_ingress::run_socks5_graph(
-        config.socks5,
-        execution_nodes.clone(),
-        runtime.clone(),
-    ));
-    tokio::spawn(dynet_ingress::run_tcp_graph(
-        config.tcp,
-        execution_nodes.clone(),
-        runtime.clone(),
-    ));
-    tokio::spawn(dynet_ingress::run_udp_graph(
-        config.udp,
-        execution_nodes,
-        runtime,
-    ));
+    let dns_config = config.dns;
+    let socks5_config = config.socks5;
+    let tcp_config = config.tcp;
+    let udp_config = config.udp;
+
+    let dns_runtime = runtime.clone();
+    tokio::spawn(async move {
+        if let Err(error) = dynet_ingress::run_dns(dns_config, dns_runtime).await {
+            eprintln!("dynet: dns ingress stopped: {error}");
+        }
+    });
+
+    let socks5_runtime = runtime.clone();
+    let socks5_nodes = execution_nodes.clone();
+    tokio::spawn(async move {
+        if let Err(error) =
+            dynet_ingress::run_socks5_graph(socks5_config, socks5_nodes, socks5_runtime).await
+        {
+            eprintln!("dynet: socks5 ingress stopped: {error}");
+        }
+    });
+
+    let tcp_runtime = runtime.clone();
+    let tcp_nodes = execution_nodes.clone();
+    tokio::spawn(async move {
+        if let Err(error) = dynet_ingress::run_tcp_graph(tcp_config, tcp_nodes, tcp_runtime).await {
+            eprintln!("dynet: tcp ingress stopped: {error}");
+        }
+    });
+
+    tokio::spawn(async move {
+        if let Err(error) = dynet_ingress::run_udp_graph(udp_config, execution_nodes, runtime).await
+        {
+            eprintln!("dynet: udp ingress stopped: {error}");
+        }
+    });
 }

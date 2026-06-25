@@ -154,7 +154,7 @@ impl Default for UdpRelayConfig {
 impl Default for Socks5IngressConfig {
     fn default() -> Self {
         Self {
-            bind: SocketAddr::from(([127, 0, 0, 1], 1080)),
+            bind: SocketAddr::from(([127, 0, 0, 1], 11080)),
             udp_advertise_ip: None,
             idle_timeout: UDP_IDLE_TIMEOUT,
             max_sessions: DEFAULT_SOCKS5_MAX_SESSIONS,

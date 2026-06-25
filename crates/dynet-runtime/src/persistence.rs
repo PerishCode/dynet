@@ -13,6 +13,7 @@ use crate::{
 
 mod bootstrap;
 mod dns_policy;
+mod recovery;
 mod schema;
 mod sink;
 mod validation;
@@ -377,7 +378,7 @@ fn u128_to_i64(value: u128) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn usize_to_i64(value: usize) -> i64 {
+pub(super) fn usize_to_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 

@@ -38,10 +38,18 @@ impl Default for MatrixService {
 
 impl MatrixService {
     pub(crate) fn new(observation_sink: Option<ObservationSink>) -> Self {
+        Self::from_parts(Vec::new(), Vec::new(), observation_sink)
+    }
+
+    pub(crate) fn from_parts(
+        traffic_sessions: Vec<TrafficSession>,
+        shadow_decisions: Vec<MatrixShadowDecision>,
+        observation_sink: Option<ObservationSink>,
+    ) -> Self {
         Self {
             inner: Arc::new(MatrixServiceInner {
-                traffic_sessions: TrafficSessionStore::default(),
-                shadow_decisions: MatrixShadowStore::default(),
+                traffic_sessions: TrafficSessionStore::from_sessions(traffic_sessions),
+                shadow_decisions: MatrixShadowStore::from_decisions(shadow_decisions),
                 observation_sink,
             }),
         }

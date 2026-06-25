@@ -18,6 +18,13 @@ fn parses_config_equals() {
 }
 
 #[test]
+fn parses_process_stamp() {
+    let args = Args::parse([OsString::from("--process-stamp=dynetctl:local")]).expect("args parse");
+
+    assert_eq!(args.process_stamp.as_deref(), Some("dynetctl:local"));
+}
+
+#[test]
 fn rejects_unknown_arg() {
     let error = Args::parse([OsString::from("--listen")]).expect_err("unknown arg rejected");
 

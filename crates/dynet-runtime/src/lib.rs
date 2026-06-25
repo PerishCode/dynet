@@ -31,6 +31,7 @@ pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError}
 pub use stores::{DnsUpstreamStore, GroupStore, NodeStore, RouteRuleStore};
 pub use traffic_session::TrafficSession;
 
+pub(crate) use model::MATRIX_SHADOW_LIMIT;
 use model::{default_dns_upstreams, select_active_candidate, DEFAULT_NODE_ID};
 
 #[derive(Debug, Clone)]
@@ -98,15 +99,25 @@ impl RuntimeState {
         seed: RuntimeSeed,
     ) -> Result<Self, RuntimeStoreError> {
         let bootstrap = store.load_or_seed_bootstrap(seed).await?;
+        let traffic_sessions = store.load_recent_traffic_sessions().await?;
+        let shadow_decisions = store.load_recent_shadows().await?;
         let observation_sink = store.spawn_observation_sink();
-        Ok(Self::from_bootstrap(bootstrap, Some(observation_sink)))
+        Ok(Self::from_bootstrap(
+            bootstrap,
+            traffic_sessions,
+            shadow_decisions,
+            Some(observation_sink),
+        ))
     }
 
     fn from_bootstrap(
         bootstrap: persistence::RuntimeBootstrap,
+        traffic_sessions: Vec<TrafficSession>,
+        shadow_decisions: Vec<MatrixShadowDecision>,
         observation_sink: Option<persistence::ObservationSink>,
     ) -> Self {
-        let matrix = MatrixService::new(observation_sink);
+        let matrix =
+            MatrixService::from_parts(traffic_sessions, shadow_decisions, observation_sink);
         Self {
             inner: Arc::new(RuntimeInner {
                 events: EventStore::with_matrix(matrix.clone()),

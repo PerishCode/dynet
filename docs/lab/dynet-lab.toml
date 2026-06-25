@@ -16,7 +16,7 @@ idle_timeout_ms = 30000
 max_sessions = 1024
 
 [ingress.socks5]
-bind = "127.0.0.1:1080"
+bind = "127.0.0.1:11080"
 udp_advertise_ip = "192.168.5.2"
 udp_idle_timeout_ms = 30000
 max_sessions = 1024
