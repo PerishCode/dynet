@@ -86,6 +86,26 @@ fn auto_creates_carriers() {
 }
 
 #[test]
+fn auto_sets_tun_up() {
+    let root = temp_root("auto-existing-tun");
+    prepare_doctor_ready_root(&root);
+    let takeover = takeover_under(&root);
+    let runner = FakeRunner::with_existing_down_tun();
+
+    let report = takeover
+        .apply_with_runner(ApplyOptions { auto: true }, &runner)
+        .expect("apply");
+
+    assert!(report
+        .runtime_actions
+        .contains(&"set dynet0 up".to_string()));
+    assert!(!runner.called("ip tuntap add dev dynet0 mode tun"));
+    assert!(runner.called("ip link show dev dynet0"));
+    assert!(runner.called("ip link set dev dynet0 up"));
+    cleanup_root(&root);
+}
+
+#[test]
 fn status_reports_chains() {
     let root = temp_root("status");
     let takeover = takeover_under(&root);
@@ -306,12 +326,22 @@ struct FakeRunner {
 impl FakeRunner {
     fn with_ready_runtime() -> Self {
         let mut ready = BTreeMap::new();
+        ready.insert("ip -br link show dev dynet0 up".to_string(), true);
         ready.insert("ip link show dev dynet0".to_string(), true);
         ready.insert("nft list table inet dynet".to_string(), true);
         ready.insert("nft list chain inet dynet dynet_bypass".to_string(), true);
         ready.insert("nft list chain inet dynet dynet_dns".to_string(), true);
         ready.insert("nft list chain inet dynet dynet_tcp".to_string(), true);
         ready.insert("nft list chain inet dynet dynet_udp".to_string(), true);
+        Self {
+            ready,
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn with_existing_down_tun() -> Self {
+        let mut ready = BTreeMap::new();
+        ready.insert("ip link show dev dynet0".to_string(), true);
         Self {
             ready,
             calls: RefCell::new(Vec::new()),

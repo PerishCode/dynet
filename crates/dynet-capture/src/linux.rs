@@ -265,9 +265,25 @@ impl LinuxTakeover {
     }
 
     fn tun_status(&self, runner: &impl SystemRunner) -> TakeoverCheck {
+        let output = runner.run("ip", &["-br", "link", "show", "dev", TUN_INTERFACE, "up"]);
+        let state = match output {
+            Ok(output) if output.success && !output.stdout.is_empty() => CheckState::Ready,
+            Ok(_) => CheckState::MissingAutoCreatable,
+            Err(_) => CheckState::MissingHardFail,
+        };
+        TakeoverCheck {
+            id: "tun.interface",
+            label: "dynet TUN interface",
+            path: None,
+            state,
+            auto_action: Some("create dynet0 TUN interface"),
+        }
+    }
+
+    fn tun_exists_status(&self, runner: &impl SystemRunner) -> TakeoverCheck {
         runtime_command_check(
-            "tun.interface",
-            "dynet TUN interface",
+            "tun.interface.exists",
+            "dynet TUN interface exists",
             runner.run("ip", &["link", "show", "dev", TUN_INTERFACE]),
             "create dynet0 TUN interface",
         )
@@ -299,12 +315,14 @@ impl LinuxTakeover {
         if self.tun_status(runner).state == CheckState::Ready {
             return Ok(());
         }
-        run_required(
-            runner,
-            "ip",
-            &["tuntap", "add", "dev", TUN_INTERFACE, "mode", "tun"],
-        )?;
-        actions.push(format!("created TUN interface {TUN_INTERFACE}"));
+        if self.tun_exists_status(runner).state != CheckState::Ready {
+            run_required(
+                runner,
+                "ip",
+                &["tuntap", "add", "dev", TUN_INTERFACE, "mode", "tun"],
+            )?;
+            actions.push(format!("created TUN interface {TUN_INTERFACE}"));
+        }
         run_required(runner, "ip", &["link", "set", "dev", TUN_INTERFACE, "up"])?;
         actions.push(format!("set {TUN_INTERFACE} up"));
         Ok(())
