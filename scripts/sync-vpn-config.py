@@ -17,6 +17,10 @@ DEFAULT_VPN_CONFIG = ROOT.parent / "vpn-config"
 DEFAULT_OUTPUT = ROOT / "dynet.toml"
 CLASH_SOURCE = Path("sources/clash")
 PROFILE = "mac.yaml"
+PROVIDER_SOURCES = {
+    "airport": ("proxy-provider", "airport.yaml"),
+    "private": ("profile-proxies", "perish.yml"),
+}
 ROUTED_RULESETS = {
     "bulk": "Common",
     "common": "Common",
@@ -181,15 +185,14 @@ CONVERTERS = {
 
 
 def load_nodes(vpn_config, resolver):
-    provider_dir = vpn_config / CLASH_SOURCE / "proxy-providers"
     converted = {"airport": [], "private": []}
     skipped = Counter()
     skip_reasons = Counter()
     used_ids = set()
 
     for provider in converted:
-        payload = load_yaml(provider_dir / f"{provider}.yaml")
-        for index, node in enumerate(payload.get("proxies") or []):
+        nodes = load_provider_nodes(vpn_config, provider)
+        for index, node in enumerate(nodes):
             kind = node.get("type")
             if kind not in SUPPORTED_NODE_TYPES:
                 skipped[kind or "unknown"] += 1
@@ -212,6 +215,17 @@ def load_nodes(vpn_config, resolver):
             used_ids.add(candidate_id)
             converted[provider].append((candidate_id, fields))
     return converted, skipped, skip_reasons
+
+
+def load_provider_nodes(vpn_config, provider):
+    source_kind, source_name = PROVIDER_SOURCES[provider]
+    if source_kind == "proxy-provider":
+        payload = load_yaml(vpn_config / CLASH_SOURCE / "proxy-providers" / source_name)
+    elif source_kind == "profile-proxies":
+        payload = load_yaml(vpn_config / CLASH_SOURCE / source_name)
+    else:
+        raise ValueError(f"unsupported provider source {source_kind!r}")
+    return payload.get("proxies") or []
 
 
 def parse_rule(line):

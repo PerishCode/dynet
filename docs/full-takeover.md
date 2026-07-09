@@ -175,8 +175,9 @@ Provider validation on `dynet.lan` on 2026-07-05:
 - A gitignored shudong config generated from `vpn-config` can express
   `Common -> shudong VMess`, `Tunnel -> shudong VMess -> Private`, and
   `Private -> Private Lisahost US Shadowsocks`, with `[capture.tun]` still
-  disabled by default. shudong SSR nodes are skipped because dynet does not
-  support SSR yet.
+  disabled by default. The generator reads airport nodes from the airport
+  proxy-provider and Private nodes from inline `perish.yml` proxies. shudong
+  SSR nodes are skipped because dynet does not support SSR yet.
 - With `[capture.tun]` enabled only by environment override, a root TCP probe to
   `1.0.0.1:80` returned HTTP `301` through the shudong provider path. Runtime
   events recorded `inbound=tun`, `selectionGroups=Common`,

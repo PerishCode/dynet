@@ -172,10 +172,12 @@ scripts/sync-vpn-config.py
 ```
 
 The generated `dynet.toml` contains local node credentials and must stay
-untracked. The script maps the Clash rule buckets into dynet groups, keeps
-`MATCH` on `Private`, maps `Tunnel.next` to `Private`, and skips unsupported
-entries such as SSR nodes or reject-only rules instead of pretending they are
-enforceable. After syncing, start dynet with:
+untracked. The script reads airport nodes from `proxy-providers/airport.yaml`
+and Private nodes from the inline `proxies` in `perish.yml`. It maps the Clash
+rule buckets into dynet groups, keeps `MATCH` on `Private`, maps `Tunnel.next`
+to `Private`, and skips unsupported entries such as SSR nodes or reject-only
+rules instead of pretending they are enforceable. After syncing, start dynet
+with:
 
 ```bash
 DYNET_RUNTIME_DB=target/dynet-lab.sqlite \
