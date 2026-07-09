@@ -22,6 +22,9 @@ pub enum Command {
     },
     Reconcile,
     Cleanup,
+    Config {
+        action: ConfigAction,
+    },
     Hooks {
         action: HooksAction,
     },
@@ -51,6 +54,12 @@ pub enum HooksAction {
     Status,
     Apply,
     Cleanup,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ConfigAction {
+    Summary,
+    Validate,
 }
 
 impl Args {
@@ -89,6 +98,10 @@ impl Args {
                 "cleanup" => {
                     parsed.command = Command::Cleanup;
                     reject_trailing("cleanup", args)?;
+                    return Ok(parsed);
+                }
+                "config" => {
+                    parsed.command = parse_config_args(&mut parsed, args)?;
                     return Ok(parsed);
                 }
                 "hooks" => {
@@ -140,6 +153,34 @@ impl Args {
         }
         Ok(parsed)
     }
+}
+
+fn parse_config_args(
+    parsed: &mut Args,
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        return Err("config requires an action: summary, validate".to_string());
+    };
+    let action = match action.to_string_lossy().as_ref() {
+        "summary" => ConfigAction::Summary,
+        "validate" => ConfigAction::Validate,
+        other => return Err(format!("unknown config action {other}")),
+    };
+    while let Some(arg) = args.next() {
+        if arg == "--config" {
+            let Some(path) = args.next() else {
+                return Err("--config requires a path".to_string());
+            };
+            set_config(parsed, PathBuf::from(path))?;
+        } else if let Some(path) = split_config_arg(&arg) {
+            set_config(parsed, path)?;
+        } else {
+            return Err(format!("unknown config argument {}", arg.to_string_lossy()));
+        }
+    }
+    Ok(Command::Config { action })
 }
 
 fn parse_hooks_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {

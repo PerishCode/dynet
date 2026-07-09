@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use dynet_cli::{Args, Command, HooksAction};
+use dynet_cli::{Args, Command, ConfigAction, HooksAction};
 
 #[test]
 fn parses_config_flag() {
@@ -42,6 +42,35 @@ fn parses_lifecycle_commands() {
 
     let args = Args::parse([OsString::from("cleanup")]).expect("args parse");
     assert_eq!(args.command, Command::Cleanup);
+
+    let args = Args::parse([
+        OsString::from("config"),
+        OsString::from("summary"),
+        OsString::from("--config=/etc/dynet/dynet.toml"),
+    ])
+    .expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Config {
+            action: ConfigAction::Summary
+        }
+    );
+    assert_eq!(args.config, Some(PathBuf::from("/etc/dynet/dynet.toml")));
+
+    let args = Args::parse([
+        OsString::from("config"),
+        OsString::from("validate"),
+        OsString::from("--config"),
+        OsString::from("dynet.toml"),
+    ])
+    .expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Config {
+            action: ConfigAction::Validate
+        }
+    );
+    assert_eq!(args.config, Some(PathBuf::from("dynet.toml")));
 
     let args = Args::parse([OsString::from("tun-probe")]).expect("args parse");
     assert_eq!(

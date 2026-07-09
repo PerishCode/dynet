@@ -15,8 +15,10 @@ use serde::Deserialize;
 mod forwarding_config;
 mod method_config;
 mod socks_config;
+mod summary;
 use forwarding_config::FileForwardingConfig;
 use socks_config::FileSocks5IngressConfig;
+pub use summary::redacted_summary_lines;
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct AppState {

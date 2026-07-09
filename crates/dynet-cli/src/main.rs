@@ -4,7 +4,7 @@ use dynet_capture::{
     ApplyOptions, CheckState, LinuxTakeover, TakeoverPlan, TakeoverReport, TakeoverStatus,
     TunProbeRead,
 };
-use dynet_cli::{Args, Command, HooksAction};
+use dynet_cli::{Args, Command, ConfigAction, HooksAction};
 use dynet_ingress::{EgressNodeConfig, IngressConfig};
 use dynet_runtime::{RuntimeState, RuntimeStore};
 use dynet_state::AppState;
@@ -31,6 +31,7 @@ async fn run() -> Result<(), String> {
         Command::Apply { auto } => run_apply(auto),
         Command::Reconcile => run_reconcile(),
         Command::Cleanup => run_cleanup(),
+        Command::Config { action } => run_config(action, config.as_deref()),
         Command::Hooks { action } => run_hooks(action),
         Command::IpStackPoc {
             interface,
@@ -60,6 +61,19 @@ async fn run() -> Result<(), String> {
         }
         Command::TunProbe { interface, wait_ms } => run_tun_probe(interface.as_deref(), wait_ms),
     }
+}
+
+fn run_config(action: ConfigAction, config_path: Option<&std::path::Path>) -> Result<(), String> {
+    let state = AppState::from_config_path(config_path)?;
+    match action {
+        ConfigAction::Summary => {
+            for line in dynet_state::redacted_summary_lines(&state.config) {
+                println!("{line}");
+            }
+        }
+        ConfigAction::Validate => println!("dynet config validate: ok"),
+    }
+    Ok(())
 }
 
 fn run_plan() -> Result<(), String> {
