@@ -189,9 +189,11 @@ Provider validation on `dynet.lan` on 2026-07-05:
   Runtime events recorded `selectionGroups=Tunnel,Private` and
   `selectionNodes=shudong-us-01,private-lisahost-us`, proving the Private
   egress was dialed through a shudong Tunnel node.
-- The Private Shadowsocks 2022 relay forwarded data but did not emit a
-  short-window `tcp-close` event. Protocol egress still needs captured TCP idle
-  close support so keep-alive remotes do not delay observability convergence.
+- Follow-up fixed protocol-backed captured TCP observability: Shadowsocks,
+  Trojan, VMess, and VLESS egress now return `closeReason=idle-timeout` when
+  plaintext byte counters stay idle for the capture timeout. This is covered by
+  `captured_tcp_protocol_idle`; the Private Shadowsocks 2022 live path still
+  needs a VM rerun with real provider config.
 - Cleanup again left the VM with no output hook, no priority `10000` fwmark
   rule, and no `dynet` route-table default.
 

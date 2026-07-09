@@ -21,7 +21,9 @@ mod vmess;
 
 pub(crate) use direct::{udp_step, UdpStep};
 pub(crate) use graph::GraphEgress;
-pub(crate) use observation::{count_downstream, push_egress_error_fields, EgressError};
+pub(crate) use observation::{
+    count_downstream, push_egress_error_fields, EgressError, PlaintextByteCounts,
+};
 use shadowsocks::ShadowsocksEgress;
 use trojan::TrojanEgress;
 pub(crate) use udp_downstream::UdpDownstream;
@@ -127,6 +129,44 @@ pub(crate) trait TcpDialer: Send + Sync {
         &self,
         target: TcpDialTarget,
     ) -> impl Future<Output = Result<TcpDialConnection, EgressError>> + Send;
+}
+
+pub(crate) async fn await_relay_idle<F>(
+    relay: F,
+    byte_counts: PlaintextByteCounts,
+    idle_timeout: Option<Duration>,
+    upstream: SocketAddr,
+) -> Result<TcpRelayOutcome, EgressError>
+where
+    F: Future<Output = Result<TcpRelayOutcome, EgressError>>,
+{
+    let Some(idle_timeout) = idle_timeout else {
+        return relay.await;
+    };
+    let mut last_client_to_upstream = byte_counts.client_to_upstream();
+    let mut last_upstream_to_client = byte_counts.upstream_to_client();
+    tokio::pin!(relay);
+    loop {
+        tokio::select! {
+            outcome = &mut relay => return outcome,
+            _ = tokio::time::sleep(idle_timeout) => {
+                let client_to_upstream = byte_counts.client_to_upstream();
+                let upstream_to_client = byte_counts.upstream_to_client();
+                if client_to_upstream == last_client_to_upstream
+                    && upstream_to_client == last_upstream_to_client
+                {
+                    return Ok(TcpRelayOutcome {
+                        upstream,
+                        client_to_upstream_bytes: client_to_upstream,
+                        upstream_to_client_bytes: upstream_to_client,
+                        close_reason: "idle-timeout",
+                    });
+                }
+                last_client_to_upstream = client_to_upstream;
+                last_upstream_to_client = upstream_to_client;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
