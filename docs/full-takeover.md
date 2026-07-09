@@ -193,8 +193,17 @@ Provider validation on `dynet.lan` on 2026-07-05:
 - Follow-up fixed protocol-backed captured TCP observability: Shadowsocks,
   Trojan, VMess, and VLESS egress now return `closeReason=idle-timeout` when
   plaintext byte counters stay idle for the capture timeout. This is covered by
-  `captured_tcp_protocol_idle`; the Private Shadowsocks 2022 live path still
-  needs a VM rerun with real provider config.
+  `captured_tcp_protocol_idle`.
+- Revalidated on the dedicated service.lan dynet VM after the generator learned
+  the current `vpn-config` layout. A generated provider config contained 66
+  airport nodes, 2 Private nodes, and 638 routed rules. For the live SS2022
+  check, a temporary VM-only config routed `1.1.1.1/32 -> Tunnel` and pinned the
+  `Private` group to `private-002-Private-Lisahost-US`. A root
+  VM-originated keep-alive TCP probe returned HTTP `301`; runtime events
+  recorded `inbound=tun`, `selectionGroups=Tunnel,Private`,
+  `selectionNodes=airport-003-jms-us-03,private-002-Private-Lisahost-US`,
+  `nodeProtocol=ss`, `clientToUpstreamBytes=57`,
+  `upstreamToClientBytes=386`, and `closeReason=idle-timeout`.
 - Cleanup again left the VM with no output hook, no priority `10000` fwmark
   rule, and no `dynet` route-table default.
 
