@@ -37,6 +37,10 @@ dynet ipstack-runtime-poc
 dynet hooks status    # VM-only capture hook status; no writes
 dynet hooks apply     # VM-only install of the current output capture hook
 dynet hooks cleanup   # VM-only removal of current hook route/rule state
+dynet config summary --config dynet.toml
+                      # redacted config inventory; no proxy secrets or endpoints
+dynet config validate --config dynet.toml
+                      # load config and environment overrides, then exit
 dynet cleanup         # remove dynet-owned isolated fragments only
 dynet run --config dynet.toml
                       # long-running runtime; optional [capture.tun] consumes dynet0
@@ -129,6 +133,13 @@ DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS
 `--config`, it looks for `dynet.toml` in the current working directory and
 continues with defaults when that file is absent. Environment variables override
 file values.
+
+`dynet config summary --config <path>` loads the same file and prints a
+redacted operational summary: bind addresses, capture timers, default group,
+node protocol counts, group member counts, route counts, and DNS upstream
+count. It intentionally does not print proxy endpoints, passwords, UUIDs, SNI,
+Reality public keys, short IDs, or group member node IDs. `dynet config validate
+--config <path>` only checks that the file loads after environment overrides.
 
 ```toml
 [control]
