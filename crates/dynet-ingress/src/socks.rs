@@ -161,8 +161,9 @@ where
     runtime.events().record(IngressEventKind::TcpAccept, fields);
     let session = TcpRelaySession {
         target,
-        downstream: client,
+        downstream: Box::new(client),
         decision: decision.clone(),
+        idle_timeout: None,
     };
     match egress.handle_tcp(session).await {
         Ok(outcome) => {

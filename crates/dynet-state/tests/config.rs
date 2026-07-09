@@ -27,6 +27,11 @@ fn env_overrides_config() {
         ("DYNET_SOCKS5_UDP_ADVERTISE_IP", "127.0.0.9"),
         ("DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS", "789"),
         ("DYNET_SOCKS5_MAX_SESSIONS", "66"),
+        ("DYNET_CAPTURE_TUN_ENABLED", "true"),
+        ("DYNET_CAPTURE_TUN_INTERFACE", "dynet-test0"),
+        ("DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS", "2345"),
+        ("DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS", "3456"),
+        ("DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS", "4567"),
     ]);
 
     let config = Config::from_env().expect("config loads from env");
@@ -50,6 +55,20 @@ fn env_overrides_config() {
         Duration::from_millis(789)
     );
     assert_eq!(config.ingress.socks5.max_sessions, 66);
+    assert!(config.capture.tun.enabled);
+    assert_eq!(config.capture.tun.interface, "dynet-test0");
+    assert_eq!(
+        config.capture.tun.tcp_idle_timeout,
+        Duration::from_millis(2345)
+    );
+    assert_eq!(
+        config.capture.tun.udp_idle_timeout,
+        Duration::from_millis(3456)
+    );
+    assert_eq!(
+        config.capture.tun.udp_response_timeout,
+        Duration::from_millis(4567)
+    );
 }
 
 #[test]
@@ -82,6 +101,13 @@ bind = "127.0.0.1:9108"
 udp_advertise_ip = "127.0.0.8"
 udp_idle_timeout_ms = 987
 max_sessions = 34
+
+[capture.tun]
+enabled = true
+interface = "dynet-file0"
+tcp_idle_timeout_ms = 1357
+udp_idle_timeout_ms = 2468
+udp_response_timeout_ms = 3579
 "#,
     )
     .expect("write config");
@@ -107,6 +133,20 @@ max_sessions = 34
         Duration::from_millis(987)
     );
     assert_eq!(config.ingress.socks5.max_sessions, 34);
+    assert!(config.capture.tun.enabled);
+    assert_eq!(config.capture.tun.interface, "dynet-file0");
+    assert_eq!(
+        config.capture.tun.tcp_idle_timeout,
+        Duration::from_millis(1357)
+    );
+    assert_eq!(
+        config.capture.tun.udp_idle_timeout,
+        Duration::from_millis(2468)
+    );
+    assert_eq!(
+        config.capture.tun.udp_response_timeout,
+        Duration::from_millis(3579)
+    );
 
     fs::remove_file(config_path).expect("remove config");
 }
@@ -180,6 +220,16 @@ fn env_rejects_zero_limit() {
     assert!(error.contains("DYNET_TCP_MAX_SESSIONS"));
 }
 
+#[test]
+fn rejects_empty_tun_interface() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[("DYNET_CAPTURE_TUN_INTERFACE", "")]);
+
+    let error = Config::from_env().expect_err("empty TUN interface is rejected");
+
+    assert!(error.contains("DYNET_CAPTURE_TUN_INTERFACE"));
+}
+
 fn socket(value: &str) -> SocketAddr {
     value.parse().expect("socket parses")
 }
@@ -218,6 +268,11 @@ const ENV_KEYS: &[&str] = &[
     "DYNET_SOCKS5_UDP_ADVERTISE_IP",
     "DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS",
     "DYNET_SOCKS5_MAX_SESSIONS",
+    "DYNET_CAPTURE_TUN_ENABLED",
+    "DYNET_CAPTURE_TUN_INTERFACE",
+    "DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS",
+    "DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS",
+    "DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS",
 ];
 
 fn temp_config_path(name: &str) -> PathBuf {

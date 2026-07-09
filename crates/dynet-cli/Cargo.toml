@@ -8,6 +8,7 @@ description = "Minimal dynet binary skeleton."
 
 [dependencies]
 dynet-api = { path = "../dynet-api" }
+dynet-capture = { path = "../dynet-capture" }
 dynet-ingress = { path = "../dynet-ingress" }
 dynet-runtime = { path = "../dynet-runtime" }
 dynet-state = { path = "../dynet-state" }

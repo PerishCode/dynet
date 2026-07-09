@@ -1,0 +1,12 @@
+[package]
+name = "dynet-capture"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Capture backends and host takeover lifecycle for dynet."
+
+[dependencies]
+ipstack = "1.0.0"
+libc = "0.2"
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }

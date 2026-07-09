@@ -110,6 +110,28 @@ impl RuntimeState {
         ))
     }
 
+    pub fn from_seed(seed: RuntimeSeed) -> Self {
+        let matrix = MatrixService::default();
+        Self {
+            inner: Arc::new(RuntimeInner {
+                events: EventStore::with_matrix(matrix.clone()),
+                nodes: NodeStore::from_nodes(seed.nodes),
+                groups: GroupStore::from_parts(
+                    seed.default_group_id,
+                    seed.groups,
+                    seed.group_members,
+                ),
+                routes: RouteRuleStore::from_rules(seed.route_rules),
+                dns_upstreams: DnsUpstreamStore::from_upstreams(seed.dns_upstreams),
+                dns_policy: seed.dns_policy,
+                dns_map: ObservedDnsMap::default(),
+                matrix,
+                selector_matrix: SelectorMatrix,
+                next_decision_id: AtomicU64::new(0),
+            }),
+        }
+    }
+
     fn from_bootstrap(
         bootstrap: persistence::RuntimeBootstrap,
         traffic_sessions: Vec<TrafficSession>,

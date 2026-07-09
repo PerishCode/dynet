@@ -27,6 +27,7 @@ pub struct AppState {
 pub struct Config {
     pub control: ControlConfig,
     pub ingress: IngressConfig,
+    pub capture: CaptureConfig,
     pub forwarding: ForwardingConfig,
 }
 
@@ -41,6 +42,20 @@ pub struct ForwardingConfig {
     pub execution_nodes: BTreeMap<String, EgressNodeConfig>,
 }
 
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct CaptureConfig {
+    pub tun: TunCaptureConfig,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TunCaptureConfig {
+    pub enabled: bool,
+    pub interface: String,
+    pub tcp_idle_timeout: Duration,
+    pub udp_idle_timeout: Duration,
+    pub udp_response_timeout: Duration,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -48,7 +63,20 @@ impl Default for Config {
                 bind: SocketAddr::from(([127, 0, 0, 1], 9977)),
             },
             ingress: IngressConfig::default(),
+            capture: CaptureConfig::default(),
             forwarding: ForwardingConfig::default(),
+        }
+    }
+}
+
+impl Default for TunCaptureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interface: "dynet0".to_string(),
+            tcp_idle_timeout: Duration::from_secs(2),
+            udp_idle_timeout: Duration::from_secs(2),
+            udp_response_timeout: Duration::from_millis(1500),
         }
     }
 }
@@ -107,6 +135,23 @@ fn apply_env(config: &mut Config) -> Result<(), String> {
     config.ingress.udp.max_sessions =
         env_positive_usize("DYNET_UDP_MAX_SESSIONS", config.ingress.udp.max_sessions)?;
     socks_config::apply_env(&mut config.ingress.socks5)?;
+    config.capture.tun.enabled = env_bool("DYNET_CAPTURE_TUN_ENABLED", config.capture.tun.enabled)?;
+    config.capture.tun.interface = env_non_empty_string(
+        "DYNET_CAPTURE_TUN_INTERFACE",
+        config.capture.tun.interface.clone(),
+    )?;
+    config.capture.tun.tcp_idle_timeout = env_duration_ms(
+        "DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS",
+        config.capture.tun.tcp_idle_timeout,
+    )?;
+    config.capture.tun.udp_idle_timeout = env_duration_ms(
+        "DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS",
+        config.capture.tun.udp_idle_timeout,
+    )?;
+    config.capture.tun.udp_response_timeout = env_duration_ms(
+        "DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS",
+        config.capture.tun.udp_response_timeout,
+    )?;
     Ok(())
 }
 
@@ -154,6 +199,22 @@ fn env_duration_ms(name: &str, fallback: Duration) -> Result<Duration, String> {
     }
 }
 
+fn env_bool(name: &str, fallback: bool) -> Result<bool, String> {
+    match env::var(name) {
+        Ok(value) => parse_bool(name, &value),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
+fn env_non_empty_string(name: &str, fallback: String) -> Result<String, String> {
+    match env::var(name) {
+        Ok(value) => non_empty_string(name, value),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(error) => Err(format!("failed to read {name}: {error}")),
+    }
+}
+
 fn env_positive_usize(name: &str, fallback: usize) -> Result<usize, String> {
     match env::var(name) {
         Ok(value) => {
@@ -175,6 +236,7 @@ fn env_positive_usize(name: &str, fallback: usize) -> Result<usize, String> {
 struct FileConfig {
     control: Option<FileControlConfig>,
     ingress: Option<FileIngressConfig>,
+    capture: Option<FileCaptureConfig>,
     forwarding: Option<FileForwardingConfig>,
 }
 
@@ -186,8 +248,57 @@ impl FileConfig {
         if let Some(ingress) = self.ingress {
             ingress.apply(&mut config.ingress)?;
         }
+        if let Some(capture) = self.capture {
+            capture.apply(&mut config.capture)?;
+        }
         if let Some(forwarding) = self.forwarding {
             config.forwarding = forwarding.load()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileCaptureConfig {
+    tun: Option<FileTunCaptureConfig>,
+}
+
+impl FileCaptureConfig {
+    fn apply(self, config: &mut CaptureConfig) -> Result<(), String> {
+        if let Some(tun) = self.tun {
+            tun.apply(&mut config.tun)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileTunCaptureConfig {
+    enabled: Option<bool>,
+    interface: Option<String>,
+    tcp_idle_timeout_ms: Option<u64>,
+    udp_idle_timeout_ms: Option<u64>,
+    udp_response_timeout_ms: Option<u64>,
+}
+
+impl FileTunCaptureConfig {
+    fn apply(self, config: &mut TunCaptureConfig) -> Result<(), String> {
+        if let Some(enabled) = self.enabled {
+            config.enabled = enabled;
+        }
+        if let Some(interface) = self.interface {
+            config.interface = non_empty_string("capture.tun.interface", interface)?;
+        }
+        if let Some(tcp_idle_timeout_ms) = self.tcp_idle_timeout_ms {
+            config.tcp_idle_timeout = Duration::from_millis(tcp_idle_timeout_ms);
+        }
+        if let Some(udp_idle_timeout_ms) = self.udp_idle_timeout_ms {
+            config.udp_idle_timeout = Duration::from_millis(udp_idle_timeout_ms);
+        }
+        if let Some(udp_response_timeout_ms) = self.udp_response_timeout_ms {
+            config.udp_response_timeout = Duration::from_millis(udp_response_timeout_ms);
         }
         Ok(())
     }
@@ -304,6 +415,31 @@ fn parse_socket(name: &str, value: &str) -> Result<SocketAddr, String> {
     value
         .parse()
         .map_err(|error| format!("{name} must be a socket address: {error}"))
+}
+
+fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
+    if value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("yes")
+        || value.eq_ignore_ascii_case("on")
+        || value == "1"
+    {
+        return Ok(true);
+    }
+    if value.eq_ignore_ascii_case("false")
+        || value.eq_ignore_ascii_case("no")
+        || value.eq_ignore_ascii_case("off")
+        || value == "0"
+    {
+        return Ok(false);
+    }
+    Err(format!("{name} must be a boolean"))
+}
+
+fn non_empty_string(name: &str, value: String) -> Result<String, String> {
+    if value.is_empty() {
+        return Err(format!("{name} requires a non-empty value"));
+    }
+    Ok(value)
 }
 
 fn positive_usize(name: &str, value: usize) -> Result<usize, String> {

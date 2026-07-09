@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/dynet-api",
+    "crates/dynet-capture",
     "crates/dynet-cli",
     "crates/dynet-ingress",
     "crates/dynet-runtime",
