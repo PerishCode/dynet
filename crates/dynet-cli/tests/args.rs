@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use dynet_cli::{Args, Command};
+use dynet_cli::{Args, Command, HooksAction};
 
 #[test]
 fn parses_config_flag() {
@@ -76,14 +76,55 @@ fn parses_lifecycle_commands() {
         }
     );
 
+    let args =
+        Args::parse([OsString::from("hooks"), OsString::from("status")]).expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Hooks {
+            action: HooksAction::Status
+        }
+    );
+
+    let args = Args::parse([OsString::from("hooks"), OsString::from("apply")]).expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Hooks {
+            action: HooksAction::Apply
+        }
+    );
+
+    let args =
+        Args::parse([OsString::from("hooks"), OsString::from("cleanup")]).expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Hooks {
+            action: HooksAction::Cleanup
+        }
+    );
+
     let args = Args::parse([OsString::from("hooks-status")]).expect("args parse");
-    assert_eq!(args.command, Command::HooksStatus);
+    assert_eq!(
+        args.command,
+        Command::Hooks {
+            action: HooksAction::Status
+        }
+    );
 
     let args = Args::parse([OsString::from("hooks-apply")]).expect("args parse");
-    assert_eq!(args.command, Command::HooksApply);
+    assert_eq!(
+        args.command,
+        Command::Hooks {
+            action: HooksAction::Apply
+        }
+    );
 
     let args = Args::parse([OsString::from("hooks-cleanup")]).expect("args parse");
-    assert_eq!(args.command, Command::HooksCleanup);
+    assert_eq!(
+        args.command,
+        Command::Hooks {
+            action: HooksAction::Cleanup
+        }
+    );
 }
 
 #[test]

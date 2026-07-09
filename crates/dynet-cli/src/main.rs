@@ -4,7 +4,7 @@ use dynet_capture::{
     ApplyOptions, CheckState, LinuxTakeover, TakeoverPlan, TakeoverReport, TakeoverStatus,
     TunProbeRead,
 };
-use dynet_cli::{Args, Command};
+use dynet_cli::{Args, Command, HooksAction};
 use dynet_ingress::{EgressNodeConfig, IngressConfig};
 use dynet_runtime::{RuntimeState, RuntimeStore};
 use dynet_state::AppState;
@@ -31,9 +31,7 @@ async fn run() -> Result<(), String> {
         Command::Apply { auto } => run_apply(auto),
         Command::Reconcile => run_reconcile(),
         Command::Cleanup => run_cleanup(),
-        Command::HooksStatus => run_hooks_status(),
-        Command::HooksApply => run_hooks_apply(),
-        Command::HooksCleanup => run_hooks_cleanup(),
+        Command::Hooks { action } => run_hooks(action),
         Command::IpStackPoc {
             interface,
             max_tcp,
@@ -147,24 +145,21 @@ fn run_cleanup() -> Result<(), String> {
     Ok(())
 }
 
-fn run_hooks_status() -> Result<(), String> {
-    print_checks("hooks-status", &LinuxTakeover::default().hooks_status());
-    Ok(())
-}
-
-fn run_hooks_apply() -> Result<(), String> {
-    for action in LinuxTakeover::default().hooks_apply()? {
-        println!("{action}");
+fn run_hooks(action: HooksAction) -> Result<(), String> {
+    match action {
+        HooksAction::Status => {}
+        HooksAction::Apply => {
+            for action in LinuxTakeover::default().hooks_apply()? {
+                println!("{action}");
+            }
+        }
+        HooksAction::Cleanup => {
+            for action in LinuxTakeover::default().hooks_cleanup()? {
+                println!("{action}");
+            }
+        }
     }
-    print_checks("hooks-status", &LinuxTakeover::default().hooks_status());
-    Ok(())
-}
-
-fn run_hooks_cleanup() -> Result<(), String> {
-    for action in LinuxTakeover::default().hooks_cleanup()? {
-        println!("{action}");
-    }
-    print_checks("hooks-status", &LinuxTakeover::default().hooks_status());
+    print_checks("hooks status", &LinuxTakeover::default().hooks_status());
     Ok(())
 }
 

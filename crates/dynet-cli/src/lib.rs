@@ -22,9 +22,9 @@ pub enum Command {
     },
     Reconcile,
     Cleanup,
-    HooksStatus,
-    HooksApply,
-    HooksCleanup,
+    Hooks {
+        action: HooksAction,
+    },
     IpStackPoc {
         interface: String,
         max_tcp: usize,
@@ -44,6 +44,13 @@ pub enum Command {
         interface: Option<String>,
         wait_ms: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HooksAction {
+    Status,
+    Apply,
+    Cleanup,
 }
 
 impl Args {
@@ -84,18 +91,28 @@ impl Args {
                     reject_trailing("cleanup", args)?;
                     return Ok(parsed);
                 }
+                "hooks" => {
+                    parsed.command = parse_hooks_args(args)?;
+                    return Ok(parsed);
+                }
                 "hooks-status" => {
-                    parsed.command = Command::HooksStatus;
+                    parsed.command = Command::Hooks {
+                        action: HooksAction::Status,
+                    };
                     reject_trailing("hooks-status", args)?;
                     return Ok(parsed);
                 }
                 "hooks-apply" => {
-                    parsed.command = Command::HooksApply;
+                    parsed.command = Command::Hooks {
+                        action: HooksAction::Apply,
+                    };
                     reject_trailing("hooks-apply", args)?;
                     return Ok(parsed);
                 }
                 "hooks-cleanup" => {
-                    parsed.command = Command::HooksCleanup;
+                    parsed.command = Command::Hooks {
+                        action: HooksAction::Cleanup,
+                    };
                     reject_trailing("hooks-cleanup", args)?;
                     return Ok(parsed);
                 }
@@ -123,6 +140,21 @@ impl Args {
         }
         Ok(parsed)
     }
+}
+
+fn parse_hooks_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        return Err("hooks requires an action: status, apply, cleanup".to_string());
+    };
+    let action = match action.to_string_lossy().as_ref() {
+        "status" => HooksAction::Status,
+        "apply" => HooksAction::Apply,
+        "cleanup" => HooksAction::Cleanup,
+        other => return Err(format!("unknown hooks action {other}")),
+    };
+    reject_trailing("hooks", args)?;
+    Ok(Command::Hooks { action })
 }
 
 fn parse_run_arg<I>(parsed: &mut Args, arg: OsString, args: &mut I) -> Result<(), String>
