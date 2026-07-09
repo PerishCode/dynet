@@ -103,9 +103,9 @@ implementations.
 
 The lifecycle skeleton deliberately stops before installing default routes,
 policy rules, nft hooks, or packet redirection. The nft chains created by
-`apply --auto` are inert because they have no hooks. `hooks-apply` is a separate
+`apply --auto` are inert because they have no hooks. `hooks apply` is a separate
 VM-only stage for the first route and nft hook probe, so the skeleton stays
-safe and the hook layer can be removed independently with `hooks-cleanup`.
+safe and the hook layer can be removed independently with `hooks cleanup`.
 
 The local-safe packet slice parses IPv4 TCP / UDP / DNS packet metadata from
 bytes and maps it into normalized captured flow context. Real `/dev/net/tun`
@@ -126,7 +126,7 @@ Validated on `dynet.lan` on 2026-07-04:
   with `sysctl --load`. The fragment enables IPv4 forwarding, disables IPv6 for
   the first IPv4-only slice, and sets `rp_filter = 0` for `all`, `default`, and
   `dynet0`.
-- `hooks-apply` installs the fwmark rule at priority `10000`, before Linux's
+- `hooks apply` installs the fwmark rule at priority `10000`, before Linux's
   default `main` rule. The earlier `51880` priority sits after `main` and lets
   marked packets escape through the normal default route.
 - With `ipstack-poc --max-tcp=1 --max-udp=0`, a root
@@ -142,7 +142,7 @@ Validated on `dynet.lan` on 2026-07-04:
 - The runtime UDP path also passed: a root UDP DNS query to `1.1.1.1:53` for
   `example.com` returned `rcode=0`, `answers=2` through TUN -> runtime ->
   graph egress.
-- `hooks-cleanup` removed the output hook, priority `10000` fwmark rule, and
+- `hooks cleanup` removed the output hook, priority `10000` fwmark rule, and
   `dynet` route-table default after each validation window, leaving steady
   state with no capture hook, policy route rule, or `dynet` route.
 
@@ -152,7 +152,7 @@ Validated on `dynet.lan` on 2026-07-05:
   `[capture.tun].enabled = true`. The mode is disabled by default.
 - `dynet run` only consumes `dynet0`; it does not install the output hook,
   fwmark rule, or `dynet` route-table default. Those remain explicit
-  `hooks-apply` / `hooks-cleanup` operations.
+  `hooks apply` / `hooks cleanup` operations.
 - A root `curl http://1.1.1.1/` probe returned HTTP `301` through
   TUN -> runtime -> graph egress. Runtime events recorded `tcp-accept` and
   `tcp-close` with `inbound=tun`, `clientToUpstreamBytes=71`, and
@@ -220,10 +220,10 @@ Dedicated service.lan VM validation on 2026-07-09:
   egress is not recaptured.
 - `dynet apply --auto` created the expected dynet-owned fragments, `dynet0`,
   and inert nft skeleton. The IPv4-only sysctl disabled VM IPv6 as intended.
-- A short `hooks-apply` window validated root VM-originated TCP and DNS:
+- A short `hooks apply` window validated root VM-originated TCP and DNS:
   `curl http://1.1.1.1/` returned HTTP `301`, and a UDP DNS query to
   `1.1.1.1:53` for `example.com` returned `rcode=0` with two answers.
-- `hooks-cleanup` then removed the output hook, priority `10000` fwmark rule,
+- `hooks cleanup` then removed the output hook, priority `10000` fwmark rule,
   and `dynet` route-table default. The steady state again has no active capture
   hook.
 - Follow-up validation on the same VM generalized the output hook bypass list

@@ -34,9 +34,9 @@ dynet tun-probe       # VM-only /dev/net/tun TUNSETIFF probe for dynet0
 dynet ipstack-poc     # VM-only direct TCP/UDP TUN consumption probe
 dynet ipstack-runtime-poc
                       # VM-only TUN -> runtime selection -> graph egress probe
-dynet hooks-status    # VM-only capture hook status; no writes
-dynet hooks-apply     # VM-only install of the current output capture hook
-dynet hooks-cleanup   # VM-only removal of current hook route/rule state
+dynet hooks status    # VM-only capture hook status; no writes
+dynet hooks apply     # VM-only install of the current output capture hook
+dynet hooks cleanup   # VM-only removal of current hook route/rule state
 dynet cleanup         # remove dynet-owned isolated fragments only
 dynet run --config dynet.toml
                       # long-running runtime; optional [capture.tun] consumes dynet0
@@ -62,16 +62,16 @@ It has been validated for direct/default graph TCP and UDP/DNS probes. The same
 path is now available to `dynet run` through disabled-by-default `[capture.tun]`
 configuration for long-running VM capture windows.
 
-The first hook slice is VM-only: `hooks-apply` installs a local output hook, a
+The first hook slice is VM-only: `hooks apply` installs a local output hook, a
 fwmark policy rule before the main table, and a dynet route table that routes
 marked VM-originated TCP/UDP traffic to `dynet0`. It bypasses SSH, loopback,
 the dynet service UID, and the default service LAN IPv4 ranges
 `192.168.1.0/24`, `192.168.20.0/24`, and `10.199.0.0/24` so the experiment can
-be cleaned up through `hooks-cleanup` after each validation window.
+be cleaned up through `hooks cleanup` after each validation window.
 
 `dynet run` does not install or remove capture hooks. The host capture lifecycle
 remains explicit: apply the skeleton with `apply --auto`, start `dynet run` with
-`[capture.tun].enabled = true`, then use `hooks-apply` and `hooks-cleanup` for
+`[capture.tun].enabled = true`, then use `hooks apply` and `hooks cleanup` for
 the short VM validation window.
 
 Run real TUN/nft/route/sysctl validation only inside the Proxmox dynet
