@@ -10,7 +10,7 @@ const NFT_FAMILY: &str = "inet";
 const NFT_TABLE: &str = "dynet";
 const OUTPUT_CHAIN: &str = "dynet_output";
 const SERVICE_UID: &str = "1000";
-const LAN_CIDR: &str = "192.168.1.0/24";
+const BYPASS_IPV4_CIDRS: &[&str] = &["192.168.1.0/24", "192.168.20.0/24", "10.199.0.0/24"];
 
 impl LinuxTakeover {
     pub fn hooks_status(&self) -> Vec<TakeoverCheck> {
@@ -358,16 +358,21 @@ impl HookOutputReady for crate::CommandOutput {
 }
 
 fn output_rules() -> Vec<Vec<&'static str>> {
-    vec![
+    let mut rules = vec![
         nft_rule(&["meta", "skuid", SERVICE_UID, "return"]),
         nft_rule(&["ip", "daddr", "127.0.0.0/8", "return"]),
-        nft_rule(&["ip", "daddr", LAN_CIDR, "return"]),
         nft_rule(&["tcp", "sport", "22", "return"]),
         nft_rule(&["tcp", "dport", "22", "return"]),
+    ];
+    for cidr in BYPASS_IPV4_CIDRS {
+        rules.push(nft_rule(&["ip", "daddr", cidr, "return"]));
+    }
+    rules.extend([
         nft_rule(&["udp", "dport", "53", "meta", "mark", "set", DYN_MARK_HEX]),
         nft_rule(&["ip", "protocol", "tcp", "meta", "mark", "set", DYN_MARK_HEX]),
         nft_rule(&["ip", "protocol", "udp", "meta", "mark", "set", DYN_MARK_HEX]),
-    ]
+    ]);
+    rules
 }
 
 fn nft_rule(rule: &[&'static str]) -> Vec<&'static str> {
