@@ -43,13 +43,13 @@ EOF
 section_value() {
   local section="$1"
   local key="$2"
-  local default="$3"
+  local fallback="$3"
   if [[ ! -f "${CONFIG:-}" ]]; then
-    printf '%s\n' "${default}"
+    printf '%s\n' "${fallback}"
     return
   fi
-  awk -v section="${section}" -v key="${key}" -v default="${default}" '
-    BEGIN { in_section = 0; value = default }
+  awk -v section="${section}" -v key="${key}" -v fallback="${fallback}" '
+    BEGIN { in_section = 0; value = fallback }
     /^\[/ {
       in_section = ($0 == "[" section "]")
       next

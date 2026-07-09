@@ -1,20 +1,84 @@
 # dynet
 
-`dynet` is intentionally reset to a minimal Rust project skeleton.
+`dynet` is a full-takeover network runtime.
 
-The previous TUN, DNS hijack, platform takeover, VM lab, proxy runtime, config,
-and command surfaces have been removed so the next design can grow from the new
-boundary:
+Its product shape is intentionally narrow:
 
 ```text
-dynet does not capture traffic.
-dynet does not own system network state.
-dynet assumes any future traffic/context input is provided by an external
-capture frontend.
+dynet owns DNS / UDP / TCP capture.
+dynet owns routing and forwarding decisions.
+dynet owns observability feedback.
 ```
 
-The first reintroduced surface is a minimal local control plane under
-`/api/v1`. Cold start currently exposes:
+Linux cold start is TUN-first and IPv4-only. System integration must use
+dynet-owned `.d` fragments, dedicated route/nft state, and explicit owner
+markers. If an isolated carrier is unavailable, dynet hard fails. `--auto` may
+create missing dynet-owned isolated fragments, but it must never fall back to
+directly overwriting global configuration files.
+
+See `docs/full-takeover.md` for the current architecture direction.
+
+`crates/dynet-capture` now defines the platform-neutral capture boundary:
+backends produce normalized DNS / UDP / TCP flow context, while runtime
+selection, egress execution, and observability remain in the existing core.
+
+Cold-start lifecycle commands:
+
+```bash
+dynet plan            # print the takeover plan; no writes
+dynet doctor          # probe full-takeover prerequisites; no writes
+dynet status          # report current takeover readiness; no writes
+dynet apply --auto    # create missing dynet-owned isolated fragments only
+dynet reconcile       # verify already-applied isolated state
+dynet tun-probe       # VM-only /dev/net/tun TUNSETIFF probe for dynet0
+dynet ipstack-poc     # VM-only direct TCP/UDP TUN consumption probe
+dynet ipstack-runtime-poc
+                      # VM-only TUN -> runtime selection -> graph egress probe
+dynet hooks-status    # VM-only capture hook status; no writes
+dynet hooks-apply     # VM-only install of the current output capture hook
+dynet hooks-cleanup   # VM-only removal of current hook route/rule state
+dynet cleanup         # remove dynet-owned isolated fragments only
+dynet run --config dynet.toml
+                      # long-running runtime; optional [capture.tun] consumes dynet0
+```
+
+Missing parent carriers, missing kernel/device capabilities, or missing
+required host commands are hard failures. `apply --auto` only creates
+dynet-owned fragments when their parent `.d` carrier already exists. It also
+creates the current runtime skeleton, `dynet0` plus an `inet dynet` nftables
+table with inert `bypass` / `dns` / `tcp` / `udp` chains, without installing
+traffic-capturing route or nft hooks.
+
+The local-safe packet path currently parses IPv4 TCP / UDP / DNS packet metadata
+from bytes and maps it into normalized captured flow context. Linux TUN IO can
+bind `dynet0` through `/dev/net/tun` and expose packet read/write. The
+VM-only `ipstack-poc` command validates that captured TCP and UDP/DNS flows can
+be consumed from `dynet0` and direct-forwarded back to the local kernel.
+
+`ipstack-runtime-poc` is the next VM-only slice: it consumes the same TUN TCP
+and UDP streams, converts packet destinations into `TargetContext`, calls
+runtime selection, and relays through the existing graph egress implementation.
+It has been validated for direct/default graph TCP and UDP/DNS probes. The same
+path is now available to `dynet run` through disabled-by-default `[capture.tun]`
+configuration for long-running VM capture windows.
+
+The first hook slice is VM-only: `hooks-apply` installs a local output hook, a
+fwmark policy rule before the main table, and a dynet route table that routes
+marked VM-originated TCP/UDP traffic to `dynet0`. It bypasses SSH, loopback,
+the dynet service UID, and the initial `192.168.1.0/24` LAN management range so
+the experiment can be cleaned up through `hooks-cleanup` after each validation
+window.
+
+`dynet run` does not install or remove capture hooks. The host capture lifecycle
+remains explicit: apply the skeleton with `apply --auto`, start `dynet run` with
+`[capture.tun].enabled = true`, then use `hooks-apply` and `hooks-cleanup` for
+the short VM validation window.
+
+Run real TUN/nft/route/sysctl validation only inside the Proxmox dynet
+experiment VM. Local development should stay limited to build checks, static
+checks, and fake-runner tests.
+
+The local control plane under `/api/v1` currently exposes:
 
 ```text
 GET /api/v1/health
@@ -22,9 +86,10 @@ GET /api/v1/events
 GET /api/v1/dns/observed
 ```
 
-The first ingress experiment is a fixed-upstream TCP/UDP relay set plus a DNS
-relay backed by runtime DNS upstreams. It does not parse HTTP or HTTP/3; it only
-verifies transparent delivery and event capture.
+The current ingress crate still contains fixed-upstream TCP/UDP relay
+experiments plus DNS and SOCKS5 listeners. These are implementation references
+while the full-takeover TUN runtime is introduced; they are not the target
+product boundary.
 
 Default local listeners:
 
@@ -53,6 +118,11 @@ DYNET_SOCKS5_BIND
 DYNET_SOCKS5_UDP_ADVERTISE_IP
 DYNET_SOCKS5_UDP_IDLE_TIMEOUT_MS
 DYNET_SOCKS5_MAX_SESSIONS   # default: 1024 active sessions
+DYNET_CAPTURE_TUN_ENABLED
+DYNET_CAPTURE_TUN_INTERFACE
+DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS
+DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS
+DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS
 ```
 
 `dynet` also reads a TOML config file. `--config <path>` selects a file; without
@@ -84,6 +154,13 @@ udp_advertise_ip = "192.168.5.2"
 udp_idle_timeout_ms = 30000
 max_sessions = 1024
 
+[capture.tun]
+enabled = false
+interface = "dynet0"
+tcp_idle_timeout_ms = 2000
+udp_idle_timeout_ms = 2000
+udp_response_timeout_ms = 1500
+
 [forwarding]
 default_group = "default"
 
@@ -97,8 +174,9 @@ mode = "smart"
 members = ["default-node"]
 ```
 
-For a local Linux VM capture experiment using Mihomo TUN as the external
-capture frontend, see `docs/lab/mihomo-tun.md`.
+For the historical local Linux VM capture experiment using Mihomo TUN as an
+external capture frontend, see `docs/lab/mihomo-tun.md`. That lab is a reference
+only; dynet's target architecture absorbs the capture layer.
 
 For local long-running validation, `scripts/dynetctl.sh` manages one stamped
 background dynet process:

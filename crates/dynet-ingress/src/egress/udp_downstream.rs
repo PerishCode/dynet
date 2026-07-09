@@ -1,10 +1,11 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, sync::mpsc};
 
 #[derive(Debug, Clone)]
 pub(crate) enum UdpDownstream {
     Raw(Arc<UdpSocket>),
+    Channel(mpsc::Sender<Vec<u8>>),
     Socks5 {
         socket: Arc<UdpSocket>,
         response_target: SocketAddr,
@@ -19,6 +20,16 @@ impl UdpDownstream {
     ) -> Result<usize, std::io::Error> {
         match self {
             Self::Raw(socket) => socket.send_to(payload, peer).await,
+            Self::Channel(tx) => tx
+                .send(payload.to_vec())
+                .await
+                .map(|_| payload.len())
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "UDP downstream response channel is closed",
+                    )
+                }),
             Self::Socks5 {
                 socket,
                 response_target,

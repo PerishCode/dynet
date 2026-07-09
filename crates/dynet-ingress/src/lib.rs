@@ -5,9 +5,15 @@ use std::time::Duration;
 use dynet_runtime::{sniff_dns_query, sniff_dns_response, IngressEventKind, RuntimeState};
 use tokio::net::UdpSocket;
 
+mod captured;
 mod egress;
 mod inbound;
 mod socks;
+
+pub use captured::{
+    relay_captured_tcp_graph, relay_captured_udp_graph, CapturedTcpRelayOutcome,
+    CapturedUdpRelayOutcome,
+};
 
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DATAGRAM_LIMIT: usize = 65_535;
