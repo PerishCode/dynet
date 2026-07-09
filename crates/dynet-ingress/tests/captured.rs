@@ -1,6 +1,11 @@
+mod support;
+
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
-use dynet_ingress::{relay_captured_tcp_graph, relay_captured_udp_graph, EgressNodeConfig};
+use dynet_ingress::{
+    relay_captured_tcp_graph, relay_captured_udp_graph, EgressNodeConfig, ShadowsocksConfig,
+    ShadowsocksMethod,
+};
 use dynet_runtime::{IngressEventKind, RuntimeSeed, RuntimeState};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -59,6 +64,41 @@ async fn captured_tcp_graph() {
 }
 
 #[tokio::test]
+async fn captured_tcp_protocol_idle() {
+    let upstream = support::spawn_ss_open_reply("password", b"pong").await;
+    let runtime = RuntimeState::from_seed(RuntimeSeed::single_node("ss"));
+    let (mut client, captured) = tokio::io::duplex(1024);
+    let relay = tokio::spawn(relay_captured_tcp_graph(
+        captured,
+        SocketAddr::from(([127, 0, 0, 1], 40_002)),
+        SocketAddr::from(([127, 0, 0, 1], 80)),
+        ss_nodes(upstream),
+        runtime.clone(),
+        Duration::from_millis(25),
+    ));
+
+    client.write_all(b"ping").await.expect("write captured");
+    let mut response = [0_u8; 4];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("read captured response");
+    assert_eq!(&response, b"pong");
+
+    let outcome = relay.await.expect("relay task").expect("relay succeeds");
+    assert_eq!(outcome.client_to_upstream_bytes, 4);
+    assert_eq!(outcome.upstream_to_client_bytes, 4);
+    assert_eq!(outcome.close_reason, "idle-timeout");
+
+    let events = runtime.events().snapshot();
+    assert!(events.iter().any(|event| {
+        event.kind == IngressEventKind::TcpClose
+            && event.fields.get("nodeProtocol").map(String::as_str) == Some("ss")
+            && event.fields.get("closeReason").map(String::as_str) == Some("idle-timeout")
+    }));
+}
+
+#[tokio::test]
 async fn captured_udp_graph() {
     let upstream = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -112,4 +152,16 @@ async fn captured_udp_graph() {
 
 fn direct_nodes() -> BTreeMap<String, EgressNodeConfig> {
     BTreeMap::from([("default-node".to_string(), EgressNodeConfig::Direct)])
+}
+
+fn ss_nodes(upstream: SocketAddr) -> BTreeMap<String, EgressNodeConfig> {
+    BTreeMap::from([(
+        "default-node".to_string(),
+        EgressNodeConfig::Shadowsocks(ShadowsocksConfig {
+            server: upstream.ip().to_string(),
+            port: upstream.port(),
+            method: ShadowsocksMethod::Aes256Gcm,
+            password: "password".to_string(),
+        }),
+    )])
 }

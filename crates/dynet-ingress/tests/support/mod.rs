@@ -22,7 +22,7 @@ use hkdf::Hkdf;
 use md5::{Digest, Md5};
 use sha1::Sha1;
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
     task::JoinHandle,
     time,
@@ -79,20 +79,6 @@ pub async fn spawn_dns_a_sequence(addresses: Vec<Ipv4Addr>) -> SocketAddr {
     dns_addr
 }
 
-pub async fn spawn_ss_salt_server() -> (SocketAddr, JoinHandle<[u8; 32]>) {
-    let listener = TcpListener::bind(local_addr())
-        .await
-        .expect("bind ss server");
-    let address = listener.local_addr().expect("ss server addr");
-    let task = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("accept ss server");
-        let mut salt = [0_u8; 32];
-        stream.read_exact(&mut salt).await.expect("read ss salt");
-        salt
-    });
-    (address, task)
-}
-
 pub async fn spawn_ss_header_server(password: &'static str) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind(local_addr())
         .await
@@ -120,6 +106,32 @@ pub async fn spawn_ss_header_server(password: &'static str) -> (SocketAddr, Join
         reader.decrypt(&encrypted_header)
     });
     (address, task)
+}
+
+pub async fn spawn_ss_open_reply(password: &'static str, response: &'static [u8]) -> SocketAddr {
+    let listener = TcpListener::bind(local_addr())
+        .await
+        .expect("bind ss server");
+    let address = listener.local_addr().expect("ss server addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept ss server");
+        let mut request_salt = [0_u8; SS_AES_256_GCM_SALT_SIZE];
+        stream
+            .read_exact(&mut request_salt)
+            .await
+            .expect("read ss request salt");
+        let mut reader = SsAeadReader::new(password, &request_salt);
+        let _target = read_ss_chunk(&mut stream, &mut reader).await;
+        let _request = read_ss_chunk(&mut stream, &mut reader).await;
+
+        let response_salt = [0x44_u8; SS_AES_256_GCM_SALT_SIZE];
+        let mut writer = SsAeadWriter::new(password, &response_salt);
+        let mut packet = response_salt.to_vec();
+        writer.encrypt_chunk(response, &mut packet);
+        stream.write_all(&packet).await.expect("write ss response");
+        time::sleep(Duration::from_secs(5)).await;
+    });
+    address
 }
 
 pub async fn spawn_tcp_prefix_server<const N: usize>() -> (SocketAddr, JoinHandle<[u8; N]>) {
@@ -172,6 +184,52 @@ impl SsAeadReader {
         increment_ss_nonce(&mut self.nonce);
         plaintext
     }
+}
+
+struct SsAeadWriter {
+    cipher: Aes256Gcm,
+    nonce: [u8; SS_AEAD_NONCE_SIZE],
+}
+
+impl SsAeadWriter {
+    fn new(password: &str, salt: &[u8]) -> Self {
+        Self {
+            cipher: Aes256Gcm::new_from_slice(&ss_derive_subkey(password, salt)).unwrap(),
+            nonce: [0_u8; SS_AEAD_NONCE_SIZE],
+        }
+    }
+
+    fn encrypt_chunk(&mut self, plaintext: &[u8], out: &mut Vec<u8>) {
+        let length = (plaintext.len() as u16).to_be_bytes();
+        out.extend_from_slice(&self.encrypt(&length));
+        out.extend_from_slice(&self.encrypt(plaintext));
+    }
+
+    fn encrypt(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        let nonce = self.nonce;
+        let ciphertext = self
+            .cipher
+            .encrypt(Nonce::from_slice(&nonce), plaintext)
+            .unwrap();
+        increment_ss_nonce(&mut self.nonce);
+        ciphertext
+    }
+}
+
+async fn read_ss_chunk(stream: &mut tokio::net::TcpStream, reader: &mut SsAeadReader) -> Vec<u8> {
+    let mut encrypted_length = [0_u8; 2 + SS_AEAD_TAG_SIZE];
+    stream
+        .read_exact(&mut encrypted_length)
+        .await
+        .expect("read ss chunk length");
+    let length = reader.decrypt(&encrypted_length);
+    let length = u16::from_be_bytes([length[0], length[1]]) as usize;
+    let mut encrypted_payload = vec![0_u8; length + SS_AEAD_TAG_SIZE];
+    stream
+        .read_exact(&mut encrypted_payload)
+        .await
+        .expect("read ss chunk payload");
+    reader.decrypt(&encrypted_payload)
 }
 
 fn ss_derive_subkey(password: &str, salt: &[u8]) -> Vec<u8> {

@@ -8,8 +8,8 @@ use vless_prototype::{
 
 use crate::{
     egress::{
-        count_downstream, relay_udp_response, DirectEgress, EgressError, EgressNode,
-        TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
+        await_relay_idle, count_downstream, relay_udp_response, DirectEgress, EgressError,
+        EgressNode, TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
         UdpRelayAssociation, UdpRelayOutcome,
     },
     VlessConfig,
@@ -61,23 +61,27 @@ impl VlessEgress {
             .await
             .map_err(|error| vless_error(error, None))?;
         let (mut downstream, byte_counts) = count_downstream(session.downstream);
-        let (client_to_upstream, upstream_to_client) =
-            io::copy_bidirectional(&mut downstream, &mut upstream)
-                .await
-                .map_err(|error| {
-                    EgressError::new(
-                        "relay",
-                        Some(parts.upstream),
-                        format!("VLESS TCP relay failed: {error}"),
-                    )
-                    .with_plaintext_bytes(byte_counts)
-                })?;
-        Ok(TcpRelayOutcome {
-            upstream: parts.upstream,
-            client_to_upstream_bytes: client_to_upstream,
-            upstream_to_client_bytes: upstream_to_client,
-            close_reason: "normal",
-        })
+        let error_counts = byte_counts.clone();
+        let relay = async {
+            let (client_to_upstream, upstream_to_client) =
+                io::copy_bidirectional(&mut downstream, &mut upstream)
+                    .await
+                    .map_err(|error| {
+                        EgressError::new(
+                            "relay",
+                            Some(parts.upstream),
+                            format!("VLESS TCP relay failed: {error}"),
+                        )
+                        .with_plaintext_bytes(error_counts)
+                    })?;
+            Ok(TcpRelayOutcome {
+                upstream: parts.upstream,
+                client_to_upstream_bytes: client_to_upstream,
+                upstream_to_client_bytes: upstream_to_client,
+                close_reason: "normal",
+            })
+        };
+        await_relay_idle(relay, byte_counts, session.idle_timeout, parts.upstream).await
     }
 
     pub(super) async fn handle_udp_via_dialer<D>(

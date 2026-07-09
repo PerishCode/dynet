@@ -6,8 +6,8 @@ use tokio::{io, time};
 use crate::{ShadowsocksConfig, ShadowsocksMethod, DATAGRAM_LIMIT};
 
 use super::{
-    count_downstream, relay_udp_response, udp_step, DirectEgress, EgressError, EgressNode,
-    TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
+    await_relay_idle, count_downstream, relay_udp_response, udp_step, DirectEgress, EgressError,
+    EgressNode, TcpDialConnection, TcpDialTarget, TcpDialer, TcpRelayOutcome, TcpRelaySession,
     UdpRelayAssociation, UdpRelayOutcome, UdpStep,
 };
 
@@ -50,17 +50,20 @@ impl ShadowsocksEgress {
         let upstream_addr = upstream.upstream();
         let upstream = upstream.into_io();
         let (downstream, byte_counts) = count_downstream(session.downstream);
-        let outcome = self
-            .client
-            .relay_tcp_with_io(downstream, upstream_addr, upstream, session.target)
-            .await
-            .map_err(|error| shadowsocks_error(error, None).with_plaintext_bytes(byte_counts))?;
-        Ok(TcpRelayOutcome {
-            upstream: outcome.upstream,
-            client_to_upstream_bytes: outcome.client_to_upstream_bytes,
-            upstream_to_client_bytes: outcome.upstream_to_client_bytes,
-            close_reason: "normal",
-        })
+        let error_counts = byte_counts.clone();
+        let relay = async {
+            self.client
+                .relay_tcp_with_io(downstream, upstream_addr, upstream, session.target)
+                .await
+                .map(|outcome| TcpRelayOutcome {
+                    upstream: outcome.upstream,
+                    client_to_upstream_bytes: outcome.client_to_upstream_bytes,
+                    upstream_to_client_bytes: outcome.upstream_to_client_bytes,
+                    close_reason: "normal",
+                })
+                .map_err(|error| shadowsocks_error(error, None).with_plaintext_bytes(error_counts))
+        };
+        await_relay_idle(relay, byte_counts, session.idle_timeout, upstream_addr).await
     }
 }
 
