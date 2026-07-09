@@ -65,9 +65,9 @@ configuration for long-running VM capture windows.
 The first hook slice is VM-only: `hooks-apply` installs a local output hook, a
 fwmark policy rule before the main table, and a dynet route table that routes
 marked VM-originated TCP/UDP traffic to `dynet0`. It bypasses SSH, loopback,
-the dynet service UID, and the initial `192.168.1.0/24` LAN management range so
-the experiment can be cleaned up through `hooks-cleanup` after each validation
-window.
+the dynet service UID, and the default service LAN IPv4 ranges
+`192.168.1.0/24`, `192.168.20.0/24`, and `10.199.0.0/24` so the experiment can
+be cleaned up through `hooks-cleanup` after each validation window.
 
 `dynet run` does not install or remove capture hooks. The host capture lifecycle
 remains explicit: apply the skeleton with `apply --auto`, start `dynet run` with

@@ -214,9 +214,11 @@ Dedicated service.lan VM validation on 2026-07-09:
 - `hooks-cleanup` then removed the output hook, priority `10000` fwmark rule,
   and `dynet` route-table default. The steady state again has no active capture
   hook.
-- The current output hook only bypasses `192.168.1.0/24`, not the service LAN
-  `192.168.20.0/24`; keep validation probes on public IPv4 targets until the
-  bypass model is generalized.
+- Follow-up validation on the same VM generalized the output hook bypass list
+  to include `192.168.1.0/24`, `192.168.20.0/24`, and `10.199.0.0/24`.
+  A short hook window confirmed all three return rules were present, while the
+  public IPv4 TCP and UDP/DNS probes still passed. Cleanup again left no active
+  output hook, fwmark rule, or `dynet` route-table default.
 
 All verification that creates TUN devices, nftables state, route tables, sysctl
 fragments, or other host networking state must run inside the Proxmox dynet

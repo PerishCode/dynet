@@ -165,6 +165,9 @@ fn hooks_apply_installs_capture() {
         "nft add chain inet dynet dynet_output { type route hook output priority mangle; policy accept; }"
     ));
     assert!(runner.called("nft add rule inet dynet dynet_output meta skuid 1000 return"));
+    assert!(runner.called("nft add rule inet dynet dynet_output ip daddr 192.168.1.0/24 return"));
+    assert!(runner.called("nft add rule inet dynet dynet_output ip daddr 192.168.20.0/24 return"));
+    assert!(runner.called("nft add rule inet dynet dynet_output ip daddr 10.199.0.0/24 return"));
     assert!(
         runner.called("nft add rule inet dynet dynet_output ip protocol tcp meta mark set 0x51880")
     );
