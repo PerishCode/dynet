@@ -108,27 +108,6 @@ impl Args {
                     parsed.command = parse_hooks_args(args)?;
                     return Ok(parsed);
                 }
-                "hooks-status" => {
-                    parsed.command = Command::Hooks {
-                        action: HooksAction::Status,
-                    };
-                    reject_trailing("hooks-status", args)?;
-                    return Ok(parsed);
-                }
-                "hooks-apply" => {
-                    parsed.command = Command::Hooks {
-                        action: HooksAction::Apply,
-                    };
-                    reject_trailing("hooks-apply", args)?;
-                    return Ok(parsed);
-                }
-                "hooks-cleanup" => {
-                    parsed.command = Command::Hooks {
-                        action: HooksAction::Cleanup,
-                    };
-                    reject_trailing("hooks-cleanup", args)?;
-                    return Ok(parsed);
-                }
                 "ipstack-poc" => {
                     parsed.command = parse_ipstack_poc_args(args)?;
                     return Ok(parsed);
