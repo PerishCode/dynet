@@ -130,30 +130,6 @@ fn parses_lifecycle_commands() {
             action: HooksAction::Cleanup
         }
     );
-
-    let args = Args::parse([OsString::from("hooks-status")]).expect("args parse");
-    assert_eq!(
-        args.command,
-        Command::Hooks {
-            action: HooksAction::Status
-        }
-    );
-
-    let args = Args::parse([OsString::from("hooks-apply")]).expect("args parse");
-    assert_eq!(
-        args.command,
-        Command::Hooks {
-            action: HooksAction::Apply
-        }
-    );
-
-    let args = Args::parse([OsString::from("hooks-cleanup")]).expect("args parse");
-    assert_eq!(
-        args.command,
-        Command::Hooks {
-            action: HooksAction::Cleanup
-        }
-    );
 }
 
 #[test]
@@ -279,6 +255,14 @@ fn rejects_unknown_arg() {
     let error = Args::parse([OsString::from("--listen")]).expect_err("unknown arg rejected");
 
     assert!(error.contains("unknown argument"));
+}
+
+#[test]
+fn rejects_flat_hooks_aliases() {
+    for command in ["hooks-status", "hooks-apply", "hooks-cleanup"] {
+        let error = Args::parse([OsString::from(command)]).expect_err("flat hooks alias rejected");
+        assert!(error.contains(command));
+    }
 }
 
 #[test]
