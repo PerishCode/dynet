@@ -24,6 +24,7 @@ async fn restart_hydrates_matrix() {
         [
             ("sessionId", "7".to_string()),
             ("decisionId", "7".to_string()),
+            ("configGeneration", "1".to_string()),
             ("inbound", "tcp".to_string()),
             ("nodeProtocol", "direct".to_string()),
             ("target", "203.0.113.10:443".to_string()),
@@ -63,6 +64,7 @@ async fn restart_hydrates_matrix() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].session_key, "tcp:7:7");
     assert_eq!(sessions[0].close_reason.as_deref(), Some("eof"));
+    assert_eq!(sessions[0].config_generation, Some(1));
 
     let stats = restarted.matrix_node_stats();
     let default_stats = stats
@@ -125,6 +127,53 @@ async fn restart_skips_active() {
 
     assert!(restarted.matrix().traffic_sessions().is_empty());
     assert!(restarted.matrix_node_stats().is_empty());
+}
+
+#[tokio::test]
+async fn restart_continues_observation_ids() {
+    let fixture = StoreFixture::open().await;
+    let runtime =
+        RuntimeState::from_store_seed(fixture.store.clone(), RuntimeSeed::single_node("direct"))
+            .await
+            .expect("runtime state");
+
+    let session_id = runtime.events().next_session_id();
+    let decision = runtime
+        .select(selection_context(session_id))
+        .expect("selection succeeds");
+    runtime.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", session_id.to_string()),
+            ("decisionId", decision.decision_id.to_string()),
+            ("inbound", "tcp".to_string()),
+        ],
+    );
+    fixture.wait_for_count("runtime_traffic_sessions", 1).await;
+    fixture.wait_for_count("selection_decisions", 1).await;
+
+    let restarted =
+        RuntimeState::from_store_seed(fixture.store.clone(), RuntimeSeed::single_node("changed"))
+            .await
+            .expect("restarted runtime state");
+    let next_session_id = restarted.events().next_session_id();
+    let next_decision = restarted
+        .select(selection_context(next_session_id))
+        .expect("selection succeeds");
+    restarted.events().record(
+        IngressEventKind::TcpAccept,
+        [
+            ("sessionId", next_session_id.to_string()),
+            ("decisionId", next_decision.decision_id.to_string()),
+            ("inbound", "tcp".to_string()),
+        ],
+    );
+
+    assert_eq!(next_session_id, session_id + 1);
+    assert_eq!(next_decision.decision_id, decision.decision_id + 1);
+    assert_eq!(restarted.events().snapshot()[0].id, 2);
+    fixture.wait_for_count("runtime_traffic_sessions", 2).await;
+    fixture.wait_for_count("selection_decisions", 2).await;
 }
 
 struct StoreFixture {

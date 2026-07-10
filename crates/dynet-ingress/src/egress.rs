@@ -12,6 +12,7 @@ use crate::EgressNodeConfig;
 mod direct;
 mod graph;
 mod observation;
+mod reloadable;
 mod shadowsocks;
 mod trojan;
 mod udp_downstream;
@@ -24,6 +25,7 @@ pub(crate) use graph::GraphEgress;
 pub(crate) use observation::{
     count_downstream, push_egress_error_fields, EgressError, PlaintextByteCounts,
 };
+pub use reloadable::ReloadableEgress;
 use shadowsocks::ShadowsocksEgress;
 use trojan::TrojanEgress;
 pub(crate) use udp_downstream::UdpDownstream;

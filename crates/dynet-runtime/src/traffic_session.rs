@@ -21,6 +21,7 @@ pub struct TrafficSession {
     pub session_key: String,
     pub session_id: u64,
     pub decision_id: Option<u64>,
+    pub config_generation: Option<u64>,
     pub inbound: String,
     pub node_protocol: Option<String>,
     pub peer: Option<String>,
@@ -60,6 +61,7 @@ pub(crate) struct TrafficSessionUpdate {
     pub session_key: String,
     pub session_id: u64,
     pub decision_id: Option<u64>,
+    pub config_generation: Option<u64>,
     pub inbound: String,
     pub observed_at_unix_ms: u128,
     pub node_protocol: Option<String>,
@@ -160,6 +162,7 @@ impl TrafficSession {
             session_key: update.session_key.clone(),
             session_id: update.session_id,
             decision_id: update.decision_id,
+            config_generation: update.config_generation,
             inbound: update.inbound.clone(),
             node_protocol: None,
             peer: None,
@@ -197,6 +200,7 @@ impl TrafficSession {
 
     fn apply_update(&mut self, update: TrafficSessionUpdate) {
         self.decision_id = self.decision_id.or(update.decision_id);
+        self.config_generation = self.config_generation.or(update.config_generation);
         set_if_some(&mut self.node_protocol, update.node_protocol);
         set_if_some(&mut self.peer, update.peer);
         set_if_some(&mut self.target, update.target);
@@ -298,6 +302,10 @@ pub(crate) fn session_update_from_event(event: &IngressEvent) -> Option<TrafficS
         session_key,
         session_id,
         decision_id,
+        config_generation: event
+            .fields
+            .get("configGeneration")
+            .and_then(|value| parse_u64(value)),
         inbound,
         observed_at_unix_ms: event.observed_at_unix_ms,
         node_protocol: event.fields.get("nodeProtocol").cloned(),

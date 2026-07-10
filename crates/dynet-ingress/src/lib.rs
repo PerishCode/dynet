@@ -11,9 +11,10 @@ mod inbound;
 mod socks;
 
 pub use captured::{
-    relay_captured_tcp_graph, relay_captured_udp_graph, CapturedTcpRelayOutcome,
-    CapturedUdpRelayOutcome,
+    relay_captured_tcp_graph, relay_captured_tcp_reloadable, relay_captured_udp_graph,
+    relay_captured_udp_reloadable, CapturedTcpRelayOutcome, CapturedUdpRelayOutcome,
 };
+pub use egress::ReloadableEgress;
 
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DATAGRAM_LIMIT: usize = 65_535;
@@ -246,6 +247,14 @@ pub async fn run_tcp_graph(
     .await
 }
 
+pub async fn run_tcp_reloadable(
+    config: TcpRelayConfig,
+    egress: ReloadableEgress,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    inbound::run_tcp(config, egress, runtime).await
+}
+
 pub async fn run_udp_with_egress(
     config: UdpRelayConfig,
     node_config: EgressNodeConfig,
@@ -272,6 +281,14 @@ pub async fn run_udp_graph(
     .await
 }
 
+pub async fn run_udp_reloadable(
+    config: UdpRelayConfig,
+    egress: ReloadableEgress,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    inbound::run_udp(config, egress, runtime).await
+}
+
 pub async fn run_socks5_with_egress(
     config: Socks5IngressConfig,
     node_config: EgressNodeConfig,
@@ -296,6 +313,14 @@ pub async fn run_socks5_graph(
         runtime,
     )
     .await
+}
+
+pub async fn run_socks5_reloadable(
+    config: Socks5IngressConfig,
+    egress: ReloadableEgress,
+    runtime: RuntimeState,
+) -> Result<(), String> {
+    socks::run_socks5(config, egress, runtime).await
 }
 
 fn dns_response_fields(
@@ -365,6 +390,7 @@ pub(crate) fn push_decision_fields(
     decision: &dynet_runtime::SelectionDecision,
 ) {
     fields.push(("decisionId", decision.decision_id.to_string()));
+    fields.push(("configGeneration", decision.config_generation.to_string()));
     fields.push(("groupId", decision.group_id.to_string()));
     if let Some(rule_id) = &decision.matched_rule_id {
         fields.push(("matchedRuleId", rule_id.to_string()));

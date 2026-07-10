@@ -46,6 +46,11 @@ dynet run --config dynet.toml
                       # long-running runtime; optional [capture.tun] consumes dynet0
 ```
 
+The long-running runtime handles `SIGHUP` as an explicit configuration reload.
+It parses and validates the complete candidate before publishing anything.
+Invalid candidates and changes that require a restart keep the last-good
+generation active. A no-op is audited without incrementing the generation.
+
 Missing parent carriers, missing kernel/device capabilities, or missing
 required host commands are hard failures. `apply --auto` only creates
 dynet-owned fragments when their parent `.d` carrier already exists. It also
@@ -88,7 +93,19 @@ The local control plane under `/api/v1` currently exposes:
 GET /api/v1/health
 GET /api/v1/events
 GET /api/v1/dns/observed
+GET /api/v1/runtime/config
+GET /api/v1/runtime/reloads
+GET /api/v1/observability/sessions
+GET /api/v1/observability/matrix/shadow
+GET /api/v1/observability/matrix/signals/error
+GET /api/v1/observability/matrix/stats/nodes
+GET /api/v1/observability/matrix/stats/targets
 ```
+
+`events`, `runtime/reloads`, and `observability/sessions` accept bounded query
+filters. Events support `afterId`, `limit`, `kind`, `sessionId`, and
+`configGeneration`; reload audit supports `afterId`, `limit`, and `outcome`;
+sessions support `limit`, `inbound`, `sessionId`, and `configGeneration`.
 
 The current ingress crate still contains fixed-upstream TCP/UDP relay
 experiments plus DNS and SOCKS5 listeners. These are implementation references
@@ -140,6 +157,33 @@ node protocol counts, group member counts, route counts, and DNS upstream
 count. It intentionally does not print proxy endpoints, passwords, UUIDs, SNI,
 Reality public keys, short IDs, or group member node IDs. `dynet config validate
 --config <path>` only checks that the file loads after environment overrides.
+
+The configuration file plus the process's inherited `DYNET_*` environment is
+the runtime authority. Environment values are re-read on reload, but an
+external process cannot change an already-running process environment; changing
+service environment therefore requires a restart. SQLite transactionally
+mirrors the current forwarding seed and preserves events, completed sessions,
+matrix observations, and shadow decisions across restarts. It does not override
+the current file/environment configuration. When a retained database is opened,
+event, session, and decision IDs continue from their persisted high-water marks;
+resetting those counters would make a new session collide with an older
+`runtime_traffic_sessions` key and corrupt its audit timeline.
+
+The current reload contract is all-or-nothing:
+
+- `forwarding` and the three `capture.tun` timeout values are hot reloadable.
+- control/ingress binds, fixed ingress upstreams and capacity limits,
+  `capture.tun.enabled`, and `capture.tun.interface` require a process restart.
+- mixed candidates containing any restart-required field are rejected as a
+  whole; hot fields from that candidate are not partially applied.
+- new decisions carry `configGeneration`; the execution layer retains a bounded
+  set of compiled egress generations so a decision cannot cross into a newer
+  graph between selection and dialing. Existing sessions remain on their
+  selected generation.
+- reload audit is available through `/api/v1/runtime/reloads`; current source,
+  semantic SHA-256 fingerprint, generation, and last outcome are available
+  through `/api/v1/runtime/config`. Values and proxy credentials are never
+  included in these responses.
 
 ```toml
 [control]

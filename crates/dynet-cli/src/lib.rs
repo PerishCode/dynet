@@ -3,6 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod runtime_reload;
+pub use runtime_reload::{ReloadResult, RuntimeReload};
+
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct Args {
     pub command: Command,

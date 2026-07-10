@@ -81,6 +81,7 @@ async fn traffic_sessions_snapshot() {
         [
             ("sessionId", "7".to_string()),
             ("decisionId", "3".to_string()),
+            ("configGeneration", "1".to_string()),
             ("inbound", "tcp".to_string()),
             ("nodeProtocol", "direct".to_string()),
             ("peer", "127.0.0.1:50000".to_string()),
@@ -122,6 +123,7 @@ async fn traffic_sessions_snapshot() {
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
     assert_eq!(payload["sessions"][0]["sessionId"], 7);
     assert_eq!(payload["sessions"][0]["decisionId"], 3);
+    assert_eq!(payload["sessions"][0]["configGeneration"], 1);
     assert_eq!(payload["sessions"][0]["targetSource"], "fixed-upstream");
     assert_eq!(payload["sessions"][0]["clientToUpstreamBytes"], 11);
     assert_eq!(payload["sessions"][0]["upstreamToClientBytes"], 17);

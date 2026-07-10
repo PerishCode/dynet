@@ -38,10 +38,12 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   capture boundary.
 - `crates/dynet-runtime/` owns the shared runtime facade, event store, node
   metadata, DNS-map placeholder, selector-matrix placeholder, and forwarding
-  selection decision boundary. Keep hot runtime state and future persistence
-  hooks here instead of hiding them inside ingress adapters.
+  selection decision boundary. It also owns atomic routing generations,
+  configuration reload audit state, persisted observation ID watermarks, and
+  the SQLite forwarding mirror. Keep hot runtime state and persistence hooks
+  here instead of hiding them inside ingress adapters.
 - `crates/dynet-state/` owns the current in-memory `AppState { config }` shape
-  for cold-start ports and upstreams.
+  plus reload field classification and semantic configuration fingerprints.
 - `docs/lab/` owns historical external capture-frontend lab runbooks and sample
   configs. Keep them as references while the full-takeover runtime replaces
   that model.
@@ -81,6 +83,6 @@ cargo test --locked --workspace
 scripts/smoke/ingress.sh
 ```
 
-Run `dynet ipstack-poc`, `dynet hooks-apply`, `dynet hooks-cleanup`, and any
+Run `dynet ipstack-poc`, `dynet hooks apply`, `dynet hooks cleanup`, and any
 command that creates TUN/nft/route/sysctl state only inside the Proxmox dynet
 experiment VM.

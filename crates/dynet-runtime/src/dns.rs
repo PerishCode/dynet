@@ -46,9 +46,9 @@ pub struct DnsResolveError {
 
 impl RuntimeState {
     pub async fn resolve_dns_wire(&self, query: Vec<u8>) -> Result<DnsResolution, DnsResolveError> {
-        let policy = self.dns_policy();
+        let (policy, upstream_store) = self.dns_config();
         let query_info = sniff_dns_query(&query);
-        let upstreams = enabled_upstreams(self.dns_upstreams().snapshot());
+        let upstreams = enabled_upstreams(upstream_store.snapshot());
         if upstreams.is_empty() {
             return Err(DnsResolveError::new(
                 "no enabled DNS upstreams are configured",

@@ -6,7 +6,52 @@ use crate::{
     MatrixShadowCandidate, MatrixShadowDecision, MATRIX_SHADOW_LIMIT,
 };
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeIdWatermarks {
+    pub(crate) event_id: u64,
+    pub(crate) session_id: u64,
+    pub(crate) decision_id: u64,
+}
+
 impl RuntimeStore {
+    pub(crate) async fn load_id_watermarks(
+        &self,
+    ) -> Result<RuntimeIdWatermarks, RuntimeStoreError> {
+        let event_id =
+            sqlx::query_scalar::<_, i64>("select coalesce(max(event_id), 0) from runtime_events")
+                .fetch_one(&self.pool)
+                .await?;
+        let session_id = sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(value), 0)
+             from (
+                select max(session_id) as value from runtime_traffic_sessions
+                union all
+                select max(session_id) as value from selection_decisions
+                union all
+                select max(session_id) as value from matrix_shadow_decisions
+             )",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let decision_id = sqlx::query_scalar::<_, i64>(
+            "select coalesce(max(value), 0)
+             from (
+                select max(decision_id) as value from runtime_traffic_sessions
+                union all
+                select max(decision_id) as value from selection_decisions
+                union all
+                select max(decision_id) as value from matrix_shadow_decisions
+             )",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(RuntimeIdWatermarks {
+            event_id: i64_to_u64(event_id),
+            session_id: i64_to_u64(session_id),
+            decision_id: i64_to_u64(decision_id),
+        })
+    }
+
     pub(crate) async fn load_recent_traffic_sessions(
         &self,
     ) -> Result<Vec<TrafficSession>, RuntimeStoreError> {
@@ -52,6 +97,9 @@ fn row_to_traffic_session(row: SqliteRow) -> Result<TrafficSession, RuntimeStore
         session_key: row.get("session_key"),
         session_id: i64_to_u64(row.get("session_id")),
         decision_id: row.get::<Option<i64>, _>("decision_id").map(i64_to_u64),
+        config_generation: row
+            .get::<Option<i64>, _>("config_generation")
+            .map(i64_to_u64),
         inbound: row.get("inbound"),
         node_protocol: row.get("node_protocol"),
         peer: row.get("peer_addr"),

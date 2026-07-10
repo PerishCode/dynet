@@ -173,6 +173,7 @@ pub struct RuntimeSeed {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SelectionDecision {
     pub decision_id: u64,
+    pub config_generation: u64,
     pub group_id: GroupId,
     pub matched_rule_id: Option<RuleId>,
     pub node_id: NodeId,

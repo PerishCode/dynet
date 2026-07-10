@@ -3,8 +3,8 @@ mod support;
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
 use dynet_ingress::{
-    relay_captured_tcp_graph, relay_captured_udp_graph, EgressNodeConfig, ShadowsocksConfig,
-    ShadowsocksMethod,
+    relay_captured_tcp_graph, relay_captured_udp_graph, EgressNodeConfig, ReloadableEgress,
+    ShadowsocksConfig, ShadowsocksMethod,
 };
 use dynet_runtime::{IngressEventKind, RuntimeSeed, RuntimeState};
 use tokio::{
@@ -152,6 +152,26 @@ async fn captured_udp_graph() {
 
 fn direct_nodes() -> BTreeMap<String, EgressNodeConfig> {
     BTreeMap::from([("default-node".to_string(), EgressNodeConfig::Direct)])
+}
+
+#[test]
+fn installs_generations() {
+    let egress = ReloadableEgress::new(1, direct_nodes()).expect("initial graph");
+    egress.install(2, direct_nodes()).expect("next graph");
+
+    assert_eq!(egress.generations(), [1, 2]);
+}
+
+#[test]
+fn bounds_generations() {
+    let egress = ReloadableEgress::new(1, direct_nodes()).expect("initial graph");
+    for generation in 2..=12 {
+        egress
+            .install(generation, direct_nodes())
+            .expect("generation installs");
+    }
+
+    assert_eq!(egress.generations(), (5..=12).collect::<Vec<_>>());
 }
 
 fn ss_nodes(upstream: SocketAddr) -> BTreeMap<String, EgressNodeConfig> {

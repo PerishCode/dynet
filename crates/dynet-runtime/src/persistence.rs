@@ -7,8 +7,7 @@ use sqlx::{
 
 use crate::{
     traffic_session::{session_update_from_event, TrafficSessionUpdate},
-    unix_ms, InboundKind, IngressEvent, IngressEventKind, MatrixShadowDecision, SelectionContext,
-    SelectionDecision,
+    unix_ms, InboundKind, IngressEvent, MatrixShadowDecision, SelectionContext, SelectionDecision,
 };
 
 mod bootstrap;
@@ -19,11 +18,12 @@ mod sink;
 mod validation;
 
 pub(crate) use bootstrap::RuntimeBootstrap;
+pub(crate) use recovery::RuntimeIdWatermarks;
 pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "12";
+const SCHEMA_VERSION: &str = "13";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {
@@ -132,7 +132,8 @@ impl RuntimeStore {
                 first_upstream_at_unix_ms,
                 first_downstream_at_unix_ms,
                 first_response_latency_ms,
-                last_observed_at_unix_ms
+                last_observed_at_unix_ms,
+                config_generation
              )
              values (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
@@ -147,10 +148,12 @@ impl RuntimeStore {
                 case when ?28 is null then null else ?31 end,
                 case when ?29 is null then null else ?31 end,
                 case when ?29 is null then null else max(?31 - ?16, 0) end,
-                ?31
+                ?31,
+                ?32
              )
              on conflict(session_key) do update set
                 decision_id = coalesce(runtime_traffic_sessions.decision_id, excluded.decision_id),
+                config_generation = coalesce(runtime_traffic_sessions.config_generation, excluded.config_generation),
                 node_protocol = coalesce(excluded.node_protocol, runtime_traffic_sessions.node_protocol),
                 peer_addr = coalesce(excluded.peer_addr, runtime_traffic_sessions.peer_addr),
                 target_addr = coalesce(excluded.target_addr, runtime_traffic_sessions.target_addr),
@@ -228,6 +231,7 @@ impl RuntimeStore {
         .bind(update.upstream_to_client_datagram.map(u64_to_i64))
         .bind(update.closes_session)
         .bind(u128_to_i64(update.observed_at_unix_ms))
+        .bind(update.config_generation.map(u64_to_i64))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -254,9 +258,10 @@ impl RuntimeStore {
                 next,
                 reason,
                 scheduler,
-                candidate_count
+                candidate_count,
+                config_generation
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )
         .bind(u64_to_i64(decision.decision_id))
         .bind(u128_to_i64(observed_at_unix_ms))
@@ -272,6 +277,7 @@ impl RuntimeStore {
         .bind(decision.reason.as_str())
         .bind(decision.scheduler.as_str())
         .bind(usize_to_i64(decision.candidate_count))
+        .bind(u64_to_i64(decision.config_generation))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -380,23 +386,6 @@ fn u128_to_i64(value: u128) -> i64 {
 
 pub(super) fn usize_to_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-impl IngressEventKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::DnsQuery => "dns-query",
-            Self::DnsResponse => "dns-response",
-            Self::DnsError => "dns-error",
-            Self::TcpAccept => "tcp-accept",
-            Self::TcpClose => "tcp-close",
-            Self::TcpError => "tcp-error",
-            Self::UdpSessionStart => "udp-session-start",
-            Self::UdpDatagram => "udp-datagram",
-            Self::UdpSessionClose => "udp-session-close",
-            Self::UdpError => "udp-error",
-        }
-    }
 }
 
 impl InboundKind {

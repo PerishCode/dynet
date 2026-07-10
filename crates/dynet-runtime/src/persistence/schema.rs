@@ -90,6 +90,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
         "create table if not exists selection_decisions (
             row_id integer primary key autoincrement,
             decision_id integer not null,
+            config_generation integer not null default 1,
             observed_at_unix_ms integer not null,
             session_id integer not null,
             inbound text not null,
@@ -112,6 +113,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
             session_key text primary key,
             session_id integer not null,
             decision_id integer,
+            config_generation integer,
             inbound text not null,
             node_protocol text,
             peer_addr text,
@@ -191,6 +193,20 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
         "runtime_nodes",
         "fingerprint",
         "alter table runtime_nodes add column fingerprint text not null default ''",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "selection_decisions",
+        "config_generation",
+        "alter table selection_decisions add column config_generation integer not null default 1",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "runtime_traffic_sessions",
+        "config_generation",
+        "alter table runtime_traffic_sessions add column config_generation integer",
     )
     .await?;
     sqlx::query("update runtime_nodes set fingerprint = 'node-id:' || id where fingerprint = ''")

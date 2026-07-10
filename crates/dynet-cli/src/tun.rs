@@ -1,39 +1,50 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use dynet_capture::IpStackPocOptions;
-use dynet_ingress::EgressNodeConfig;
+use dynet_ingress::ReloadableEgress;
 use dynet_runtime::RuntimeState;
 use dynet_state::{AppState, TunCaptureConfig};
 
 pub(crate) fn spawn_capture(
-    config: TunCaptureConfig,
-    execution_nodes: BTreeMap<String, EgressNodeConfig>,
+    config: Arc<RwLock<TunCaptureConfig>>,
+    egress: ReloadableEgress,
     runtime: RuntimeState,
 ) {
-    if !config.enabled {
+    let initial = config
+        .read()
+        .expect("runtime TUN config lock poisoned")
+        .clone();
+    if !initial.enabled {
         return;
     }
 
-    let interface = config.interface.clone();
-    let tcp_idle_timeout = config.tcp_idle_timeout;
-    let udp_idle_timeout = config.udp_idle_timeout;
-    let udp_response_timeout = config.udp_response_timeout;
+    let interface = initial.interface.clone();
     eprintln!(
         "dynet: TUN capture enabled on {} tcp_idle_ms={} udp_idle_ms={} udp_response_ms={}",
         interface,
-        tcp_idle_timeout.as_millis(),
-        udp_idle_timeout.as_millis(),
-        udp_response_timeout.as_millis()
+        initial.tcp_idle_timeout.as_millis(),
+        initial.udp_idle_timeout.as_millis(),
+        initial.udp_response_timeout.as_millis()
     );
 
     tokio::spawn(async move {
-        let tcp_nodes = execution_nodes.clone();
-        let udp_nodes = execution_nodes;
+        let tcp_egress = egress.clone();
+        let udp_egress = egress;
+        let tcp_config = config.clone();
+        let udp_config = config;
         let tcp_runtime = runtime.clone();
         let udp_runtime = runtime;
 
         let handle_tcp: dynet_capture::IpStackTcpCaptureHandler = Arc::new(move |tcp| {
-            let egress_nodes = tcp_nodes.clone();
+            let egress = tcp_egress.clone();
+            let config = tcp_config
+                .read()
+                .expect("runtime TUN config lock poisoned")
+                .clone();
             let runtime = tcp_runtime.clone();
             Box::pin(async move {
                 let local = tcp.local_addr();
@@ -43,13 +54,13 @@ pub(crate) fn spawn_capture(
                     return Ok(());
                 }
                 eprintln!("dynet: TUN tcp accepted local={local} peer={target}");
-                let outcome = dynet_ingress::relay_captured_tcp_graph(
+                let outcome = dynet_ingress::relay_captured_tcp_reloadable(
                     tcp,
                     local,
                     target,
-                    egress_nodes,
+                    egress,
                     runtime,
-                    tcp_idle_timeout,
+                    config.tcp_idle_timeout,
                 )
                 .await?;
                 eprintln!(
@@ -64,7 +75,11 @@ pub(crate) fn spawn_capture(
         });
 
         let handle_udp: dynet_capture::IpStackUdpCaptureHandler = Arc::new(move |udp| {
-            let egress_nodes = udp_nodes.clone();
+            let egress = udp_egress.clone();
+            let config = udp_config
+                .read()
+                .expect("runtime TUN config lock poisoned")
+                .clone();
             let runtime = udp_runtime.clone();
             Box::pin(async move {
                 let local = udp.local_addr();
@@ -74,14 +89,14 @@ pub(crate) fn spawn_capture(
                     return Ok(());
                 }
                 eprintln!("dynet: TUN udp accepted local={local} peer={target}");
-                let outcome = dynet_ingress::relay_captured_udp_graph(
+                let outcome = dynet_ingress::relay_captured_udp_reloadable(
                     udp,
                     local,
                     target,
-                    egress_nodes,
+                    egress,
                     runtime,
-                    udp_idle_timeout,
-                    udp_response_timeout,
+                    config.udp_idle_timeout,
+                    config.udp_response_timeout,
                 )
                 .await?;
                 eprintln!(

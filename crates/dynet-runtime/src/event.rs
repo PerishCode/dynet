@@ -58,10 +58,18 @@ impl Default for EventStore {
 
 impl EventStore {
     pub(crate) fn with_matrix(matrix: MatrixService) -> Self {
+        Self::with_matrix_watermarks(matrix, 0, 0)
+    }
+
+    pub(crate) fn with_matrix_watermarks(
+        matrix: MatrixService,
+        event_id: u64,
+        session_id: u64,
+    ) -> Self {
         Self {
             inner: Arc::new(EventInner {
-                next_event_id: AtomicU64::new(0),
-                next_session_id: AtomicU64::new(0),
+                next_event_id: AtomicU64::new(event_id),
+                next_session_id: AtomicU64::new(session_id),
                 events: Mutex::new(VecDeque::new()),
                 matrix,
             }),
@@ -96,6 +104,23 @@ impl EventStore {
             .iter()
             .cloned()
             .collect()
+    }
+}
+
+impl IngressEventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DnsQuery => "dns-query",
+            Self::DnsResponse => "dns-response",
+            Self::DnsError => "dns-error",
+            Self::TcpAccept => "tcp-accept",
+            Self::TcpClose => "tcp-close",
+            Self::TcpError => "tcp-error",
+            Self::UdpSessionStart => "udp-session-start",
+            Self::UdpDatagram => "udp-datagram",
+            Self::UdpSessionClose => "udp-session-close",
+            Self::UdpError => "udp-error",
+        }
     }
 }
 

@@ -1,12 +1,12 @@
-use std::{collections::BTreeMap, env, path::PathBuf, time::Duration};
+use std::{env, path::PathBuf, time::Duration};
 
 use dynet_capture::{
     ApplyOptions, CheckState, LinuxTakeover, TakeoverPlan, TakeoverReport, TakeoverStatus,
     TunProbeRead,
 };
-use dynet_cli::{Args, Command, ConfigAction, HooksAction};
-use dynet_ingress::{EgressNodeConfig, IngressConfig};
-use dynet_runtime::{RuntimeState, RuntimeStore};
+use dynet_cli::{Args, Command, ConfigAction, HooksAction, ReloadResult, RuntimeReload};
+use dynet_ingress::{IngressConfig, ReloadableEgress};
+use dynet_runtime::{ConfigReloadTrigger, RuntimeState, RuntimeStore};
 use dynet_state::AppState;
 use tokio::net::TcpListener;
 
@@ -83,19 +83,20 @@ fn run_plan() -> Result<(), String> {
 
 async fn run_runtime(args: Args) -> Result<(), String> {
     let state = AppState::from_config_path(args.config.as_deref())?;
+    let config_path = args.config.clone();
     let control = state.config.control;
     let ingress = state.config.ingress;
-    let capture = state.config.capture;
-    let execution_nodes = state.config.forwarding.execution_nodes.clone();
-    let runtime_seed = state.config.forwarding.seed;
+    let runtime_seed = state.config.forwarding.seed.clone();
     let store = RuntimeStore::open(runtime_db_path()?)
         .await
         .map_err(|error| format!("failed to open runtime store: {error}"))?;
-    let runtime = RuntimeState::from_store_seed(store, runtime_seed)
+    let runtime = RuntimeState::from_store_seed(store.clone(), runtime_seed)
         .await
         .map_err(|error| format!("failed to initialize runtime state: {error}"))?;
-    spawn_ingress(ingress, execution_nodes.clone(), runtime.clone());
-    tun::spawn_capture(capture.tun, execution_nodes, runtime.clone());
+    let reload = RuntimeReload::new(state.config, config_path, runtime.clone(), store)?;
+    spawn_ingress(ingress, reload.egress(), runtime.clone());
+    tun::spawn_capture(reload.tun_config(), reload.egress(), runtime.clone());
+    spawn_reload_signal(reload.clone());
     let listener = TcpListener::bind(control.bind)
         .await
         .map_err(|error| format!("failed to bind control plane {}: {error}", control.bind))?;
@@ -107,9 +108,61 @@ async fn run_runtime(args: Args) -> Result<(), String> {
         "dynet: ingress listening on dns={} tcp={} udp={} socks5={}",
         ingress.dns.bind, ingress.tcp.bind, ingress.udp.bind, ingress.socks5.bind
     );
-    dynet_api::serve(listener, runtime)
+    let config_status = reload.audit().status();
+    eprintln!(
+        "dynet: runtime config generation={} fingerprint={} source={}",
+        config_status.generation, config_status.fingerprint, config_status.source
+    );
+    dynet_api::serve_with_config_audit(listener, runtime, reload.audit())
         .await
         .map_err(|error| format!("control plane failed: {error}"))
+}
+
+#[cfg(unix)]
+fn spawn_reload_signal(reload: RuntimeReload) {
+    tokio::spawn(async move {
+        let mut signal = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        {
+            Ok(signal) => signal,
+            Err(error) => {
+                eprintln!("dynet: failed to register SIGHUP reload handler: {error}");
+                return;
+            }
+        };
+        while signal.recv().await.is_some() {
+            log_reload_result(reload.reload(ConfigReloadTrigger::Sighup).await);
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn spawn_reload_signal(_reload: RuntimeReload) {}
+
+fn log_reload_result(result: ReloadResult) {
+    match result {
+        ReloadResult::Applied {
+            generation,
+            changed_fields,
+        } => eprintln!(
+            "dynet: config reload applied generation={} changed={}",
+            generation,
+            changed_fields.join(",")
+        ),
+        ReloadResult::Noop { generation } => {
+            eprintln!("dynet: config reload no-op generation={generation}")
+        }
+        ReloadResult::RestartRequired { generation, fields } => eprintln!(
+            "dynet: config reload rejected generation={} restart-required={}",
+            generation,
+            fields.join(",")
+        ),
+        ReloadResult::Invalid { generation } => {
+            eprintln!("dynet: config reload rejected generation={generation} reason=invalid-config")
+        }
+        ReloadResult::Failed { generation } => {
+            eprintln!("dynet: config reload failed generation={generation} reason=runtime-commit")
+        }
+    }
 }
 
 fn run_doctor() -> Result<(), String> {
@@ -258,11 +311,7 @@ fn runtime_db_path() -> Result<PathBuf, String> {
     }
 }
 
-fn spawn_ingress(
-    config: IngressConfig,
-    execution_nodes: BTreeMap<String, EgressNodeConfig>,
-    runtime: RuntimeState,
-) {
+fn spawn_ingress(config: IngressConfig, egress: ReloadableEgress, runtime: RuntimeState) {
     let dns_config = config.dns;
     let socks5_config = config.socks5;
     let tcp_config = config.tcp;
@@ -276,26 +325,27 @@ fn spawn_ingress(
     });
 
     let socks5_runtime = runtime.clone();
-    let socks5_nodes = execution_nodes.clone();
+    let socks5_egress = egress.clone();
     tokio::spawn(async move {
         if let Err(error) =
-            dynet_ingress::run_socks5_graph(socks5_config, socks5_nodes, socks5_runtime).await
+            dynet_ingress::run_socks5_reloadable(socks5_config, socks5_egress, socks5_runtime).await
         {
             eprintln!("dynet: socks5 ingress stopped: {error}");
         }
     });
 
     let tcp_runtime = runtime.clone();
-    let tcp_nodes = execution_nodes.clone();
+    let tcp_egress = egress.clone();
     tokio::spawn(async move {
-        if let Err(error) = dynet_ingress::run_tcp_graph(tcp_config, tcp_nodes, tcp_runtime).await {
+        if let Err(error) =
+            dynet_ingress::run_tcp_reloadable(tcp_config, tcp_egress, tcp_runtime).await
+        {
             eprintln!("dynet: tcp ingress stopped: {error}");
         }
     });
 
     tokio::spawn(async move {
-        if let Err(error) = dynet_ingress::run_udp_graph(udp_config, execution_nodes, runtime).await
-        {
+        if let Err(error) = dynet_ingress::run_udp_reloadable(udp_config, egress, runtime).await {
             eprintln!("dynet: udp ingress stopped: {error}");
         }
     });

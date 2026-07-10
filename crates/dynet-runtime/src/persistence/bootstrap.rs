@@ -38,36 +38,28 @@ impl RuntimeStore {
         rows.into_iter().map(row_to_node).collect()
     }
 
-    pub(crate) async fn load_or_seed_bootstrap(
+    pub(crate) async fn replace_and_load_bootstrap(
         &self,
         seed: RuntimeSeed,
     ) -> Result<RuntimeBootstrap, RuntimeStoreError> {
-        if self.bootstrap_is_empty().await? {
-            validate_seed(&seed)?;
-            self.seed_bootstrap(seed).await?;
-        }
+        self.replace_bootstrap(seed).await?;
         self.load_bootstrap().await
     }
 
-    async fn bootstrap_is_empty(&self) -> Result<bool, RuntimeStoreError> {
-        let table_counts = [
-            self.count_rows("runtime_nodes").await?,
-            self.count_rows("runtime_forward_groups").await?,
-            self.count_rows("runtime_group_members").await?,
-            self.count_rows("runtime_dns_upstreams").await?,
-            self.count_rows("runtime_route_rules").await?,
-        ];
-        Ok(table_counts.into_iter().all(|count| count == 0))
-    }
-
-    async fn count_rows(&self, table: &str) -> Result<i64, RuntimeStoreError> {
-        let query = format!("select count(*) as count from {table}");
-        let row = sqlx::query(&query).fetch_one(&self.pool).await?;
-        Ok(row.get::<i64, _>("count"))
-    }
-
-    async fn seed_bootstrap(&self, seed: RuntimeSeed) -> Result<(), RuntimeStoreError> {
+    pub async fn replace_bootstrap(&self, seed: RuntimeSeed) -> Result<(), RuntimeStoreError> {
+        validate_seed(&seed)?;
         let mut transaction = self.pool.begin().await?;
+        for table in [
+            "runtime_group_members",
+            "runtime_route_rules",
+            "runtime_forward_groups",
+            "runtime_nodes",
+            "runtime_dns_upstreams",
+        ] {
+            sqlx::query(&format!("delete from {table}"))
+                .execute(&mut *transaction)
+                .await?;
+        }
         for node in &seed.nodes {
             insert_node(&mut transaction, node).await?;
         }

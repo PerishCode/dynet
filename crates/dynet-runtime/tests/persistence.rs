@@ -42,7 +42,7 @@ async fn seeds_default_bootstrap() {
 }
 
 #[tokio::test]
-async fn hydrates_existing_bootstrap() {
+async fn config_replaces_bootstrap() {
     let fixture = StoreFixture::open().await;
     fixture.insert_complete_bootstrap("persisted").await;
 
@@ -56,11 +56,11 @@ async fn hydrates_existing_bootstrap() {
     assert_eq!(fixture.count_rows("runtime_nodes").await, 1);
     let nodes = runtime.nodes().snapshot();
     assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0].tag, "persisted");
+    assert_eq!(nodes[0].tag, "config-changed");
 }
 
 #[tokio::test]
-async fn restart_keeps_store_node() {
+async fn restart_applies_config() {
     let fixture = StoreFixture::open().await;
     RuntimeState::from_store_seed(
         fixture.store.clone(),
@@ -79,23 +79,21 @@ async fn restart_keeps_store_node() {
     assert_eq!(fixture.count_rows("runtime_nodes").await, 1);
     let nodes = runtime.nodes().snapshot();
     assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0].tag, "first-config");
+    assert_eq!(nodes[0].tag, "changed-config");
 }
 
 #[tokio::test]
-async fn rejects_partial_old_shape() {
+async fn config_repairs_partial() {
     let fixture = StoreFixture::open().await;
     fixture.insert_node_only("partial").await;
 
-    let error =
+    let runtime =
         RuntimeState::from_store_seed(fixture.store.clone(), RuntimeSeed::single_node("config"))
             .await
-            .expect_err("partial bootstrap rejected");
+            .expect("config repairs partial bootstrap");
 
-    assert!(
-        error.to_string().contains("bootstrap is invalid"),
-        "unexpected error: {error}"
-    );
+    assert_eq!(runtime.nodes().snapshot()[0].tag, "config");
+    assert_eq!(fixture.count_rows("runtime_forward_groups").await, 1);
 }
 
 #[tokio::test]
@@ -111,6 +109,7 @@ async fn persists_observations() {
         [
             ("sessionId", "1".to_string()),
             ("decisionId", "1".to_string()),
+            ("configGeneration", "1".to_string()),
             ("inbound", "tcp".to_string()),
             ("nodeProtocol", "direct".to_string()),
             ("target", "127.0.0.1:80".to_string()),
@@ -147,6 +146,7 @@ async fn persists_observations() {
     assert_eq!(session.upstream_to_client_bytes, 21);
     assert_eq!(session.close_reason, "eof");
     assert_eq!(session.target_source, "fixed-upstream");
+    assert_eq!(session.config_generation, Some(1));
     let decision = fixture.selection_decision().await;
     assert_eq!(decision.group_id, "default");
     assert_eq!(decision.node_id, "default-node");
@@ -154,6 +154,7 @@ async fn persists_observations() {
     assert_eq!(decision.reason, "single-node");
     assert_eq!(decision.scheduler, "single-first-enabled");
     assert_eq!(decision.candidate_count, 1);
+    assert_eq!(decision.config_generation, 1);
     let shadow = fixture.matrix_shadow().await;
     assert_eq!(shadow.decision_id, 1);
     assert_eq!(shadow.session_id, 1);
@@ -273,7 +274,7 @@ impl StoreFixture {
     async fn traffic_session(&self) -> StoredTrafficSession {
         let row = sqlx::query(
             "select session_key, client_to_upstream_bytes, upstream_to_client_bytes,
-                close_reason, target_source
+                close_reason, target_source, config_generation
              from runtime_traffic_sessions
              limit 1",
         )
@@ -286,6 +287,9 @@ impl StoreFixture {
             upstream_to_client_bytes: row.get("upstream_to_client_bytes"),
             close_reason: row.get("close_reason"),
             target_source: row.get("target_source"),
+            config_generation: row
+                .get::<Option<i64>, _>("config_generation")
+                .map(|value| value as u64),
         }
     }
 
@@ -350,7 +354,7 @@ impl StoreFixture {
 
     async fn selection_decision(&self) -> PersistedSelectionDecision {
         let row = sqlx::query(
-            "select group_id, node_id, next, reason, scheduler, candidate_count
+            "select group_id, node_id, next, reason, scheduler, candidate_count, config_generation
              from selection_decisions",
         )
         .fetch_one(&self.inspector)
@@ -363,6 +367,7 @@ impl StoreFixture {
             reason: row.get("reason"),
             scheduler: row.get("scheduler"),
             candidate_count: row.get("candidate_count"),
+            config_generation: row.get("config_generation"),
         }
     }
 
@@ -394,6 +399,7 @@ struct StoredTrafficSession {
     upstream_to_client_bytes: i64,
     close_reason: String,
     target_source: String,
+    config_generation: Option<u64>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -404,6 +410,7 @@ struct PersistedSelectionDecision {
     reason: String,
     scheduler: String,
     candidate_count: i64,
+    config_generation: i64,
 }
 
 #[derive(Debug, Eq, PartialEq)]

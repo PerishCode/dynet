@@ -14,9 +14,11 @@ use serde::Deserialize;
 
 mod forwarding_config;
 mod method_config;
+mod reload;
 mod socks_config;
 mod summary;
 use forwarding_config::FileForwardingConfig;
+pub use reload::{ReloadDisposition, ReloadPlan};
 use socks_config::FileSocks5IngressConfig;
 pub use summary::redacted_summary_lines;
 
@@ -120,6 +122,14 @@ impl Config {
         apply_config_file(&mut config, path)?;
         apply_env(&mut config)?;
         Ok(config)
+    }
+
+    pub fn fingerprint(&self) -> String {
+        reload::config_fingerprint(self)
+    }
+
+    pub fn plan_reload(&self, next: &Self) -> ReloadPlan {
+        reload::plan_reload(self, next)
     }
 }
 
