@@ -46,11 +46,22 @@ dynet service apply
 - Rule-level deny is routing/DNS policy, not a security boundary during
   fail-open cleanup. The caller firewall owns hard security policy.
 - The stable integration ABI is mark `0x40000000/0x40000000`, rule priority
-  `10000`, route table ID `51880`, and nft output priority `-150`. Marking ORs
-  the reserved bit and preserves all unrelated caller bits.
+  `10000`, route table ID `51880`, nft output priority `-150`, and router
+  prerouting priority `-151`. Marking ORs the reserved bit and preserves all
+  unrelated caller bits.
+- `router-hooks apply` requires `[capture.router_ingress]` with an explicit
+  ingress interface and source CIDRs. There is no catch-all source default.
+  `/32` and `/128` selectors are the required initial single-client canary
+  shape; MAC matching is intentionally not part of the L3 capture contract.
+- Router hooks bypass local/private/link-local/multicast destinations,
+  non-TCP/UDP protocols, and packets already carrying the dynet mark. A
+  downstream TProxy/interceptor can still replace that mark, so the caller must
+  make such chains bypass `0x40000000/0x40000000` before a router canary.
 - Port 53 remains caller-owned. `dns-mapping apply` is an optional explicit
-  helper scoped to a configured interface; it touches neither firewall
-  admission, DHCP, dnsmasq, UCI, nor fw4. Service start never applies it.
+  helper scoped to the same configured interface and source CIDRs. It clears
+  only dynet's mark bit before redirecting to the local listener and touches
+  neither firewall admission, DHCP, dnsmasq, UCI, nor fw4. Service start never
+  applies it.
 - Owned hooks/mappings are cleaned before startup and after terminal runtime
   exit. Foreign artifacts are left untouched and reported as hard collisions.
 
@@ -85,9 +96,10 @@ skeleton with `apply --auto`. This is required because an API listener can be
 healthy while a newly created TUN interface is still DOWN; service health must
 include both the control API and takeover runtime readiness.
 
-The configured service account must be stable and non-root. Capture hook apply
+The configured service account must be stable and non-root. Output hook apply
 resolves that account and verifies the nft output bypass against its current
-UID. Both backends clean hooks before runtime startup and after terminal exit.
+UID. Both backends clean output hooks, router hooks, and DNS mappings before
+runtime startup and after terminal exit.
 The systemd backend uses privileged pre/post commands around a non-root runtime;
 the procd backend keeps a privileged supervisor, drops the child UID/GID while
 retaining only `CAP_NET_ADMIN`, forwards HUP/TERM/INT, enforces a shutdown
@@ -163,6 +175,9 @@ implementations.
    `[capture.tun]` mode owned by `dynet run`.
 11. Validate first inside a Proxmox VM, then with an experimental client that
    points gateway and DNS at the dynet VM.
+12. Add a caller-selected router ingress slice with explicit interface and
+    IPv4/IPv6 source CIDRs, then prove selected/control isolation in a two-client
+    lab before any real OpenWrt traffic window.
 
 The lifecycle skeleton deliberately stops before installing default routes,
 policy rules, nft hooks, or packet redirection. The nft chains created by
@@ -172,9 +187,10 @@ safe and the hook layer can be removed independently with `hooks cleanup`.
 
 The local-safe packet slice parses IPv4 and IPv6 TCP / UDP / DNS packet metadata from
 bytes and maps it into normalized captured flow context. Real `/dev/net/tun`
-open/read/write and capture hooks remain VM-only. Current hook validation is
-limited to VM-originated output traffic; router-forwarded prerouting/forwarding
-capture remains a later slice after the userspace TUN loop consumes packets.
+open/read/write and capture hooks remain VM-only until each scoped platform
+decision card admits them. Output validation covers VM-originated traffic;
+router-forwarded capture has a separate source-scoped `router-hooks` lifecycle
+and must pass the two-client laboratory gate before real OpenWrt use.
 
 ## VM POC Notes
 
@@ -329,6 +345,27 @@ Real OpenWrt procd canary validation on `openwrt.lan` on 2026-07-10:
 - Hooks and DNS mapping were never applied. The canary created only `dynet0`
   plus the inert `inet dynet` skeleton; pref 10000, table 51880 routes,
   `dynet_output`, and `dynet_dns_mapping` remained absent.
+
+Source-scoped router validation on `dynet-lab.lan` on 2026-07-10:
+
+- Two client namespaces shared one router ingress interface. The selected
+  `/32` + `/128` identity produced IPv4/IPv6 TUN TCP and UDP events; the control
+  identity completed the same direct probes without any dynet event.
+- The optional mapping redirected only selected UDP/TCP 53 and produced
+  selected IPv4/IPv6 DNS events; control DNS remained on the ordinary forwarded
+  path. Mapping cleanup restored the no-port-mapping state.
+- A later priority `-150` mihomo-like chain first failed an explicit audit when
+  its dynet-mark bypass was absent, then preserved `0x40000000` when the bypass
+  was installed. This models the caller requirement for downstream TProxy
+  coexistence.
+- Foreign-chain collision, normalized nft priority/family rendering, systemd
+  SIGKILL respawn, explicit restart, repeated apply/cleanup, and interrupted-lab
+  recovery were exercised. Cleanup restored forwarding sysctls, caller firewall
+  rules, namespaces, pref 10000, table 51880, router/output hooks, and DNS
+  mapping exactly.
+- This laboratory pass does not authorize a real router client. OpenWrt still
+  requires caller-owned mihomo bypass, a fixed client identity, an automatic
+  timeout rollback, and a separately confirmed maintenance window.
 
 All verification that creates TUN devices, nftables state, route tables, sysctl
 fragments, or other host networking state must run inside the Proxmox dynet

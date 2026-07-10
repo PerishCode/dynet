@@ -137,6 +137,11 @@ tcp_idle_timeout_ms = 1357
 udp_idle_timeout_ms = 2468
 udp_response_timeout_ms = 3579
 
+[capture.router_ingress]
+interface = "br-lan"
+ipv4_sources = ["192.168.20.12/32"]
+ipv6_sources = ["fd00:20::12/128"]
+
 [ipv6]
 enabled = true
 
@@ -192,6 +197,18 @@ environment_file = "/etc/dynet/service.env"
     assert_eq!(
         config.capture.tun.udp_response_timeout,
         Duration::from_millis(3579)
+    );
+    assert_eq!(
+        config.capture.router_ingress.interface.as_deref(),
+        Some("br-lan")
+    );
+    assert_eq!(
+        config.capture.router_ingress.ipv4_sources,
+        vec!["192.168.20.12/32"]
+    );
+    assert_eq!(
+        config.capture.router_ingress.ipv6_sources,
+        vec!["fd00:20::12/128"]
     );
     assert!(config.ipv6.enabled);
     assert!(config.forwarding.seed.ipv6_enabled);
@@ -310,6 +327,36 @@ fn rejects_unsafe_mapping_interface() {
     let error = Config::from_env().expect_err("unsafe interface is rejected");
 
     assert!(error.contains("DYNET_DNS_MAPPING_INTERFACE"));
+}
+
+#[test]
+fn rejects_bad_router_scope() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    for (label, body) in [
+        (
+            "interface",
+            "[capture.router_ingress]\ninterface = \"br-lan;flush\"\nipv4_sources = [\"192.168.20.12/32\"]\n",
+        ),
+        (
+            "family",
+            "[capture.router_ingress]\ninterface = \"br-lan\"\nipv4_sources = [\"fd00:20::12/128\"]\n",
+        ),
+        (
+            "host-bits",
+            "[capture.router_ingress]\ninterface = \"br-lan\"\nipv4_sources = [\"192.168.20.12/24\"]\n",
+        ),
+        (
+            "duplicate",
+            "[capture.router_ingress]\ninterface = \"br-lan\"\nipv4_sources = [\"192.168.20.12/32\", \"192.168.20.12/32\"]\n",
+        ),
+    ] {
+        let config_path = temp_config_path(label);
+        fs::write(&config_path, body).expect("write config");
+        let error = Config::from_config_path(Some(&config_path)).expect_err("scope rejected");
+        assert!(error.contains("capture.router_ingress"));
+        fs::remove_file(config_path).expect("remove config");
+    }
 }
 
 #[test]

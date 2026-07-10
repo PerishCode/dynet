@@ -12,17 +12,17 @@ use dynet_ingress::{
 use dynet_runtime::{PersistencePolicy, RuntimeSeed};
 use serde::Deserialize;
 
-mod dns_mapping_config;
 mod env_config;
 mod forwarding_config;
+mod integration_config;
 mod persistence_config;
 mod reload;
 mod service_config;
 mod socks_config;
 mod summary;
-pub use dns_mapping_config::DnsMappingConfig;
 use env_config::apply_env;
 use forwarding_config::FileForwardingConfig;
+pub use integration_config::{DnsMappingConfig, RouterIngressConfig};
 pub use reload::{ReloadDisposition, ReloadPlan};
 pub use service_config::{ServiceConfig, ServiceManager};
 use socks_config::FileSocks5IngressConfig;
@@ -64,6 +64,7 @@ pub struct ForwardingConfig {
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct CaptureConfig {
     pub tun: TunCaptureConfig,
+    pub router_ingress: RouterIngressConfig,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -188,7 +189,7 @@ struct FileConfig {
     ingress: Option<FileIngressConfig>,
     capture: Option<FileCaptureConfig>,
     ipv6: Option<FileIpv6Config>,
-    dns_mapping: Option<dns_mapping_config::FileDnsMappingConfig>,
+    dns_mapping: Option<integration_config::FileDnsMappingConfig>,
     persistence: Option<persistence_config::FilePersistenceConfig>,
     forwarding: Option<FileForwardingConfig>,
     service: Option<service_config::FileServiceConfig>,
@@ -242,12 +243,16 @@ impl FileIpv6Config {
 #[serde(deny_unknown_fields)]
 struct FileCaptureConfig {
     tun: Option<FileTunCaptureConfig>,
+    router_ingress: Option<integration_config::FileRouterIngressConfig>,
 }
 
 impl FileCaptureConfig {
     fn apply(self, config: &mut CaptureConfig) -> Result<(), String> {
         if let Some(tun) = self.tun {
             tun.apply(&mut config.tun)?;
+        }
+        if let Some(router_ingress) = self.router_ingress {
+            router_ingress.apply(&mut config.router_ingress)?;
         }
         Ok(())
     }

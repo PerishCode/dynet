@@ -1,7 +1,9 @@
 use std::{env, path::Path, time::Duration};
 
-use dynet_capture::{CheckState, DnsMappingOptions, HookOptions, LinuxTakeover};
-use dynet_cli::{DnsMappingAction, HooksAction, ServiceAction};
+use dynet_capture::{
+    CheckState, DnsMappingOptions, HookOptions, LinuxTakeover, RouterHookOptions, TrafficScope,
+};
+use dynet_cli::{DnsMappingAction, HooksAction, RouterHooksAction, ServiceAction};
 use dynet_service::{HostRunner, ServiceController, ServiceSpec};
 use dynet_state::AppState;
 
@@ -79,6 +81,54 @@ pub(crate) fn run_dns_mapping(
     Ok(())
 }
 
+pub(crate) fn run_router_hooks(
+    action: RouterHooksAction,
+    config_path: Option<&Path>,
+) -> Result<(), String> {
+    let takeover = LinuxTakeover::default();
+    if action == RouterHooksAction::Cleanup {
+        for action in takeover.router_hooks_cleanup()? {
+            println!("{action}");
+        }
+        return Ok(());
+    }
+    let options = configured_router_hook_options(config_path)?;
+    match action {
+        RouterHooksAction::Plan => {
+            println!("dynet router hook plan:");
+            for item in takeover.router_hooks_plan(&options)? {
+                println!("- {item}");
+            }
+        }
+        RouterHooksAction::Doctor => {
+            let checks = takeover.router_hooks_doctor_for(&options)?;
+            crate::print_checks("router-hooks doctor", &checks);
+            if checks.iter().any(|check| check.state != CheckState::Ready) {
+                return Err(
+                    "router hook doctor requires the owned runtime skeleton and selected interface"
+                        .to_string(),
+                );
+            }
+        }
+        RouterHooksAction::Status => {
+            let checks = takeover.router_hooks_status_for(&options)?;
+            crate::print_checks("router-hooks status", &checks);
+        }
+        RouterHooksAction::Apply => {
+            for action in takeover.router_hooks_apply(&options)? {
+                println!("{action}");
+            }
+            let checks = takeover.router_hooks_status_for(&options)?;
+            crate::print_checks("router-hooks status", &checks);
+            if checks.iter().any(|check| check.state != CheckState::Ready) {
+                return Err("router hook apply did not converge".to_string());
+            }
+        }
+        RouterHooksAction::Cleanup => unreachable!("cleanup handled without configuration"),
+    }
+    Ok(())
+}
+
 fn configured_hook_options(config_path: Option<&Path>) -> Result<HookOptions, String> {
     let service_spec = spec(config_path)?;
     let identity = ServiceController::new(service_spec.clone()).identity()?;
@@ -93,14 +143,43 @@ fn configured_dns_mapping_options(config_path: Option<&Path>) -> Result<DnsMappi
     let config_path =
         config_path.ok_or_else(|| "dns-mapping requires an explicit --config path".to_string())?;
     let state = AppState::from_config_path(Some(config_path))?;
-    let interface = state.config.dns_mapping.interface.ok_or_else(|| {
-        "dns-mapping requires dns_mapping.interface in the configuration".to_string()
-    })?;
+    let scope = configured_traffic_scope(&state)?;
+    if let Some(interface) = &state.config.dns_mapping.interface {
+        if interface != &scope.interface {
+            return Err(format!(
+                "dns_mapping.interface {interface} must match capture.router_ingress.interface {}",
+                scope.interface
+            ));
+        }
+    }
     Ok(DnsMappingOptions {
-        interface,
+        scope,
         source_port: state.config.dns_mapping.source_port,
         target: state.config.ingress.dns.bind,
         ipv6_enabled: state.config.ipv6.enabled,
+    })
+}
+
+fn configured_router_hook_options(config_path: Option<&Path>) -> Result<RouterHookOptions, String> {
+    let config_path =
+        config_path.ok_or_else(|| "router-hooks requires an explicit --config path".to_string())?;
+    let state = AppState::from_config_path(Some(config_path))?;
+    Ok(RouterHookOptions {
+        scope: configured_traffic_scope(&state)?,
+        ipv6_enabled: state.config.ipv6.enabled,
+    })
+}
+
+fn configured_traffic_scope(state: &AppState) -> Result<TrafficScope, String> {
+    let config = &state.config.capture.router_ingress;
+    let interface = config.interface.clone().ok_or_else(|| {
+        "traffic integration requires capture.router_ingress.interface in the configuration"
+            .to_string()
+    })?;
+    Ok(TrafficScope {
+        interface,
+        ipv4_sources: config.ipv4_sources.clone(),
+        ipv6_sources: config.ipv6_sources.clone(),
     })
 }
 
@@ -116,6 +195,7 @@ pub(crate) async fn run(action: ServiceAction, config_path: Option<&Path>) -> Re
     if action == ServiceAction::Supervise {
         return dynet_service::supervise(&spec, || {
             let takeover = LinuxTakeover::default();
+            takeover.router_hooks_cleanup()?;
             takeover.hooks_cleanup()?;
             takeover.dns_mapping_cleanup()?;
             Ok(())
@@ -349,6 +429,9 @@ fn prepare_stop(cleanup_hooks: bool) -> Result<(), String> {
         return Err(
             "dynet hooks are active; service stop/restart requires --cleanup-hooks".to_string(),
         );
+    }
+    for action in takeover.router_hooks_cleanup()? {
+        println!("{action}");
     }
     for action in takeover.hooks_cleanup()? {
         println!("{action}");

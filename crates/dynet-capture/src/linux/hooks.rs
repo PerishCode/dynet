@@ -3,7 +3,7 @@ use crate::{CheckState, LinuxTakeover, SystemRunner, TakeoverCheck};
 
 #[path = "hooks/status.rs"]
 mod status;
-use status::*;
+pub(crate) use status::*;
 
 pub const DYNET_CAPTURE_MARK_VALUE: u32 = 0x4000_0000;
 pub const DYNET_CAPTURE_MARK_MASK: u32 = 0x4000_0000;
@@ -11,16 +11,16 @@ pub const DYNET_ROUTE_RULE_PRIORITY: u32 = 10_000;
 pub const DYNET_ROUTE_TABLE_ID: u32 = 51_880;
 pub const DYNET_NFT_OUTPUT_PRIORITY: i32 = -150;
 
-const MARK_VALUE_HEX: &str = "0x40000000";
-const MARK_MASK_HEX: &str = "0x40000000";
+pub(crate) const MARK_VALUE_HEX: &str = "0x40000000";
+pub(crate) const MARK_MASK_HEX: &str = "0x40000000";
 const MARK_WITH_MASK: &str = "0x40000000/0x40000000";
 const RULE_PRIORITY: &str = "10000";
 const LEGACY_RULE_PRIORITY: &str = "51880";
 const LEGACY_MARK_HEX: &str = "0x51880";
 const TUN_INTERFACE: &str = "dynet0";
 const ROUTE_TABLE: &str = "51880";
-const NFT_FAMILY: &str = "inet";
-const NFT_TABLE: &str = "dynet";
+pub(crate) const NFT_FAMILY: &str = "inet";
+pub(crate) const NFT_TABLE: &str = "dynet";
 const OUTPUT_CHAIN: &str = "dynet_output";
 const OUTPUT_OWNER_MARKER: &str = "dynet-owned: capture-output:v1";
 
@@ -147,13 +147,16 @@ impl LinuxTakeover {
         reject_cleanup_collisions(runner)?;
         let mut actions = Vec::new();
         self.delete_output_chain(runner, &mut actions)?;
-        self.delete_family_hooks(runner, &mut actions, IpVersion::V6)?;
-        self.delete_family_hooks(runner, &mut actions, IpVersion::V4)?;
+        if crate::linux_router_ingress::router_chain_status(runner, None).state != CheckState::Ready
+        {
+            self.delete_family_hooks(runner, &mut actions, IpVersion::V6)?;
+            self.delete_family_hooks(runner, &mut actions, IpVersion::V4)?;
+        }
         self.delete_legacy_rule(runner, &mut actions)?;
         Ok(actions)
     }
 
-    fn ensure_family_hooks(
+    pub(crate) fn ensure_family_hooks(
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
@@ -261,7 +264,18 @@ impl LinuxTakeover {
         Ok(())
     }
 
-    fn delete_family_hooks(
+    pub(crate) fn delete_family_hooks(
+        &self,
+        runner: &impl SystemRunner,
+        actions: &mut Vec<String>,
+        family: IpVersion,
+    ) -> Result<(), String> {
+        self.delete_family_rule(runner, actions, family)?;
+        self.delete_family_route(runner, actions, family)?;
+        Ok(())
+    }
+
+    pub(crate) fn delete_family_rule(
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
@@ -288,6 +302,15 @@ impl LinuxTakeover {
                 family.label()
             ));
         }
+        Ok(())
+    }
+
+    pub(crate) fn delete_family_route(
+        &self,
+        runner: &impl SystemRunner,
+        actions: &mut Vec<String>,
+        family: IpVersion,
+    ) -> Result<(), String> {
         if route_status(runner, family).state == CheckState::Ready {
             run_required(
                 runner,
@@ -311,7 +334,7 @@ impl LinuxTakeover {
         Ok(())
     }
 
-    fn delete_legacy_rule(
+    pub(crate) fn delete_legacy_rule(
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,

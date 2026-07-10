@@ -31,6 +31,7 @@ fn systemd_apply_is_idempotent() {
     let unit = fs::read_to_string(fixture.unit()).expect("unit content");
     assert!(unit.contains("apply --auto"));
     assert!(unit.contains("ExecStartPre=+") && unit.contains("dns-mapping cleanup --config"));
+    assert!(unit.contains("ExecStartPre=+") && unit.contains("router-hooks cleanup --config"));
     assert!(unit.contains("ExecStopPost=+") && unit.contains("hooks cleanup --config"));
 
     fixture.runner.clear_calls();
@@ -212,6 +213,7 @@ fn procd_supervisor_contract() {
     assert!(content.starts_with("#!/bin/sh /etc/rc.common\n# dynet-owned:"));
     assert!(content.contains("service supervise --config"));
     assert!(content.contains("hooks cleanup --config"));
+    assert!(content.contains("router-hooks cleanup --config"));
     assert!(content.contains("dns-mapping cleanup --config"));
     assert!(content.contains("procd_set_param respawn"));
     assert!(content.contains("procd_set_param limits nofile='4096 4096'"));

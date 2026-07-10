@@ -1,6 +1,8 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use dynet_cli::{Args, Command, ConfigAction, DnsMappingAction, HooksAction, ServiceAction};
+use dynet_cli::{
+    Args, Command, ConfigAction, DnsMappingAction, HooksAction, RouterHooksAction, ServiceAction,
+};
 
 #[test]
 fn parses_config_flag() {
@@ -138,6 +140,23 @@ fn parses_lifecycle_commands() {
         ])
         .expect("dns mapping args parse");
         assert_eq!(args.command, Command::DnsMapping { action });
+        assert_eq!(args.config, Some(PathBuf::from("/etc/dynet/dynet.toml")));
+    }
+
+    for (name, action) in [
+        ("plan", RouterHooksAction::Plan),
+        ("doctor", RouterHooksAction::Doctor),
+        ("status", RouterHooksAction::Status),
+        ("apply", RouterHooksAction::Apply),
+        ("cleanup", RouterHooksAction::Cleanup),
+    ] {
+        let args = Args::parse([
+            OsString::from("router-hooks"),
+            OsString::from(name),
+            OsString::from("--config=/etc/dynet/dynet.toml"),
+        ])
+        .expect("router hook args parse");
+        assert_eq!(args.command, Command::RouterHooks { action });
         assert_eq!(args.config, Some(PathBuf::from("/etc/dynet/dynet.toml")));
     }
 

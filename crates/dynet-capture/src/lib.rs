@@ -9,6 +9,10 @@ mod linux_hooks;
 #[path = "linux/nft.rs"]
 mod linux_nft;
 mod linux_plan;
+#[path = "linux/router_ingress.rs"]
+mod linux_router_ingress;
+#[path = "linux/scope.rs"]
+mod linux_scope;
 mod linux_tun;
 mod linux_types;
 mod packet;
@@ -28,6 +32,8 @@ pub use linux_hooks::{
     HookOptions, DYNET_CAPTURE_MARK_MASK, DYNET_CAPTURE_MARK_VALUE, DYNET_NFT_OUTPUT_PRIORITY,
     DYNET_ROUTE_RULE_PRIORITY, DYNET_ROUTE_TABLE_ID,
 };
+pub use linux_router_ingress::{RouterHookOptions, DYNET_NFT_ROUTER_INGRESS_PRIORITY};
+pub use linux_scope::TrafficScope;
 pub use linux_tun::{
     probe as probe_linux_tun, probe_default as probe_default_linux_tun,
     probe_wait as probe_linux_tun_wait, validate_inherited_fd, LinuxTun, TunOpenReport,

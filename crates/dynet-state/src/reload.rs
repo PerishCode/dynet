@@ -142,6 +142,12 @@ pub(crate) fn plan_reload(current: &Config, next: &Config) -> ReloadPlan {
     restart_field(
         &mut changed,
         &mut restart,
+        "capture.router_ingress",
+        current.capture.router_ingress != next.capture.router_ingress,
+    );
+    restart_field(
+        &mut changed,
+        &mut restart,
         "ipv6.enabled",
         current.ipv6.enabled != next.ipv6.enabled,
     );

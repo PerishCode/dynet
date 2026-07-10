@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
+use crate::linux_hooks::MARK_MASK_HEX;
 use crate::linux_nft::run_required;
-use crate::{CheckState, LinuxTakeover, SystemRunner, TakeoverCheck};
+use crate::{CheckState, LinuxTakeover, SystemRunner, TakeoverCheck, TrafficScope};
 
 pub const DYNET_NFT_DNS_MAPPING_PRIORITY: i32 = -100;
 
@@ -9,10 +10,11 @@ const NFT_FAMILY: &str = "inet";
 const NFT_TABLE: &str = "dynet";
 const MAPPING_CHAIN: &str = "dynet_dns_mapping";
 const MAPPING_OWNER_MARKER: &str = "dynet-owned: dns-mapping:v1";
+const MARK_CLEAR_MASK_HEX: &str = "0xbfffffff";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DnsMappingOptions {
-    pub interface: String,
+    pub scope: TrafficScope,
     pub source_port: u16,
     pub target: SocketAddr,
     pub ipv6_enabled: bool,
@@ -20,18 +22,7 @@ pub struct DnsMappingOptions {
 
 impl DnsMappingOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.interface.is_empty()
-            || self.interface.len() > 15
-            || !self
-                .interface
-                .chars()
-                .all(|value| value.is_ascii_alphanumeric() || "_.:-".contains(value))
-        {
-            return Err(
-                "dns mapping interface must be a 1-15 character Linux interface name using letters, digits, _, ., :, or -"
-                    .to_string(),
-            );
-        }
+        self.scope.validate(self.ipv6_enabled)?;
         if self.source_port == 0 || self.target.port() == 0 {
             return Err("dns mapping ports must be between 1 and 65535".to_string());
         }
@@ -73,7 +64,7 @@ impl LinuxTakeover {
         Ok(vec![
             format!(
                 "map {families} UDP/TCP {}:{} to dynet DNS port {}",
-                options.interface,
+                options.scope.interface,
                 options.source_port,
                 options.target.port()
             ),
@@ -82,6 +73,9 @@ impl LinuxTakeover {
                 "create only owned nft chain {NFT_FAMILY} {NFT_TABLE} {MAPPING_CHAIN} at priority {DYNET_NFT_DNS_MAPPING_PRIORITY}"
             ),
             "never apply this mapping from service start, hooks apply, or runtime start".to_string(),
+            format!(
+                "clear only dynet mark bit {MARK_MASK_HEX} before redirect so policy routing remains fail-open"
+            ),
         ])
     }
 
@@ -100,8 +94,16 @@ impl LinuxTakeover {
         &self,
         options: &DnsMappingOptions,
     ) -> Result<Vec<TakeoverCheck>, String> {
+        self.mapping_status_with(&crate::HostRunner, options)
+    }
+
+    pub fn mapping_status_with(
+        &self,
+        runner: &impl SystemRunner,
+        options: &DnsMappingOptions,
+    ) -> Result<Vec<TakeoverCheck>, String> {
         options.validate()?;
-        Ok(vec![mapping_status(&crate::HostRunner, Some(options))])
+        Ok(vec![mapping_status(runner, Some(options))])
     }
 
     pub fn dns_mapping_apply(&self, options: &DnsMappingOptions) -> Result<Vec<String>, String> {
@@ -190,7 +192,7 @@ impl LinuxTakeover {
         actions.push(format!(
             "mapped UDP/TCP port {} on {} to dynet DNS port {}",
             options.source_port,
-            options.interface,
+            options.scope.interface,
             options.target.port()
         ));
         Ok(actions)
@@ -261,24 +263,30 @@ fn mapping_is_expected(stdout: &str, options: Option<&DnsMappingOptions>) -> boo
         || stdout.contains(&format!(
             "type nat hook prerouting priority {DYNET_NFT_DNS_MAPPING_PRIORITY};"
         ));
-    let mut families = vec!["ipv4"];
+    let mut families = vec![("ipv4", "ip", &options.scope.ipv4_sources)];
     if options.ipv6_enabled {
-        families.push("ipv6");
+        families.push(("ipv6", "ip6", &options.scope.ipv6_sources));
     }
-    let rules_ready = families.into_iter().all(|family| {
-        ["udp", "tcp"].into_iter().all(|protocol| {
-            stdout.lines().any(|line| {
-                line.contains(&format!("iifname \"{}\"", options.interface))
-                    && line.contains(&format!("meta nfproto {family}"))
-                    && line.contains(&format!("{protocol} dport {}", options.source_port))
-                    && line.contains(&format!("redirect to :{}", options.target.port()))
+    let rules_ready = families.into_iter().all(|(nfproto, family, sources)| {
+        sources.iter().all(|source| {
+            ["udp", "tcp"].into_iter().all(|protocol| {
+                stdout.lines().any(|line| {
+                    line.contains(&format!("iifname \"{}\"", options.scope.interface))
+                        && source_matches(line, family, source)
+                        && (line.contains(&format!("meta nfproto {nfproto}"))
+                            || line.contains(&format!("{family} saddr")))
+                        && line.contains(&format!("{protocol} dport {}", options.source_port))
+                        && line
+                            .contains(&format!("meta mark set meta mark & {MARK_CLEAR_MASK_HEX}"))
+                        && line.contains(&format!("redirect to :{}", options.target.port()))
+                })
             })
         })
     });
     let has_unexpected_ipv6 = !options.ipv6_enabled
         && stdout
             .lines()
-            .any(|line| line.contains("meta nfproto ipv6"));
+            .any(|line| line.contains("meta nfproto ipv6") || line.contains("ip6 saddr"));
     priority && rules_ready && !has_unexpected_ipv6
 }
 
@@ -286,7 +294,7 @@ fn mapping_interface_status(
     runner: &impl SystemRunner,
     options: &DnsMappingOptions,
 ) -> TakeoverCheck {
-    let output = runner.run("ip", &["link", "show", "dev", &options.interface]);
+    let output = runner.run("ip", &["link", "show", "dev", &options.scope.interface]);
     let state = match output {
         Ok(output) if output.success => CheckState::Ready,
         Ok(_) | Err(_) => CheckState::MissingHardFail,
@@ -301,29 +309,52 @@ fn mapping_interface_status(
 }
 
 fn mapping_rules(options: &DnsMappingOptions) -> Vec<Vec<String>> {
-    let mut families = vec!["ipv4"];
+    let mut families = vec![("ipv4", "ip", &options.scope.ipv4_sources)];
     if options.ipv6_enabled {
-        families.push("ipv6");
+        families.push(("ipv6", "ip6", &options.scope.ipv6_sources));
     }
     let mut rules = Vec::new();
-    for family in families {
-        for protocol in ["udp", "tcp"] {
-            rules.push(nft_rule(&[
-                "iifname".to_string(),
-                format!("\"{}\"", options.interface),
-                "meta".to_string(),
-                "nfproto".to_string(),
-                family.to_string(),
-                protocol.to_string(),
-                "dport".to_string(),
-                options.source_port.to_string(),
-                "redirect".to_string(),
-                "to".to_string(),
-                format!(":{}", options.target.port()),
-            ]));
+    for (nfproto, family, sources) in families {
+        for source in sources {
+            for protocol in ["udp", "tcp"] {
+                rules.push(nft_rule(&[
+                    "iifname".to_string(),
+                    format!("\"{}\"", options.scope.interface),
+                    "meta".to_string(),
+                    "nfproto".to_string(),
+                    nfproto.to_string(),
+                    family.to_string(),
+                    "saddr".to_string(),
+                    source.to_string(),
+                    protocol.to_string(),
+                    "dport".to_string(),
+                    options.source_port.to_string(),
+                    "meta".to_string(),
+                    "mark".to_string(),
+                    "set".to_string(),
+                    "meta".to_string(),
+                    "mark".to_string(),
+                    "&".to_string(),
+                    MARK_CLEAR_MASK_HEX.to_string(),
+                    "redirect".to_string(),
+                    "to".to_string(),
+                    format!(":{}", options.target.port()),
+                ]));
+            }
         }
     }
     rules
+}
+
+fn source_matches(line: &str, family: &str, source: &str) -> bool {
+    if line.contains(&format!("{family} saddr {source}")) {
+        return true;
+    }
+    let Some((address, prefix)) = source.split_once('/') else {
+        return false;
+    };
+    let host_prefix = (family == "ip" && prefix == "32") || (family == "ip6" && prefix == "128");
+    host_prefix && line.contains(&format!("{family} saddr {address}"))
 }
 
 fn nft_rule(rule: &[String]) -> Vec<String> {

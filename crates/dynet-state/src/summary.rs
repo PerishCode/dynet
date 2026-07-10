@@ -24,6 +24,17 @@ pub fn redacted_summary_lines(config: &Config) -> Vec<String> {
             config.capture.tun.udp_idle_timeout.as_millis(),
             config.capture.tun.udp_response_timeout.as_millis()
         ),
+        format!(
+            "capture.router_ingress interface={} ipv4_sources={} ipv6_sources={} apply=explicit-only",
+            config
+                .capture
+                .router_ingress
+                .interface
+                .as_deref()
+                .unwrap_or("unconfigured"),
+            config.capture.router_ingress.ipv4_sources.len(),
+            config.capture.router_ingress.ipv6_sources.len()
+        ),
         format!("ipv6.enabled={} default=allow", config.ipv6.enabled),
         format!(
             "dns_mapping interface={} source_port={} apply=explicit-only",

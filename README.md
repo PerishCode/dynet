@@ -40,6 +40,11 @@ dynet hooks apply --config dynet.toml
                       # VM-only install/reconcile of the output capture hook
 dynet hooks cleanup --config dynet.toml
                       # VM-only removal of current hook route/rule state
+dynet router-hooks plan|doctor|status --config dynet.toml
+dynet router-hooks apply --config dynet.toml
+                      # source-scoped router-forwarded TCP/UDP capture
+dynet router-hooks cleanup --config dynet.toml
+                      # remove owned router hook and unshared route/rule state
 dynet dns-mapping plan|doctor|status --config dynet.toml
 dynet dns-mapping apply --config dynet.toml
                       # explicitly map caller-selected UDP/TCP port 53 to DNS ingress
@@ -75,9 +80,10 @@ complete candidate before publishing anything. Invalid candidates and changes
 that require a restart keep the last-good generation active. A no-op is audited
 without incrementing the generation. Shutdown stops accepting new work, drains
 active tasks within a fixed budget, and flushes queued persistence before exit.
-Both service backends clean capture hooks and any explicitly applied owned DNS
-mapping before startup and after every terminal runtime exit so manager-driven
-restart fails open. Neither backend implicitly applies hooks or port mapping.
+Both service backends clean output/router capture hooks and any explicitly
+applied owned DNS mapping before startup and after every terminal runtime exit
+so manager-driven restart fails open. Neither backend implicitly applies hooks
+or port mapping.
 
 Missing parent carriers, missing kernel/device capabilities, or missing
 required host commands are hard failures. `apply --auto` only creates
@@ -112,11 +118,23 @@ Only TCP/UDP are marked, while SSH, loopback, link-local/multicast traffic, the
 service UID, and already-marked packets bypass capture. Foreign or drifted
 artifacts are hard refusals and are never overwritten or removed.
 
+The router-hook helper is a separate explicit surface. It uses a strictly owned
+`prerouting` chain at priority `-151`, requires a caller-selected interface and
+explicit IPv4/IPv6 source CIDRs, and installs no catch-all source default. It
+marks only selected TCP/UDP while bypassing local, private, link-local,
+multicast, non-TCP/UDP, and already dynet-marked traffic. It preserves foreign
+mark bits by OR-ing only `0x40000000`. Any later interceptor must be configured
+by the caller to bypass that bit; otherwise it can overwrite or redirect the
+packet after dynet marks it. This is especially relevant to router-wide TProxy
+chains such as mihomo.
+
 Traffic admission and firewall policy remain caller-owned. The optional
-`dns-mapping` command is only a shortcut for a caller-selected interface and
-source port; it never changes firewall admission, DHCP, dnsmasq, UCI, or fw4.
-Apply is never implicit. DNS ingress serves UDP and length-prefixed TCP on the
-same configured socket.
+`dns-mapping` command uses the exact same router-ingress interface and source
+CIDRs, plus a caller-selected source port. It clears only dynet's mark bit before
+redirecting selected DNS traffic to the local dynet listener, so unrelated mark
+bits survive and policy routing remains fail-open. It never changes firewall
+admission, DHCP, dnsmasq, UCI, or fw4. Apply is never implicit. DNS ingress
+serves UDP and length-prefixed TCP on the same configured socket.
 
 `dynet run` does not install or remove capture hooks. The host capture lifecycle
 remains explicit: apply the skeleton with `apply --auto`, start `dynet run` with
@@ -272,6 +290,13 @@ tcp_idle_timeout_ms = 2000
 udp_idle_timeout_ms = 2000
 udp_response_timeout_ms = 1500
 
+# Required only by explicit `router-hooks` and `dns-mapping` commands.
+# Use /32 and /128 identities for a single-client canary.
+[capture.router_ingress]
+interface = "br-lan"
+ipv4_sources = ["192.168.20.12/32"]
+ipv6_sources = ["fd00:20::12/128"]
+
 [ipv6]
 enabled = true
 
@@ -281,6 +306,7 @@ max_bytes = 67108864
 
 # Optional and inert until `dynet dns-mapping apply` is run. Dual-stack
 # redirect requires DNS ingress to bind an unspecified IPv6 address such as [::].
+# If set, this compatibility field must match capture.router_ingress.interface.
 [dns_mapping]
 interface = "br-lan"
 source_port = 53

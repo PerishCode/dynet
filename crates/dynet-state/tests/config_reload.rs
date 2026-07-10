@@ -114,6 +114,20 @@ fn mapping_change_requires_restart() {
 }
 
 #[test]
+fn router_change_requires_restart() {
+    let current = Config::default();
+    let mut next = current.clone();
+    next.capture.router_ingress.interface = Some("br-lan".to_string());
+    next.capture.router_ingress.ipv4_sources = vec!["192.168.20.12/32".to_string()];
+
+    let plan = current.plan_reload(&next);
+
+    assert_eq!(plan.disposition, ReloadDisposition::RestartRequired);
+    assert_eq!(plan.changed_fields, vec!["capture.router_ingress"]);
+    assert_eq!(plan.restart_required_fields, vec!["capture.router_ingress"]);
+}
+
+#[test]
 fn fingerprint_stable_opaque() {
     let first = Config::default();
     let mut second = first.clone();
