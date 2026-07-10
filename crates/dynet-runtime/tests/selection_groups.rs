@@ -99,6 +99,7 @@ async fn runtime_from_seed(seed: RuntimeSeed) -> RuntimeState {
 
 fn private_seed() -> RuntimeSeed {
     RuntimeSeed {
+        ipv6_enabled: false,
         nodes: vec![
             ForwardNode::new("private-primary", "ss", true),
             ForwardNode::new("private-backup", "ss", true),
@@ -133,6 +134,7 @@ fn private_seed() -> RuntimeSeed {
 
 fn tunnel_seed() -> RuntimeSeed {
     RuntimeSeed {
+        ipv6_enabled: false,
         nodes: vec![
             ForwardNode::new("tunnel-primary", "ss", true),
             ForwardNode::new("tunnel-backup", "ss", true),

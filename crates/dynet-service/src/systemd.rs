@@ -23,10 +23,12 @@ Type=simple\n\
 User={user}\n\
 {environment}\
 ExecStartPre=+{executable} hooks cleanup --config {config}\n\
+ExecStartPre=+{executable} dns-mapping cleanup --config {config}\n\
 ExecStartPre=+{executable} apply --auto\n\
 ExecStart={executable} run --config {config}\n\
 ExecReload=/bin/kill -HUP $MAINPID\n\
 ExecStopPost=+{executable} hooks cleanup --config {config}\n\
+ExecStopPost=+{executable} dns-mapping cleanup --config {config}\n\
 Restart=on-failure\n\
 RestartSec=1s\n\
 KillSignal=SIGTERM\n\

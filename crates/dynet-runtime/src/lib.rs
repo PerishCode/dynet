@@ -1,4 +1,5 @@
 use std::{
+    net::{Ipv6Addr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, RwLock,
@@ -23,13 +24,16 @@ pub use event::{EventStore, IngressEvent, IngressEventKind, IntoFields};
 pub use model::{
     DnsHttpsEndpoint, DnsRacePolicy, DnsRaceStrategy, DnsUpstream, DnsUpstreamId,
     DnsUpstreamTransport, ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds,
-    InboundKind, MatrixErrorSignalStats, MatrixNodeStats, MatrixService, MatrixShadowCandidate,
-    MatrixShadowDecision, MatrixTargetNodeStats, NextRef, NodeId, ObservedDnsMap, RouteMatcher,
-    RouteRule, RuleId, RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision,
-    SelectionError, SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix,
-    TargetContext, TargetSource,
+    InboundKind, IpFamily, Ipv6PolicySource, Ipv6RulePolicy, MatrixErrorSignalStats,
+    MatrixNodeStats, MatrixService, MatrixShadowCandidate, MatrixShadowDecision,
+    MatrixTargetNodeStats, NextRef, NodeId, ObservedDnsMap, RouteMatcher, RouteRule, RuleId,
+    RuntimeSeed, SchedulerPolicy, SelectionContext, SelectionDecision, SelectionError,
+    SelectionReason, SelectionTerminal, SelectionTraceHop, SelectorMatrix, TargetContext,
+    TargetSource,
 };
-pub use persistence::{PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError};
+pub use persistence::{
+    PersistencePolicy, PersistenceStatsSnapshot, RuntimeStore, RuntimeStoreError,
+};
 pub use runtime_config::{
     ConfigReloadAudit, ConfigReloadOutcome, ConfigReloadTrigger, RuntimeConfigAudit,
     RuntimeConfigStatus,
@@ -58,6 +62,7 @@ struct RuntimeInner {
 #[derive(Debug)]
 struct RuntimeRouting {
     generation: u64,
+    ipv6_enabled: bool,
     nodes: NodeStore,
     groups: GroupStore,
     routes: RouteRuleStore,
@@ -106,6 +111,7 @@ impl RuntimeState {
                 events: EventStore::with_matrix(matrix.clone()),
                 routing: RwLock::new(Arc::new(RuntimeRouting {
                     generation: 1,
+                    ipv6_enabled: false,
                     nodes: NodeStore::single_node(node),
                     groups: GroupStore::from_parts(group.id.clone(), vec![group], vec![member]),
                     routes: RouteRuleStore::default(),
@@ -170,6 +176,7 @@ impl RuntimeState {
                 ),
                 routing: RwLock::new(Arc::new(RuntimeRouting {
                     generation: 1,
+                    ipv6_enabled: bootstrap.ipv6_enabled,
                     nodes: NodeStore::from_nodes(bootstrap.nodes),
                     groups: GroupStore::from_parts(
                         bootstrap.default_group_id,
@@ -250,6 +257,21 @@ impl RuntimeState {
         &self.inner.dns_map
     }
 
+    pub fn dns_ipv6_deny_rule(&self, domain: &str) -> Option<RuleId> {
+        let routing = self.routing();
+        if !routing.ipv6_enabled {
+            return None;
+        }
+        let target = TargetContext::external_context(
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 53)),
+            Some(domain.to_ascii_lowercase()),
+        );
+        let route_match = routing.routes.match_group(&target);
+        (route_match.ipv6 == Ipv6RulePolicy::Deny)
+            .then_some(route_match.rule_id)
+            .flatten()
+    }
+
     pub fn matrix(&self) -> &MatrixService {
         &self.inner.matrix
     }
@@ -290,6 +312,20 @@ impl RuntimeState {
     pub fn select(&self, context: SelectionContext) -> Result<SelectionDecision, SelectionError> {
         let routing = self.routing();
         let route_match = routing.routes.match_group(&context.target);
+        let ip_family = IpFamily::from_address(context.target.address.ip());
+        let ipv6_policy_source = match ip_family {
+            IpFamily::Ipv4 => None,
+            IpFamily::Ipv6 if !routing.ipv6_enabled => {
+                return Err(SelectionError::ipv6_disabled());
+            }
+            IpFamily::Ipv6 if route_match.ipv6 == Ipv6RulePolicy::Deny => {
+                return Err(SelectionError::ipv6_denied(route_match.rule_id));
+            }
+            IpFamily::Ipv6 if route_match.ipv6 == Ipv6RulePolicy::Allow => {
+                Some(Ipv6PolicySource::Rule)
+            }
+            IpFamily::Ipv6 => Some(Ipv6PolicySource::Global),
+        };
         let group_id = route_match
             .group_id
             .or_else(|| routing.groups.default_group_id())
@@ -299,7 +335,7 @@ impl RuntimeState {
         let target_node_stats = self.inner.matrix.target_node_stats(&node_fingerprints);
         let selection = routing
             .groups
-            .select_graph_with(&group_id, &routing.nodes, |candidate_set| {
+            .select_graph_with(&group_id, &routing.nodes, ip_family, |candidate_set| {
                 select_active_candidate(
                     &context,
                     &candidate_set.group_id,
@@ -326,8 +362,14 @@ impl RuntimeState {
             reason: SelectionReason::SingleNode,
             scheduler: selection.scheduler,
             candidate_count: selection.candidate_count,
+            ip_family,
+            ipv6_policy_source,
         };
-        if let Ok(candidates) = routing.groups.enabled_candidates(&group_id, &routing.nodes) {
+        if let Ok(candidates) =
+            routing
+                .groups
+                .enabled_candidates(&group_id, &routing.nodes, ip_family)
+        {
             self.inner.matrix.record_shadow_selection(
                 unix_ms(),
                 &context,
@@ -356,6 +398,7 @@ impl RuntimeRouting {
     fn from_seed(generation: u64, seed: RuntimeSeed) -> Self {
         Self {
             generation,
+            ipv6_enabled: seed.ipv6_enabled,
             nodes: NodeStore::from_nodes(seed.nodes),
             groups: GroupStore::from_parts(seed.default_group_id, seed.groups, seed.group_members),
             routes: RouteRuleStore::from_rules(seed.route_rules),

@@ -1,8 +1,8 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use super::{
-    parse_usize_arg, set_config, split_config_arg, Args, Command, ConfigAction, HooksAction,
-    ServiceAction,
+    parse_usize_arg, set_config, split_config_arg, Args, Command, ConfigAction, DnsMappingAction,
+    HooksAction, ServiceAction,
 };
 
 pub(super) fn parse_config_args(
@@ -20,6 +20,28 @@ pub(super) fn parse_config_args(
     };
     parse_only_config(parsed, "config", args)?;
     Ok(Command::Config { action })
+}
+
+pub(super) fn parse_dns_mapping_args(
+    parsed: &mut Args,
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        return Err(
+            "dns-mapping requires an action: plan, doctor, status, apply, cleanup".to_string(),
+        );
+    };
+    let action = match action.to_string_lossy().as_ref() {
+        "plan" => DnsMappingAction::Plan,
+        "doctor" => DnsMappingAction::Doctor,
+        "status" => DnsMappingAction::Status,
+        "apply" => DnsMappingAction::Apply,
+        "cleanup" => DnsMappingAction::Cleanup,
+        other => return Err(format!("unknown dns-mapping action {other}")),
+    };
+    parse_only_config(parsed, "dns-mapping", args)?;
+    Ok(Command::DnsMapping { action })
 }
 
 pub(super) fn parse_hooks_args(

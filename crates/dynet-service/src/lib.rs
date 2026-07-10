@@ -12,7 +12,7 @@ pub use model::{
     ServiceManager, ServicePaths, ServicePlan, ServiceSpec, ServiceStatus,
 };
 pub use runner::{CommandOutput, HostRunner, ServiceRunner};
-pub use supervisor::{supervise, supervise_with};
+pub use supervisor::{preopen_tun, supervise, supervise_with};
 
 use artifact::{atomic_write, classify, remove_owned};
 use runner::run_required;
@@ -75,8 +75,11 @@ where
                 ),
                 format!("enable {SERVICE_NAME} at boot"),
                 "start only when the service is currently inactive".to_string(),
+                "run the procd child as the configured non-root UID with only CAP_NET_ADMIN retained"
+                    .to_string(),
                 "reconcile the takeover runtime skeleton before every start".to_string(),
-                "clean capture hooks after every terminal process exit".to_string(),
+                "clean owned capture hooks and optional DNS mappings after every terminal process exit"
+                    .to_string(),
             ],
         })
     }
@@ -364,7 +367,12 @@ where
                 let command = artifact.path.display().to_string();
                 let enabled = command_success(&self.runner, &command, &["enabled"])?;
                 let active = command_success(&self.runner, &command, &["running"])?;
-                Ok((enabled, active, None))
+                let pid = if active {
+                    procd::main_pid(&self.runner)
+                } else {
+                    None
+                };
+                Ok((enabled, active, pid))
             }
             ServiceManager::Auto => unreachable!("manager is resolved"),
         }
@@ -405,7 +413,7 @@ pub fn resolve_identity_with(
     user: &str,
     runner: &impl ServiceRunner,
 ) -> Result<ServiceIdentity, String> {
-    if !valid_user_name(user) {
+    if !model::valid_user_name(user) {
         return Err(
             "service user must contain only ASCII letters, digits, underscore, hyphen, or dot and must not start with a hyphen"
                 .to_string(),
@@ -423,14 +431,6 @@ pub fn resolve_identity_with(
         .parse::<u32>()
         .map_err(|error| format!("invalid gid for service user {user}: {error}"))?;
     Ok(ServiceIdentity { uid, gid })
-}
-
-fn valid_user_name(user: &str) -> bool {
-    !user.is_empty()
-        && !user.starts_with('-')
-        && user
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
 struct ServiceArtifact {

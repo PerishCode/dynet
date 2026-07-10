@@ -1,6 +1,9 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use dynet_capture::{parse_ipv4_packet, CapturedTransport, PacketParseError, TargetCaptureSource};
+use dynet_capture::{
+    parse_ip_packet, parse_ipv4_packet, parse_ipv6_packet, CapturedTransport, PacketParseError,
+    TargetCaptureSource,
+};
 
 #[test]
 fn parses_udp_dns() {
@@ -51,8 +54,33 @@ fn converts_to_captured_flow() {
 }
 
 #[test]
-fn rejects_ipv6() {
-    let packet = [0x60; 40];
+fn parses_ipv6_tcp_flow() {
+    let source = "2001:db8::10".parse::<Ipv6Addr>().expect("source");
+    let target = "2001:db8::20".parse::<Ipv6Addr>().expect("target");
+    let packet = ipv6_packet(6, source, target, 52000, 443);
+
+    let flow = parse_ipv6_packet(&packet).expect("IPv6 packet parses");
+
+    assert_eq!(flow.source, SocketAddr::new(IpAddr::V6(source), 52000));
+    assert_eq!(flow.destination, SocketAddr::new(IpAddr::V6(target), 443));
+    assert_eq!(flow.transport, CapturedTransport::Tcp);
+    assert_eq!(
+        parse_ip_packet(&packet)
+            .expect("generic parser accepts IPv6")
+            .destination,
+        flow.destination
+    );
+}
+
+#[test]
+fn ipv4_rejects_ipv6() {
+    let packet = ipv6_packet(
+        17,
+        "2001:db8::10".parse().expect("source"),
+        "2001:db8::53".parse().expect("target"),
+        55123,
+        53,
+    );
 
     let error = parse_ipv4_packet(&packet).expect_err("IPv6 rejected");
 
@@ -85,5 +113,25 @@ fn ipv4_packet(
     packet[16..20].copy_from_slice(&target);
     packet[20..22].copy_from_slice(&source_port.to_be_bytes());
     packet[22..24].copy_from_slice(&target_port.to_be_bytes());
+    packet
+}
+
+fn ipv6_packet(
+    protocol: u8,
+    source: Ipv6Addr,
+    target: Ipv6Addr,
+    source_port: u16,
+    target_port: u16,
+) -> Vec<u8> {
+    let payload_len = 4_u16;
+    let mut packet = vec![0_u8; 40 + usize::from(payload_len)];
+    packet[0] = 0x60;
+    packet[4..6].copy_from_slice(&payload_len.to_be_bytes());
+    packet[6] = protocol;
+    packet[7] = 64;
+    packet[8..24].copy_from_slice(&source.octets());
+    packet[24..40].copy_from_slice(&target.octets());
+    packet[40..42].copy_from_slice(&source_port.to_be_bytes());
+    packet[42..44].copy_from_slice(&target_port.to_be_bytes());
     packet
 }

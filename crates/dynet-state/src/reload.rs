@@ -58,6 +58,12 @@ pub(crate) fn plan_reload(current: &Config, next: &Config) -> ReloadPlan {
     restart_field(
         &mut changed,
         &mut restart,
+        "ingress.dns.max_sessions",
+        current.ingress.dns.max_sessions != next.ingress.dns.max_sessions,
+    );
+    restart_field(
+        &mut changed,
+        &mut restart,
         "ingress.tcp.bind",
         current.ingress.tcp.bind != next.ingress.tcp.bind,
     );
@@ -132,6 +138,24 @@ pub(crate) fn plan_reload(current: &Config, next: &Config) -> ReloadPlan {
         &mut restart,
         "capture.tun.interface",
         current.capture.tun.interface != next.capture.tun.interface,
+    );
+    restart_field(
+        &mut changed,
+        &mut restart,
+        "ipv6.enabled",
+        current.ipv6.enabled != next.ipv6.enabled,
+    );
+    restart_field(
+        &mut changed,
+        &mut restart,
+        "dns_mapping",
+        current.dns_mapping != next.dns_mapping,
+    );
+    restart_field(
+        &mut changed,
+        &mut restart,
+        "persistence",
+        current.persistence != next.persistence,
     );
     restart_field(
         &mut changed,

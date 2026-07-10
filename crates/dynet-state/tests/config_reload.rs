@@ -75,6 +75,45 @@ fn service_change_requires_restart() {
 }
 
 #[test]
+fn ipv6_change_requires_restart() {
+    let current = Config::default();
+    let mut next = current.clone();
+    next.ipv6.enabled = true;
+
+    let plan = current.plan_reload(&next);
+
+    assert_eq!(plan.disposition, ReloadDisposition::RestartRequired);
+    assert_eq!(plan.changed_fields, ["ipv6.enabled"]);
+    assert_eq!(plan.restart_required_fields, ["ipv6.enabled"]);
+}
+
+#[test]
+fn persistence_change_requires_restart() {
+    let current = Config::default();
+    let mut next = current.clone();
+    next.persistence.retention = std::time::Duration::from_secs(12 * 60 * 60);
+
+    let plan = current.plan_reload(&next);
+
+    assert_eq!(plan.disposition, ReloadDisposition::RestartRequired);
+    assert_eq!(plan.changed_fields, vec!["persistence"]);
+    assert_eq!(plan.restart_required_fields, vec!["persistence"]);
+}
+
+#[test]
+fn mapping_change_requires_restart() {
+    let current = Config::default();
+    let mut next = current.clone();
+    next.dns_mapping.interface = Some("br-lan".to_string());
+
+    let plan = current.plan_reload(&next);
+
+    assert_eq!(plan.disposition, ReloadDisposition::RestartRequired);
+    assert_eq!(plan.changed_fields, vec!["dns_mapping"]);
+    assert_eq!(plan.restart_required_fields, vec!["dns_mapping"]);
+}
+
+#[test]
 fn fingerprint_stable_opaque() {
     let first = Config::default();
     let mut second = first.clone();

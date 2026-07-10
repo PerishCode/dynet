@@ -1,15 +1,34 @@
 use crate::linux_nft::run_required;
 use crate::{CheckState, LinuxTakeover, SystemRunner, TakeoverCheck};
 
-pub(crate) const DYN_MARK_HEX: &str = "0x51880";
+#[path = "hooks/status.rs"]
+mod status;
+use status::*;
+
+pub const DYNET_CAPTURE_MARK_VALUE: u32 = 0x4000_0000;
+pub const DYNET_CAPTURE_MARK_MASK: u32 = 0x4000_0000;
+pub const DYNET_ROUTE_RULE_PRIORITY: u32 = 10_000;
+pub const DYNET_ROUTE_TABLE_ID: u32 = 51_880;
+pub const DYNET_NFT_OUTPUT_PRIORITY: i32 = -150;
+
+const MARK_VALUE_HEX: &str = "0x40000000";
+const MARK_MASK_HEX: &str = "0x40000000";
+const MARK_WITH_MASK: &str = "0x40000000/0x40000000";
 const RULE_PRIORITY: &str = "10000";
 const LEGACY_RULE_PRIORITY: &str = "51880";
+const LEGACY_MARK_HEX: &str = "0x51880";
 const TUN_INTERFACE: &str = "dynet0";
-const ROUTE_TABLE: &str = "dynet";
+const ROUTE_TABLE: &str = "51880";
 const NFT_FAMILY: &str = "inet";
 const NFT_TABLE: &str = "dynet";
 const OUTPUT_CHAIN: &str = "dynet_output";
-const BYPASS_IPV4_CIDRS: &[&str] = &["192.168.1.0/24", "192.168.20.0/24", "10.199.0.0/24"];
+const OUTPUT_OWNER_MARKER: &str = "dynet-owned: capture-output:v1";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct HookOptions {
+    pub service_uid: u32,
+    pub ipv6_enabled: bool,
+}
 
 impl LinuxTakeover {
     pub fn hooks_status(&self) -> Vec<TakeoverCheck> {
@@ -17,33 +36,21 @@ impl LinuxTakeover {
     }
 
     pub fn hooks_status_for(&self, service_uid: u32) -> Vec<TakeoverCheck> {
-        self.hooks_status_for_with(&crate::HostRunner, service_uid)
+        self.hooks_status_for_options(HookOptions {
+            service_uid,
+            ipv6_enabled: false,
+        })
+    }
+
+    pub fn hooks_status_for_options(&self, options: HookOptions) -> Vec<TakeoverCheck> {
+        self.hooks_status_with(&crate::HostRunner, options)
     }
 
     pub fn hooks_status_with_runner(&self, runner: &impl SystemRunner) -> Vec<TakeoverCheck> {
-        vec![
-            hook_check(
-                "route.table.default",
-                "dynet policy route default",
-                route_query(runner),
-                "route marked traffic to dynet0",
-            ),
-            hook_check(
-                "route.rule.mark",
-                "dynet fwmark policy rule",
-                rule_query(runner, RULE_PRIORITY),
-                "route dynet fwmark through dynet table",
-            ),
-            hook_check(
-                "nft.chain.output",
-                "dynet output capture hook",
-                runner.run(
-                    "nft",
-                    &["list", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
-                ),
-                "create output capture hook",
-            ),
-        ]
+        let mut checks = family_status(runner, IpVersion::V4);
+        checks.extend(family_status(runner, IpVersion::V6));
+        checks.push(output_chain_status(runner, None));
+        checks
     }
 
     pub fn hooks_status_for_with(
@@ -51,18 +58,37 @@ impl LinuxTakeover {
         runner: &impl SystemRunner,
         service_uid: u32,
     ) -> Vec<TakeoverCheck> {
-        let mut checks = self.hooks_status_with_runner(runner);
-        if let Some(output) = checks
-            .iter_mut()
-            .find(|check| check.id == "nft.chain.output")
-        {
-            *output = output_status_for(runner, service_uid);
+        self.hooks_status_with(
+            runner,
+            HookOptions {
+                service_uid,
+                ipv6_enabled: false,
+            },
+        )
+    }
+
+    pub fn hooks_status_with(
+        &self,
+        runner: &impl SystemRunner,
+        options: HookOptions,
+    ) -> Vec<TakeoverCheck> {
+        let mut checks = family_status(runner, IpVersion::V4);
+        if options.ipv6_enabled {
+            checks.extend(family_status(runner, IpVersion::V6));
         }
+        checks.push(output_chain_status(runner, Some(options)));
         checks
     }
 
     pub fn hooks_apply(&self, service_uid: u32) -> Result<Vec<String>, String> {
-        self.hooks_apply_with_runner(&crate::HostRunner, service_uid)
+        self.hooks_apply_for(HookOptions {
+            service_uid,
+            ipv6_enabled: false,
+        })
+    }
+
+    pub fn hooks_apply_for(&self, options: HookOptions) -> Result<Vec<String>, String> {
+        self.hooks_apply_options_with(&crate::HostRunner, options)
     }
 
     pub fn hooks_apply_with_runner(
@@ -70,7 +96,21 @@ impl LinuxTakeover {
         runner: &impl SystemRunner,
         service_uid: u32,
     ) -> Result<Vec<String>, String> {
-        if service_uid == 0 {
+        self.hooks_apply_options_with(
+            runner,
+            HookOptions {
+                service_uid,
+                ipv6_enabled: false,
+            },
+        )
+    }
+
+    pub fn hooks_apply_options_with(
+        &self,
+        runner: &impl SystemRunner,
+        options: HookOptions,
+    ) -> Result<Vec<String>, String> {
+        if options.service_uid == 0 {
             return Err("dynet hooks refuse uid 0 as the service bypass identity".to_string());
         }
         let status = self.status_with_runner(runner);
@@ -85,11 +125,14 @@ impl LinuxTakeover {
                 ));
             }
         }
+        reject_hook_collisions(&self.hooks_status_with(runner, options))?;
 
         let mut actions = Vec::new();
-        self.ensure_hook_route(runner, &mut actions)?;
-        self.ensure_hook_rule(runner, &mut actions)?;
-        self.ensure_output_chain(runner, &mut actions, service_uid)?;
+        self.ensure_family_hooks(runner, &mut actions, IpVersion::V4)?;
+        if options.ipv6_enabled {
+            self.ensure_family_hooks(runner, &mut actions, IpVersion::V6)?;
+        }
+        self.ensure_output_chain(runner, &mut actions, options)?;
         Ok(actions)
     }
 
@@ -101,25 +144,24 @@ impl LinuxTakeover {
         &self,
         runner: &impl SystemRunner,
     ) -> Result<Vec<String>, String> {
+        reject_cleanup_collisions(runner)?;
         let mut actions = Vec::new();
         self.delete_output_chain(runner, &mut actions)?;
-        self.delete_hook_rule(runner, &mut actions)?;
-        self.delete_hook_route(runner, &mut actions)?;
+        self.delete_family_hooks(runner, &mut actions, IpVersion::V6)?;
+        self.delete_family_hooks(runner, &mut actions, IpVersion::V4)?;
+        self.delete_legacy_rule(runner, &mut actions)?;
         Ok(actions)
     }
 
-    fn ensure_hook_route(
+    fn ensure_family_hooks(
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
+        family: IpVersion,
     ) -> Result<(), String> {
-        if route_status(runner).state == CheckState::Ready {
-            return Ok(());
-        }
-        run_required(
-            runner,
-            "ip",
-            &[
+        if route_status(runner, family).state != CheckState::Ready {
+            let args = [
+                family.flag(),
                 "route",
                 "add",
                 "default",
@@ -127,37 +169,31 @@ impl LinuxTakeover {
                 TUN_INTERFACE,
                 "table",
                 ROUTE_TABLE,
-            ],
-        )?;
-        actions.push(format!(
-            "created route table {ROUTE_TABLE} default dev {TUN_INTERFACE}"
-        ));
-        Ok(())
-    }
-
-    fn ensure_hook_rule(
-        &self,
-        runner: &impl SystemRunner,
-        actions: &mut Vec<String>,
-    ) -> Result<(), String> {
-        if rule_status(runner).state == CheckState::Ready {
-            return Ok(());
+            ];
+            run_required(runner, "ip", &args)?;
+            actions.push(format!(
+                "created {} route table {ROUTE_TABLE} default dev {TUN_INTERFACE}",
+                family.label()
+            ));
         }
-        run_required(
-            runner,
-            "ip",
-            &[
+        if rule_status(runner, family).state != CheckState::Ready {
+            let args = [
+                family.flag(),
                 "rule",
                 "add",
                 "pref",
                 RULE_PRIORITY,
                 "fwmark",
-                DYN_MARK_HEX,
+                MARK_WITH_MASK,
                 "lookup",
                 ROUTE_TABLE,
-            ],
-        )?;
-        actions.push(format!("created fwmark {DYN_MARK_HEX} policy rule"));
+            ];
+            run_required(runner, "ip", &args)?;
+            actions.push(format!(
+                "created {} fwmark {MARK_WITH_MASK} policy rule pref {RULE_PRIORITY}",
+                family.label()
+            ));
+        }
         Ok(())
     }
 
@@ -165,20 +201,10 @@ impl LinuxTakeover {
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
-        service_uid: u32,
+        options: HookOptions,
     ) -> Result<(), String> {
-        if output_status_for(runner, service_uid).state == CheckState::Ready {
+        if output_chain_status(runner, Some(options)).state == CheckState::Ready {
             return Ok(());
-        }
-        if output_chain_status(runner).state == CheckState::Ready {
-            run_required(
-                runner,
-                "nft",
-                &["delete", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
-            )?;
-            actions.push(format!(
-                "replaced nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN} for service uid {service_uid}"
-            ));
         }
         run_required(
             runner,
@@ -195,20 +221,24 @@ impl LinuxTakeover {
                 "hook",
                 "output",
                 "priority",
-                "mangle;",
+                "-150;",
                 "policy",
                 "accept;",
+                "comment",
+                "\"dynet-owned: capture-output:v1\";",
                 "}",
             ],
         )?;
         actions.push(format!(
-            "created nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN}"
+            "created owned nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN} priority {DYNET_NFT_OUTPUT_PRIORITY}"
         ));
-        for rule in output_rules(service_uid) {
+        for rule in output_rules(options) {
             let args = rule.iter().map(String::as_str).collect::<Vec<_>>();
             run_required(runner, "nft", &args)?;
         }
-        actions.push("installed output capture marking rules".to_string());
+        actions.push(format!(
+            "installed dual-stack-safe output capture rules preserving marks outside {MARK_MASK_HEX}"
+        ));
         Ok(())
     }
 
@@ -217,7 +247,7 @@ impl LinuxTakeover {
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
     ) -> Result<(), String> {
-        if output_chain_status(runner).state != CheckState::Ready {
+        if output_chain_status(runner, None).state != CheckState::Ready {
             return Ok(());
         }
         run_required(
@@ -226,214 +256,140 @@ impl LinuxTakeover {
             &["delete", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
         )?;
         actions.push(format!(
-            "deleted nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN}"
+            "deleted owned nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN}"
         ));
         Ok(())
     }
 
-    fn delete_hook_rule(
+    fn delete_family_hooks(
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
+        family: IpVersion,
     ) -> Result<(), String> {
-        if rule_status(runner).state == CheckState::Ready {
-            delete_rule_pref(runner, RULE_PRIORITY)?;
+        if rule_status(runner, family).state == CheckState::Ready {
+            run_required(
+                runner,
+                "ip",
+                &[
+                    family.flag(),
+                    "rule",
+                    "del",
+                    "pref",
+                    RULE_PRIORITY,
+                    "fwmark",
+                    MARK_WITH_MASK,
+                    "lookup",
+                    ROUTE_TABLE,
+                ],
+            )?;
             actions.push(format!(
-                "deleted fwmark {DYN_MARK_HEX} policy rule pref {RULE_PRIORITY}"
+                "deleted {} fwmark {MARK_WITH_MASK} policy rule pref {RULE_PRIORITY}",
+                family.label()
             ));
         }
-        if legacy_rule_status(runner).state == CheckState::Ready {
-            delete_rule_pref(runner, LEGACY_RULE_PRIORITY)?;
+        if route_status(runner, family).state == CheckState::Ready {
+            run_required(
+                runner,
+                "ip",
+                &[
+                    family.flag(),
+                    "route",
+                    "del",
+                    "default",
+                    "dev",
+                    TUN_INTERFACE,
+                    "table",
+                    ROUTE_TABLE,
+                ],
+            )?;
             actions.push(format!(
-                "deleted legacy fwmark {DYN_MARK_HEX} policy rule pref {LEGACY_RULE_PRIORITY}"
+                "deleted {} route table {ROUTE_TABLE} default dev {TUN_INTERFACE}",
+                family.label()
             ));
         }
         Ok(())
     }
 
-    fn delete_hook_route(
+    fn delete_legacy_rule(
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
     ) -> Result<(), String> {
-        if route_status(runner).state != CheckState::Ready {
+        if legacy_rule_status(runner).state != CheckState::Ready {
             return Ok(());
         }
         run_required(
             runner,
             "ip",
             &[
-                "route",
+                "rule",
                 "del",
-                "default",
-                "dev",
-                TUN_INTERFACE,
-                "table",
+                "pref",
+                LEGACY_RULE_PRIORITY,
+                "fwmark",
+                LEGACY_MARK_HEX,
+                "lookup",
                 ROUTE_TABLE,
             ],
         )?;
         actions.push(format!(
-            "deleted route table {ROUTE_TABLE} default dev {TUN_INTERFACE}"
+            "deleted legacy fwmark {LEGACY_MARK_HEX} policy rule pref {LEGACY_RULE_PRIORITY}"
         ));
         Ok(())
     }
 }
 
-fn route_status(runner: &impl SystemRunner) -> TakeoverCheck {
-    hook_check(
-        "route.table.default",
-        "dynet policy route default",
-        route_query(runner),
-        "route marked traffic to dynet0",
-    )
-}
-
-fn rule_status(runner: &impl SystemRunner) -> TakeoverCheck {
-    hook_check(
-        "route.rule.mark",
-        "dynet fwmark policy rule",
-        rule_query(runner, RULE_PRIORITY),
-        "route dynet fwmark through dynet table",
-    )
-}
-
-fn legacy_rule_status(runner: &impl SystemRunner) -> TakeoverCheck {
-    hook_check(
-        "route.rule.mark.legacy",
-        "legacy dynet fwmark policy rule",
-        rule_query(runner, LEGACY_RULE_PRIORITY),
-        "remove legacy dynet fwmark rule",
-    )
-}
-
-fn output_chain_status(runner: &impl SystemRunner) -> TakeoverCheck {
-    hook_check(
-        "nft.chain.output",
-        "dynet output capture hook",
-        runner.run(
-            "nft",
-            &["list", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
-        ),
-        "create output capture hook",
-    )
-}
-
-fn output_status_for(runner: &impl SystemRunner, service_uid: u32) -> TakeoverCheck {
-    let output = runner.run(
-        "nft",
-        &["list", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
-    );
-    let expected = format!("meta skuid {service_uid} return");
-    match output {
-        Ok(output) if output.success && output.stdout.contains(&expected) => TakeoverCheck {
-            id: "nft.chain.output",
-            label: "dynet output capture hook",
-            path: None,
-            state: CheckState::Ready,
-            auto_action: None,
-        },
-        Ok(_) | Err(_) => TakeoverCheck {
-            id: "nft.chain.output",
-            label: "dynet output capture hook",
-            path: None,
-            state: CheckState::MissingAutoCreatable,
-            auto_action: Some("reconcile output capture hook service identity"),
-        },
-    }
-}
-
-fn hook_check(
-    id: &'static str,
-    label: &'static str,
-    output: Result<crate::CommandOutput, String>,
-    action: &'static str,
-) -> TakeoverCheck {
-    match output {
-        Ok(output) if output.success && output.stdout_required_ready() => TakeoverCheck {
-            id,
-            label,
-            path: None,
-            state: CheckState::Ready,
-            auto_action: None,
-        },
-        Ok(_) | Err(_) => TakeoverCheck {
-            id,
-            label,
-            path: None,
-            state: CheckState::MissingAutoCreatable,
-            auto_action: Some(action),
-        },
-    }
-}
-
-fn route_query(runner: &impl SystemRunner) -> Result<crate::CommandOutput, String> {
-    runner.run(
-        "ip",
-        &[
-            "route",
-            "show",
-            "table",
-            ROUTE_TABLE,
-            "default",
-            "dev",
-            TUN_INTERFACE,
-        ],
-    )
-}
-
-fn rule_query(
-    runner: &impl SystemRunner,
-    priority: &'static str,
-) -> Result<crate::CommandOutput, String> {
-    runner.run("ip", &["rule", "show", "pref", priority])
-}
-
-fn delete_rule_pref(runner: &impl SystemRunner, priority: &'static str) -> Result<(), String> {
-    run_required(
-        runner,
-        "ip",
-        &[
-            "rule",
-            "del",
-            "pref",
-            priority,
-            "fwmark",
-            DYN_MARK_HEX,
-            "lookup",
-            ROUTE_TABLE,
-        ],
-    )
-}
-
-trait HookOutputReady {
-    fn stdout_required_ready(&self) -> bool;
-}
-
-impl HookOutputReady for crate::CommandOutput {
-    fn stdout_required_ready(&self) -> bool {
-        !self.stdout.is_empty()
-    }
-}
-
-fn output_rules(service_uid: u32) -> Vec<Vec<String>> {
+fn output_rules(options: HookOptions) -> Vec<Vec<String>> {
     let mut rules = vec![
         nft_rule(&[
             "meta".to_string(),
             "skuid".to_string(),
-            service_uid.to_string(),
+            options.service_uid.to_string(),
             "return".to_string(),
         ]),
-        nft_rule_strings(&["ip", "daddr", "127.0.0.0/8", "return"]),
-        nft_rule_strings(&["tcp", "sport", "22", "return"]),
-        nft_rule_strings(&["tcp", "dport", "22", "return"]),
+        nft_rule_strings(&["meta", "mark", "&", MARK_MASK_HEX, "!=", "0", "return"]),
     ];
-    for cidr in BYPASS_IPV4_CIDRS {
-        rules.push(nft_rule_strings(&["ip", "daddr", cidr, "return"]));
+    if options.ipv6_enabled {
+        rules.extend([
+            nft_rule_strings(&["ip6", "daddr", "::1", "return"]),
+            nft_rule_strings(&["ip6", "daddr", "fe80::/10", "return"]),
+            nft_rule_strings(&["ip6", "daddr", "ff00::/8", "return"]),
+        ]);
+    } else {
+        rules.push(nft_rule_strings(&["meta", "nfproto", "ipv6", "return"]));
     }
     rules.extend([
-        nft_rule_strings(&["udp", "dport", "53", "meta", "mark", "set", DYN_MARK_HEX]),
-        nft_rule_strings(&["ip", "protocol", "tcp", "meta", "mark", "set", DYN_MARK_HEX]),
-        nft_rule_strings(&["ip", "protocol", "udp", "meta", "mark", "set", DYN_MARK_HEX]),
+        nft_rule_strings(&["ip", "daddr", "127.0.0.0/8", "return"]),
+        nft_rule_strings(&["ip", "daddr", "169.254.0.0/16", "return"]),
+        nft_rule_strings(&["ip", "daddr", "224.0.0.0/4", "return"]),
+        nft_rule_strings(&["ip", "daddr", "255.255.255.255", "return"]),
+        nft_rule_strings(&["tcp", "sport", "22", "return"]),
+        nft_rule_strings(&["tcp", "dport", "22", "return"]),
+        nft_rule_strings(&[
+            "meta",
+            "l4proto",
+            "tcp",
+            "meta",
+            "mark",
+            "set",
+            "meta",
+            "mark",
+            "|",
+            MARK_VALUE_HEX,
+        ]),
+        nft_rule_strings(&[
+            "meta",
+            "l4proto",
+            "udp",
+            "meta",
+            "mark",
+            "set",
+            "meta",
+            "mark",
+            "|",
+            MARK_VALUE_HEX,
+        ]),
     ]);
     rules
 }

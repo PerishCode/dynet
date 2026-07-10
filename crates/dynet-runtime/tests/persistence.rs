@@ -425,6 +425,7 @@ struct PersistedMatrixShadow {
 
 fn tunnel_seed() -> RuntimeSeed {
     RuntimeSeed {
+        ipv6_enabled: false,
         nodes: vec![
             ForwardNode::new("airport-us-01", "ss", true),
             ForwardNode::new("airport-us-backup", "ss", true),

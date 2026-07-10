@@ -10,3 +10,6 @@ description = "Capture backends and host takeover lifecycle for dynet."
 ipstack = "1.0.0"
 libc = "0.2"
 tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
+
+[dev-dependencies]
+tempfile = "3"

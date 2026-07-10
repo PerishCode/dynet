@@ -1,8 +1,9 @@
 use std::{
+    env,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     mem,
-    os::fd::AsRawFd,
+    os::fd::{AsRawFd, FromRawFd, RawFd},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -10,6 +11,7 @@ use std::{
 
 const DEFAULT_TUN_DEVICE: &str = "/dev/net/tun";
 const DEFAULT_TUN_INTERFACE: &str = "dynet0";
+const INHERITED_TUN_FD_ENV: &str = "DYNET_INHERITED_TUN_FD";
 
 #[derive(Debug)]
 pub struct LinuxTun {
@@ -45,7 +47,11 @@ struct TunIfReq {
 
 impl LinuxTun {
     pub fn open(interface: &str) -> io::Result<Self> {
-        Self::open_with_device(DEFAULT_TUN_DEVICE, interface)
+        let file = match inherited_tun_file(env::var_os(INHERITED_TUN_FD_ENV))? {
+            Some(file) => file,
+            None => open_device(Path::new(DEFAULT_TUN_DEVICE))?,
+        };
+        Self::from_file(file, interface)
     }
 
     pub fn open_default() -> io::Result<Self> {
@@ -53,10 +59,11 @@ impl LinuxTun {
     }
 
     pub fn open_with_device(device: impl AsRef<Path>, interface: &str) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(device.as_ref())?;
+        let file = open_device(device.as_ref())?;
+        Self::from_file(file, interface)
+    }
+
+    fn from_file(file: File, interface: &str) -> io::Result<Self> {
         bind_tun_interface(&file, interface)?;
         Ok(Self {
             file,
@@ -89,6 +96,54 @@ impl LinuxTun {
         };
         fcntl_setfl(&self.file, next_flags)
     }
+}
+
+fn open_device(path: &Path) -> io::Result<File> {
+    OpenOptions::new().read(true).write(true).open(path)
+}
+
+fn inherited_tun_file(value: Option<std::ffi::OsString>) -> io::Result<Option<File>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let fd = validate_inherited_fd(&value)?;
+    let file = unsafe {
+        // SAFETY: the native procd supervisor transfers ownership of this open
+        // descriptor to the runtime process through the private environment ABI.
+        File::from_raw_fd(fd)
+    };
+    Ok(Some(file))
+}
+
+#[doc(hidden)]
+pub fn validate_inherited_fd(value: &std::ffi::OsStr) -> io::Result<RawFd> {
+    let value = value.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{INHERITED_TUN_FD_ENV} must be UTF-8"),
+        )
+    })?;
+    let fd = value.parse::<RawFd>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{INHERITED_TUN_FD_ENV} must be a file descriptor: {error}"),
+        )
+    })?;
+    if fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{INHERITED_TUN_FD_ENV} must be non-negative"),
+        ));
+    }
+    let flags = unsafe {
+        // SAFETY: F_GETFD only queries whether the caller-provided descriptor
+        // refers to an open file; it does not take ownership.
+        libc::fcntl(fd, libc::F_GETFD)
+    };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fd)
 }
 
 pub fn probe_default() -> io::Result<TunProbeReport> {

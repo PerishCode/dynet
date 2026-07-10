@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
 
-use sqlx::{sqlite::SqliteRow, Row, Sqlite, Transaction};
+use sqlx::{sqlite::SqliteRow, Row};
 
 use crate::{
     DnsHttpsEndpoint, DnsRacePolicy, DnsUpstream, DnsUpstreamId, DnsUpstreamTransport,
-    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, NextRef, NodeId,
-    RouteMatcher, RouteRule, RuleId, RuntimeSeed,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, Ipv6RulePolicy, NextRef,
+    NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
 };
 
 use super::{
@@ -14,11 +14,14 @@ use super::{
     RuntimeStore, RuntimeStoreError, SCHEMA_VERSION,
 };
 
+mod insert;
 mod row_value;
-use row_value::{bool_from_i64, scheduler_from_str, u32_from_i64, u64_to_i64};
+use insert::*;
+use row_value::{bool_from_i64, scheduler_from_str, u32_from_i64};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct RuntimeBootstrap {
+    pub(crate) ipv6_enabled: bool,
     pub(crate) nodes: Vec<ForwardNode>,
     pub(crate) default_group_id: GroupId,
     pub(crate) groups: Vec<ForwardGroup>,
@@ -31,7 +34,7 @@ pub(crate) struct RuntimeBootstrap {
 impl RuntimeStore {
     pub async fn load_nodes(&self) -> Result<Vec<ForwardNode>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, tag, enabled, fingerprint from runtime_nodes order by case when id = 'default-node' then 0 else 1 end, id",
+            "select id, tag, enabled, fingerprint, supports_ipv6 from runtime_nodes order by case when id = 'default-node' then 0 else 1 end, id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -83,6 +86,14 @@ impl RuntimeStore {
         .bind(seed.default_group_id.as_str())
         .execute(&mut *transaction)
         .await?;
+        sqlx::query(
+            "insert into runtime_meta (key, value)
+             values ('ipv6_enabled', ?1)
+             on conflict(key) do update set value = excluded.value",
+        )
+        .bind(if seed.ipv6_enabled { "1" } else { "0" })
+        .execute(&mut *transaction)
+        .await?;
         insert_dns_policy(&mut transaction, seed.dns_policy).await?;
         transaction.commit().await?;
         Ok(())
@@ -101,6 +112,15 @@ impl RuntimeStore {
             .await?
             .ok_or_else(|| RuntimeStoreError::InvalidBootstrap("missing default_group_id".into()))
             .map(GroupId::new)?;
+        let ipv6_enabled = match self.meta_value("ipv6_enabled").await?.as_deref() {
+            Some("1") => true,
+            Some("0") | None => false,
+            Some(value) => {
+                return Err(RuntimeStoreError::InvalidBootstrap(format!(
+                    "ipv6_enabled must be 0 or 1, got {value:?}"
+                )))
+            }
+        };
         let nodes = self.load_nodes().await?;
         let groups = self.load_groups().await?;
         let group_members = self.load_group_members().await?;
@@ -117,6 +137,7 @@ impl RuntimeStore {
             &dns_policy,
         )?;
         Ok(RuntimeBootstrap {
+            ipv6_enabled,
             nodes,
             default_group_id,
             groups,
@@ -158,7 +179,7 @@ impl RuntimeStore {
 
     async fn load_route_rules(&self) -> Result<Vec<RouteRule>, RuntimeStoreError> {
         let rows = sqlx::query(
-            "select id, priority, enabled, matcher_kind, matcher_value, group_id from runtime_route_rules order by priority desc, id",
+            "select id, priority, enabled, matcher_kind, matcher_value, group_id, ipv6_policy from runtime_route_rules order by priority desc, id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -182,6 +203,12 @@ fn row_to_node(row: SqliteRow) -> Result<ForwardNode, RuntimeStoreError> {
     let tag = row.get::<String, _>("tag");
     let enabled = row.get::<i64, _>("enabled");
     let fingerprint = row.get::<String, _>("fingerprint");
+    let supports_ipv6 = bool_from_i64(row.get::<i64, _>("supports_ipv6")).ok_or_else(|| {
+        RuntimeStoreError::InvalidNode {
+            id: id.clone(),
+            message: "supports_ipv6 must be 0 or 1".to_string(),
+        }
+    })?;
     if enabled != 0 && enabled != 1 {
         return Err(RuntimeStoreError::InvalidNode {
             id,
@@ -193,6 +220,7 @@ fn row_to_node(row: SqliteRow) -> Result<ForwardNode, RuntimeStoreError> {
         tag,
         enabled: enabled == 1,
         fingerprint,
+        supports_ipv6,
     })
 }
 
@@ -291,12 +319,24 @@ fn row_to_route_rule(row: SqliteRow) -> Result<RouteRule, RuntimeStoreError> {
             });
         }
     };
+    let ipv6 = match row.get::<String, _>("ipv6_policy").as_str() {
+        "inherit" => Ipv6RulePolicy::Inherit,
+        "allow" => Ipv6RulePolicy::Allow,
+        "deny" => Ipv6RulePolicy::Deny,
+        value => {
+            return Err(RuntimeStoreError::InvalidRouteRule {
+                id,
+                message: format!("ipv6_policy {value:?} is unsupported"),
+            })
+        }
+    };
     Ok(RouteRule {
         id: RuleId::new(id),
         priority: row.get::<i64, _>("priority"),
         enabled,
         matcher,
         group_id: GroupId::new(row.get::<String, _>("group_id")),
+        ipv6,
     })
 }
 
@@ -354,130 +394,4 @@ fn dns_transport_from_row(
             message: format!("transport {other:?} is unsupported"),
         }),
     }
-}
-
-async fn insert_node(
-    transaction: &mut Transaction<'_, Sqlite>,
-    node: &ForwardNode,
-) -> Result<(), RuntimeStoreError> {
-    let enabled = if node.enabled { 1_i64 } else { 0_i64 };
-    sqlx::query(
-        "insert into runtime_nodes (id, tag, enabled, fingerprint, updated_at_unix_ms)
-         values (?1, ?2, ?3, ?4, ?5)",
-    )
-    .bind(node.id.as_str())
-    .bind(&node.tag)
-    .bind(enabled)
-    .bind(&node.fingerprint)
-    .bind(super::unix_ms_i64())
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
-}
-
-async fn insert_group(
-    transaction: &mut Transaction<'_, Sqlite>,
-    group: &ForwardGroup,
-) -> Result<(), RuntimeStoreError> {
-    let enabled = if group.enabled { 1_i64 } else { 0_i64 };
-    sqlx::query(
-        "insert into runtime_forward_groups (
-            id, enabled, scheduler, min_success_rate_ppm, min_samples, max_active_sessions, next, updated_at_unix_ms
-         )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-    )
-    .bind(group.id.as_str())
-    .bind(enabled)
-    .bind(group.scheduler.as_str())
-    .bind(i64::from(group.thresholds.min_success_rate_ppm))
-    .bind(i64::try_from(group.thresholds.min_samples).unwrap_or(i64::MAX))
-    .bind(group.thresholds.max_active_sessions.map(u64_to_i64))
-    .bind(group.next.label())
-    .bind(super::unix_ms_i64())
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
-}
-
-async fn insert_route_rule(
-    transaction: &mut Transaction<'_, Sqlite>,
-    rule: &RouteRule,
-) -> Result<(), RuntimeStoreError> {
-    let enabled = if rule.enabled { 1_i64 } else { 0_i64 };
-    let (matcher_kind, matcher_value) = match &rule.matcher {
-        RouteMatcher::DomainExact(value) => ("domain-exact", value.clone()),
-        RouteMatcher::DomainSuffix(value) => ("domain-suffix", value.clone()),
-        RouteMatcher::IpExact(value) => ("ip-exact", value.to_string()),
-        RouteMatcher::IpCidr(value) => ("ip-cidr", value.clone()),
-    };
-    sqlx::query(
-        "insert into runtime_route_rules (
-            id, priority, enabled, matcher_kind, matcher_value, group_id,
-            updated_at_unix_ms
-         )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )
-    .bind(rule.id.as_str())
-    .bind(rule.priority)
-    .bind(enabled)
-    .bind(matcher_kind)
-    .bind(matcher_value)
-    .bind(rule.group_id.as_str())
-    .bind(super::unix_ms_i64())
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
-}
-
-async fn insert_group_member(
-    transaction: &mut Transaction<'_, Sqlite>,
-    member: &GroupMember,
-) -> Result<(), RuntimeStoreError> {
-    let enabled = if member.enabled { 1_i64 } else { 0_i64 };
-    sqlx::query(
-        "insert into runtime_group_members (
-            group_id, node_id, enabled, priority, updated_at_unix_ms
-         )
-         values (?1, ?2, ?3, ?4, ?5)",
-    )
-    .bind(member.group_id.as_str())
-    .bind(member.node_id.as_str())
-    .bind(enabled)
-    .bind(i64::from(member.priority))
-    .bind(super::unix_ms_i64())
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
-}
-
-async fn insert_dns_upstream(
-    transaction: &mut Transaction<'_, Sqlite>,
-    upstream: &DnsUpstream,
-) -> Result<(), RuntimeStoreError> {
-    let enabled = if upstream.enabled { 1_i64 } else { 0_i64 };
-    let (transport, host, path) = match &upstream.transport {
-        DnsUpstreamTransport::Udp => ("udp", None, None),
-        DnsUpstreamTransport::Https(endpoint) => (
-            "https",
-            Some(endpoint.host.as_str()),
-            Some(endpoint.path.as_str()),
-        ),
-    };
-    sqlx::query(
-        "insert into runtime_dns_upstreams (
-            id, address, transport, host, path, enabled, priority, updated_at_unix_ms
-         )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-    )
-    .bind(upstream.id.as_str())
-    .bind(upstream.address.to_string())
-    .bind(transport)
-    .bind(host)
-    .bind(path)
-    .bind(enabled)
-    .bind(i64::from(upstream.priority))
-    .bind(super::unix_ms_i64())
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
 }

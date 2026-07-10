@@ -16,6 +16,7 @@ fn env_overrides_config() {
     let _guard = EnvGuard::set(&[
         ("DYNET_CONTROL_BIND", "127.0.0.1:9001"),
         ("DYNET_DNS_BIND", "127.0.0.1:9002"),
+        ("DYNET_DNS_MAX_SESSIONS", "63"),
         ("DYNET_TCP_BIND", "127.0.0.1:9004"),
         ("DYNET_TCP_UPSTREAM", "127.0.0.1:9005"),
         ("DYNET_TCP_MAX_SESSIONS", "64"),
@@ -32,6 +33,11 @@ fn env_overrides_config() {
         ("DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS", "2345"),
         ("DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS", "3456"),
         ("DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS", "4567"),
+        ("DYNET_IPV6_ENABLED", "true"),
+        ("DYNET_DNS_MAPPING_INTERFACE", "br-test"),
+        ("DYNET_DNS_MAPPING_SOURCE_PORT", "5353"),
+        ("DYNET_PERSISTENCE_RETENTION_HOURS", "12"),
+        ("DYNET_PERSISTENCE_MAX_BYTES", "16777216"),
         ("DYNET_SERVICE_MANAGER", "systemd"),
         ("DYNET_SERVICE_USER", "service"),
         ("DYNET_RUNTIME_DB", "/var/lib/dynet/runtime.sqlite"),
@@ -42,6 +48,7 @@ fn env_overrides_config() {
 
     assert_eq!(config.control.bind, socket("127.0.0.1:9001"));
     assert_eq!(config.ingress.dns.bind, socket("127.0.0.1:9002"));
+    assert_eq!(config.ingress.dns.max_sessions, 63);
     assert_eq!(config.ingress.tcp.bind, socket("127.0.0.1:9004"));
     assert_eq!(config.ingress.tcp.upstream, socket("127.0.0.1:9005"));
     assert_eq!(config.ingress.tcp.max_sessions, 64);
@@ -73,6 +80,12 @@ fn env_overrides_config() {
         config.capture.tun.udp_response_timeout,
         Duration::from_millis(4567)
     );
+    assert!(config.ipv6.enabled);
+    assert!(config.forwarding.seed.ipv6_enabled);
+    assert_eq!(config.dns_mapping.interface.as_deref(), Some("br-test"));
+    assert_eq!(config.dns_mapping.source_port, 5353);
+    assert_eq!(config.persistence.retention, Duration::from_secs(12 * 3600));
+    assert_eq!(config.persistence.max_bytes, 16 * 1024 * 1024);
     assert_eq!(config.service.manager, ServiceManager::Systemd);
     assert_eq!(config.service.user, "service");
     assert_eq!(
@@ -98,6 +111,7 @@ bind = "127.0.0.1:9101"
 
 [ingress.dns]
 bind = "127.0.0.1:9102"
+max_sessions = 31
 
 [ingress.tcp]
 bind = "127.0.0.1:9104"
@@ -123,6 +137,17 @@ tcp_idle_timeout_ms = 1357
 udp_idle_timeout_ms = 2468
 udp_response_timeout_ms = 3579
 
+[ipv6]
+enabled = true
+
+[dns_mapping]
+interface = "br-lan"
+source_port = 53
+
+[persistence]
+retention_hours = 6
+max_bytes = 8388608
+
 [service]
 manager = "procd"
 user = "dynet-service"
@@ -136,6 +161,7 @@ environment_file = "/etc/dynet/service.env"
 
     assert_eq!(config.control.bind, socket("127.0.0.1:9101"));
     assert_eq!(config.ingress.dns.bind, socket("127.0.0.1:9102"));
+    assert_eq!(config.ingress.dns.max_sessions, 31);
     assert_eq!(config.ingress.tcp.bind, socket("127.0.0.1:9104"));
     assert_eq!(config.ingress.tcp.upstream, socket("127.0.0.1:9105"));
     assert_eq!(config.ingress.tcp.max_sessions, 32);
@@ -167,6 +193,12 @@ environment_file = "/etc/dynet/service.env"
         config.capture.tun.udp_response_timeout,
         Duration::from_millis(3579)
     );
+    assert!(config.ipv6.enabled);
+    assert!(config.forwarding.seed.ipv6_enabled);
+    assert_eq!(config.dns_mapping.interface.as_deref(), Some("br-lan"));
+    assert_eq!(config.dns_mapping.source_port, 53);
+    assert_eq!(config.persistence.retention, Duration::from_secs(6 * 3600));
+    assert_eq!(config.persistence.max_bytes, 8 * 1024 * 1024);
     assert_eq!(config.service.manager, ServiceManager::Procd);
     assert_eq!(config.service.user, "dynet-service");
     assert_eq!(
@@ -256,6 +288,67 @@ fn rejects_empty_tun_interface() {
     assert!(error.contains("DYNET_CAPTURE_TUN_INTERFACE"));
 }
 
+#[test]
+fn rejects_invalid_persistence_limits() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[("DYNET_PERSISTENCE_RETENTION_HOURS", "0")]);
+
+    let error = Config::from_env().expect_err("zero retention is rejected");
+    assert!(error.contains("DYNET_PERSISTENCE_RETENTION_HOURS"));
+
+    drop(_guard);
+    let _guard = EnvGuard::set(&[("DYNET_PERSISTENCE_MAX_BYTES", "1024")]);
+    let error = Config::from_env().expect_err("undersized budget is rejected");
+    assert!(error.contains("max_bytes must be at least"));
+}
+
+#[test]
+fn rejects_unsafe_mapping_interface() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[("DYNET_DNS_MAPPING_INTERFACE", "br-lan;flush")]);
+
+    let error = Config::from_env().expect_err("unsafe interface is rejected");
+
+    assert!(error.contains("DYNET_DNS_MAPPING_INTERFACE"));
+}
+
+#[test]
+fn rejects_invalid_ipv6_policy() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("rejects_invalid_ipv6_policy");
+    fs::write(
+        &config_path,
+        r#"
+[forwarding]
+default_group = "default"
+
+[[forwarding.nodes]]
+id = "default-node"
+type = "direct"
+
+[[forwarding.groups]]
+id = "default"
+mode = "smart"
+members = ["default-node"]
+
+[[forwarding.rules]]
+id = "bad-ipv6"
+priority = 100
+match = "domain-suffix"
+value = "example.org"
+group = "default"
+ipv6 = "drop"
+"#,
+    )
+    .expect("write config");
+
+    let error = Config::from_config_path(Some(&config_path)).expect_err("invalid policy rejected");
+
+    assert!(error.contains("ipv6 must be allow, deny, or inherit"));
+    fs::remove_file(config_path).expect("remove config");
+}
+
 fn socket(value: &str) -> SocketAddr {
     value.parse().expect("socket parses")
 }
@@ -283,6 +376,7 @@ impl EnvGuard {
 const ENV_KEYS: &[&str] = &[
     "DYNET_CONTROL_BIND",
     "DYNET_DNS_BIND",
+    "DYNET_DNS_MAX_SESSIONS",
     "DYNET_TCP_BIND",
     "DYNET_TCP_UPSTREAM",
     "DYNET_TCP_MAX_SESSIONS",
@@ -299,6 +393,11 @@ const ENV_KEYS: &[&str] = &[
     "DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS",
     "DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS",
     "DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS",
+    "DYNET_IPV6_ENABLED",
+    "DYNET_DNS_MAPPING_INTERFACE",
+    "DYNET_DNS_MAPPING_SOURCE_PORT",
+    "DYNET_PERSISTENCE_RETENTION_HOURS",
+    "DYNET_PERSISTENCE_MAX_BYTES",
     "DYNET_SERVICE_MANAGER",
     "DYNET_SERVICE_USER",
     "DYNET_RUNTIME_DB",

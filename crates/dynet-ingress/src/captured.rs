@@ -95,9 +95,9 @@ where
         Err(error) => {
             runtime.events().record(
                 IngressEventKind::TcpError,
-                selection_error_fields(session_id, peer, target, error.clone()),
+                selection_error_fields(session_id, peer, target, &error),
             );
-            return Err(error);
+            return Err(error.to_string());
         }
     };
     let node_protocol = egress.decision_tag(&decision);
@@ -270,9 +270,9 @@ where
         Err(error) => {
             runtime.events().record(
                 IngressEventKind::UdpError,
-                selection_error_fields(session_id, peer, target, error.clone()),
+                selection_error_fields(session_id, peer, target, &error),
             );
-            return Err(error);
+            return Err(error.to_string());
         }
     };
     let node_protocol = egress.decision_tag(&decision);
@@ -395,25 +395,33 @@ fn select_target(
     session_id: u64,
     inbound: InboundKind,
     target: TargetContext,
-) -> Result<SelectionDecision, String> {
-    runtime
-        .select(SelectionContext {
-            session_id,
-            inbound,
-            target,
-        })
-        .map_err(|error| error.to_string())
+) -> Result<SelectionDecision, dynet_runtime::SelectionError> {
+    runtime.select(SelectionContext {
+        session_id,
+        inbound,
+        target,
+    })
 }
 
 fn selection_error_fields(
     session_id: u64,
     peer: SocketAddr,
     target: SocketAddr,
-    error: String,
+    error: &dynet_runtime::SelectionError,
 ) -> Vec<(&'static str, String)> {
     let mut fields = session_fields(session_id, TUN_INBOUND, "selection", peer, target, target);
     fields.push(("errorStage", "egress-select".to_string()));
-    fields.push(("error", error));
+    fields.push(("errorCode", error.code().to_string()));
+    fields.push((
+        "ipFamily",
+        if target.is_ipv6() { "ipv6" } else { "ipv4" }.to_string(),
+    ));
+    if let Some(rule_id) = error.matched_rule_id() {
+        fields.push(("matchedRuleId", rule_id.to_string()));
+        fields.push(("ipv6Policy", "deny".to_string()));
+        fields.push(("ipv6PolicySource", "rule".to_string()));
+    }
+    fields.push(("error", error.to_string()));
     fields
 }
 

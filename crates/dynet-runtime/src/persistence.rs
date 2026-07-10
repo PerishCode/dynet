@@ -1,4 +1,4 @@
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, time::Duration};
 
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
@@ -12,6 +12,7 @@ use crate::{
 
 mod bootstrap;
 mod dns_policy;
+mod maintenance;
 mod recovery;
 mod schema;
 mod sink;
@@ -23,11 +24,42 @@ pub(crate) use sink::ObservationSink;
 pub use sink::PersistenceStatsSnapshot;
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16_384;
-const SCHEMA_VERSION: &str = "13";
+const SCHEMA_VERSION: &str = "14";
+const MIN_PERSISTENCE_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PersistencePolicy {
+    pub retention: Duration,
+    pub max_bytes: u64,
+}
+
+impl Default for PersistencePolicy {
+    fn default() -> Self {
+        Self {
+            retention: Duration::from_secs(24 * 60 * 60),
+            max_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+impl PersistencePolicy {
+    pub fn validate(self) -> Result<(), String> {
+        if self.retention.is_zero() {
+            return Err("retention must be greater than zero".to_string());
+        }
+        if self.max_bytes < MIN_PERSISTENCE_BYTES {
+            return Err(format!(
+                "max_bytes must be at least {MIN_PERSISTENCE_BYTES}"
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RuntimeStore {
     pub(super) pool: SqlitePool,
+    pub(super) persistence_policy: PersistencePolicy,
 }
 
 #[derive(Debug)]
@@ -56,22 +88,49 @@ pub enum RuntimeStoreError {
         message: String,
     },
     InvalidBootstrap(String),
+    InvalidPersistencePolicy(String),
 }
 
 impl RuntimeStore {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, RuntimeStoreError> {
+        Self::open_with_policy(path, PersistencePolicy::default()).await
+    }
+
+    pub async fn open_with_policy(
+        path: impl AsRef<Path>,
+        persistence_policy: PersistencePolicy,
+    ) -> Result<Self, RuntimeStoreError> {
+        persistence_policy
+            .validate()
+            .map_err(RuntimeStoreError::InvalidPersistencePolicy)?;
+        let wal_budget = persistence_policy.max_bytes / 8;
+        let database_budget = persistence_policy.max_bytes * 7 / 8;
+        let wal_autocheckpoint_pages = (wal_budget / 4096 / 2).max(1);
+        let max_page_count = (database_budget / 4096).max(1);
         let options = SqliteConnectOptions::new()
             .filename(path.as_ref())
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .pragma("journal_size_limit", wal_budget.to_string())
+            .pragma("wal_autocheckpoint", wal_autocheckpoint_pages.to_string())
+            .pragma("max_page_count", max_page_count.to_string());
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
             .max_connections(4)
             .connect_with(options)
             .await?;
         schema::migrate(&pool).await?;
-        Ok(Self { pool })
+        let store = Self {
+            pool,
+            persistence_policy,
+        };
+        maintenance::initialize(&store).await?;
+        Ok(store)
+    }
+
+    pub async fn maintain_persistence(&self) -> Result<(), RuntimeStoreError> {
+        maintenance::maintain(self, false).await
     }
 
     pub(super) async fn insert_event(&self, event: &IngressEvent) -> Result<(), RuntimeStoreError> {
@@ -259,9 +318,11 @@ impl RuntimeStore {
                 reason,
                 scheduler,
                 candidate_count,
-                config_generation
+                config_generation,
+                ip_family,
+                ipv6_policy_source
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         )
         .bind(u64_to_i64(decision.decision_id))
         .bind(u128_to_i64(observed_at_unix_ms))
@@ -278,6 +339,8 @@ impl RuntimeStore {
         .bind(decision.scheduler.as_str())
         .bind(usize_to_i64(decision.candidate_count))
         .bind(u64_to_i64(decision.config_generation))
+        .bind(decision.ip_family.as_str())
+        .bind(decision.ipv6_policy_source.map(|source| source.as_str()))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -354,6 +417,12 @@ impl fmt::Display for RuntimeStoreError {
             Self::InvalidBootstrap(message) => {
                 write!(formatter, "runtime store bootstrap is invalid: {message}")
             }
+            Self::InvalidPersistencePolicy(message) => {
+                write!(
+                    formatter,
+                    "runtime persistence policy is invalid: {message}"
+                )
+            }
         }
     }
 }
@@ -369,6 +438,16 @@ impl From<sqlx::Error> for RuntimeStoreError {
 impl From<serde_json::Error> for RuntimeStoreError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serde(error)
+    }
+}
+
+impl RuntimeStoreError {
+    fn is_database_full(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlx(sqlx::Error::Database(error))
+                if error.code().as_deref() == Some("13")
+        )
     }
 }
 

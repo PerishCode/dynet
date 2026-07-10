@@ -21,6 +21,7 @@ impl FileForwardNodeConfig {
         };
         let mut parts = vec![
             ("type", kind.to_string()),
+            ("ipv6", self.ipv6.unwrap_or(true).to_string()),
             (
                 "server",
                 self.server

@@ -1,5 +1,13 @@
-use std::{os::unix::process::CommandExt, process::ExitStatus, time::Duration};
+use std::{
+    fs::{File, OpenOptions},
+    io,
+    os::{fd::AsRawFd, unix::process::CommandExt},
+    path::Path,
+    process::ExitStatus,
+    time::Duration,
+};
 
+use dynet_state::AppState;
 use tokio::{process::Command, time::timeout};
 
 use crate::{resolve_identity_with, runner::run_required, HostRunner, ServiceRunner, ServiceSpec};
@@ -29,16 +37,27 @@ pub async fn supervise_with(
         executable,
         &["apply".to_string(), "--auto".to_string()],
     )?;
+    let inherited_tun = inherited_tun_device(spec)?;
     let mut command = Command::new(&spec.executable);
     command
         .arg("run")
         .arg("--config")
         .arg(&spec.config)
         .kill_on_drop(true);
-    command.as_std_mut().uid(identity.uid).gid(identity.gid);
+    if let Some(file) = inherited_tun.as_ref() {
+        command.env(INHERITED_TUN_FD_ENV, file.as_raw_fd().to_string());
+    }
+    let uid = identity.uid;
+    let gid = identity.gid;
+    unsafe {
+        command
+            .as_std_mut()
+            .pre_exec(move || configure_child_identity(uid, gid));
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed starting supervised dynet runtime: {error}"))?;
+    drop(inherited_tun);
     let pid = child
         .id()
         .ok_or_else(|| "supervised dynet runtime has no process id".to_string())?;
@@ -53,6 +72,121 @@ pub async fn supervise_with(
         Ok(())
     } else {
         Err(format!("supervised dynet runtime exited with {status}"))
+    }
+}
+
+const TUN_DEVICE: &str = "/dev/net/tun";
+const INHERITED_TUN_FD_ENV: &str = "DYNET_INHERITED_TUN_FD";
+
+fn inherited_tun_device(spec: &ServiceSpec) -> Result<Option<File>, String> {
+    let state = AppState::from_config_path(Some(&spec.config))?;
+    if !state.config.capture.tun.enabled {
+        return Ok(None);
+    }
+    preopen_tun(Path::new(TUN_DEVICE))
+        .map(Some)
+        .map_err(|error| {
+            format!("failed pre-opening {TUN_DEVICE} for the supervised runtime: {error}")
+        })
+}
+
+#[doc(hidden)]
+pub fn preopen_tun(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let flags = unsafe {
+        // SAFETY: F_GETFD only reads descriptor flags for this valid file.
+        libc::fcntl(file.as_raw_fd(), libc::F_GETFD)
+    };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result = unsafe {
+        // SAFETY: F_SETFD updates descriptor flags for this valid file. Clearing
+        // FD_CLOEXEC is required only across the immediately following spawn.
+        libc::fcntl(file.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC)
+    };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+fn configure_child_identity(uid: u32, gid: u32) -> io::Result<()> {
+    let current_uid = unsafe { libc::geteuid() };
+    let current_gid = unsafe { libc::getegid() };
+    if current_uid != 0 {
+        return if current_uid == uid && current_gid == gid {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "non-root dynet supervisor cannot change child identity",
+            ))
+        };
+    }
+
+    cvt(unsafe { libc::setgroups(0, std::ptr::null()) })?;
+    cvt(unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 1, 0, 0, 0) })?;
+    cvt(unsafe { libc::setgid(gid) })?;
+    cvt(unsafe { libc::setuid(uid) })?;
+    retain_net_admin_capability()?;
+    cvt(unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_RAISE,
+            CAP_NET_ADMIN,
+            0,
+            0,
+        )
+    })?;
+    cvt(unsafe { libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0) })?;
+    Ok(())
+}
+
+const CAP_NET_ADMIN: libc::c_ulong = 12;
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+#[repr(C)]
+struct CapabilityHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CapabilityData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+fn retain_net_admin_capability() -> io::Result<()> {
+    let header = CapabilityHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let mask = 1_u32 << CAP_NET_ADMIN;
+    let data = [
+        CapabilityData {
+            effective: mask,
+            permitted: mask,
+            inheritable: mask,
+        },
+        CapabilityData::default(),
+    ];
+    let result = unsafe { libc::syscall(libc::SYS_capset, &header, data.as_ptr()) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn cvt(result: libc::c_int) -> io::Result<()> {
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 

@@ -10,11 +10,11 @@ dynet owns routing and forwarding decisions.
 dynet owns observability feedback.
 ```
 
-Linux cold start is TUN-first and IPv4-only. System integration must use
-dynet-owned `.d` fragments, dedicated route/nft state, and explicit owner
-markers. If an isolated carrier is unavailable, dynet hard fails. `--auto` may
-create missing dynet-owned isolated fragments, but it must never fall back to
-directly overwriting global configuration files.
+Linux cold start is TUN-first and dual-stack-capable. IPv6 participation is
+disabled until `[ipv6].enabled = true`; once enabled, IPv6 defaults to allow and
+follows the selected forwarding graph. Dynet never disables host IPv6 and is
+not a firewall. System integration uses dynet-owned `.d` fragments, dedicated
+route/nft state, and explicit owner markers.
 
 See `docs/full-takeover.md` for the current architecture direction.
 
@@ -40,6 +40,11 @@ dynet hooks apply --config dynet.toml
                       # VM-only install/reconcile of the output capture hook
 dynet hooks cleanup --config dynet.toml
                       # VM-only removal of current hook route/rule state
+dynet dns-mapping plan|doctor|status --config dynet.toml
+dynet dns-mapping apply --config dynet.toml
+                      # explicitly map caller-selected UDP/TCP port 53 to DNS ingress
+dynet dns-mapping cleanup --config dynet.toml
+                      # remove only the dynet-owned optional mapping chain
 dynet config summary --config dynet.toml
                       # redacted config inventory; no proxy secrets or endpoints
 dynet config validate --config dynet.toml
@@ -70,8 +75,9 @@ complete candidate before publishing anything. Invalid candidates and changes
 that require a restart keep the last-good generation active. A no-op is audited
 without incrementing the generation. Shutdown stops accepting new work, drains
 active tasks within a fixed budget, and flushes queued persistence before exit.
-Both service backends clean capture hooks before startup and after every
-terminal runtime exit so manager-driven restart fails open to direct routing.
+Both service backends clean capture hooks and any explicitly applied owned DNS
+mapping before startup and after every terminal runtime exit so manager-driven
+restart fails open. Neither backend implicitly applies hooks or port mapping.
 
 Missing parent carriers, missing kernel/device capabilities, or missing
 required host commands are hard failures. `apply --auto` only creates
@@ -80,7 +86,12 @@ creates the current runtime skeleton, `dynet0` plus an `inet dynet` nftables
 table with inert `bypass` / `dns` / `tcp` / `udp` chains, without installing
 traffic-capturing route or nft hooks.
 
-The local-safe packet path currently parses IPv4 TCP / UDP / DNS packet metadata
+`doctor` tests `ip tuntap show` functionally, so an ip-tiny binary is rejected
+even if an `ip` executable exists. The takeover layer does not require a
+systemd carrier; service-manager-specific checks belong to `dynet service
+doctor`, allowing the same capture prerequisites to work with OpenWrt procd.
+
+The local-safe packet path parses IPv4 and IPv6 TCP / UDP / DNS packet metadata
 from bytes and maps it into normalized captured flow context. Linux TUN IO can
 bind `dynet0` through `/dev/net/tun` and expose packet read/write. The
 VM-only `ipstack-poc` command validates that captured TCP and UDP/DNS flows can
@@ -93,12 +104,19 @@ It has been validated for direct/default graph TCP and UDP/DNS probes. The same
 path is now available to `dynet run` through disabled-by-default `[capture.tun]`
 configuration for long-running VM capture windows.
 
-The first hook slice is VM-only: `hooks apply` installs a local output hook, a
-fwmark policy rule before the main table, and a dynet route table that routes
-marked VM-originated TCP/UDP traffic to `dynet0`. It bypasses SSH, loopback,
-the dynet service UID, and the default service LAN IPv4 ranges
-`192.168.1.0/24`, `192.168.20.0/24`, and `10.199.0.0/24` so the experiment can
-be cleaned up through `hooks cleanup` after each validation window.
+The output-hook helper is VM-only and explicit. It reserves mark bit
+`0x40000000/0x40000000`, preserves every other caller mark bit, uses policy rule
+priority `10000`, route table ID `51880`, and nft output priority `-150`.
+IPv4 is always installed; IPv6 route/rule state is installed only when enabled.
+Only TCP/UDP are marked, while SSH, loopback, link-local/multicast traffic, the
+service UID, and already-marked packets bypass capture. Foreign or drifted
+artifacts are hard refusals and are never overwritten or removed.
+
+Traffic admission and firewall policy remain caller-owned. The optional
+`dns-mapping` command is only a shortcut for a caller-selected interface and
+source port; it never changes firewall admission, DHCP, dnsmasq, UCI, or fw4.
+Apply is never implicit. DNS ingress serves UDP and length-prefixed TCP on the
+same configured socket.
 
 `dynet run` does not install or remove capture hooks. The host capture lifecycle
 remains explicit: apply the skeleton with `apply --auto`, start `dynet run` with
@@ -150,6 +168,7 @@ Cold-start bind/upstream values can be overridden with environment variables:
 ```text
 DYNET_CONTROL_BIND
 DYNET_DNS_BIND
+DYNET_DNS_MAX_SESSIONS      # default: 256 TCP DNS sessions
 DYNET_TCP_BIND
 DYNET_TCP_UPSTREAM
 DYNET_TCP_MAX_SESSIONS      # default: 1024 active sessions
@@ -166,6 +185,11 @@ DYNET_CAPTURE_TUN_INTERFACE
 DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS
 DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS
 DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS
+DYNET_IPV6_ENABLED
+DYNET_DNS_MAPPING_INTERFACE
+DYNET_DNS_MAPPING_SOURCE_PORT
+DYNET_PERSISTENCE_RETENTION_HOURS # default: 24
+DYNET_PERSISTENCE_MAX_BYTES       # default: 67108864
 DYNET_SERVICE_MANAGER             # auto, systemd, or procd
 DYNET_SERVICE_USER
 DYNET_RUNTIME_DB
@@ -189,8 +213,12 @@ the runtime authority. Environment values are re-read on reload, but an
 external process cannot change an already-running process environment; changing
 service environment therefore requires a restart. SQLite transactionally
 mirrors the current forwarding seed and preserves events, completed sessions,
-matrix observations, and shadow decisions across restarts. It does not override
-the current file/environment configuration. When a retained database is opened,
+matrix observations, and shadow decisions across restarts. Persistent
+observations default to a 24-hour retention window and a 64 MiB budget: expired
+rows are pruned, size pressure evicts the oldest observations, active sessions
+are protected from time-based pruning, and SQLite page/WAL growth is bounded.
+Payloads and credentials are not persisted. The database does not override the
+current file/environment configuration. When a retained database is opened,
 event, session, and decision IDs continue from their persisted high-water marks;
 resetting those counters would make a new session collide with an older
 `runtime_traffic_sessions` key and corrupt its audit timeline.
@@ -198,9 +226,9 @@ resetting those counters would make a new session collide with an older
 The current reload contract is all-or-nothing:
 
 - `forwarding` and the three `capture.tun` timeout values are hot reloadable.
-- control/ingress binds, fixed ingress upstreams and capacity limits,
-  `capture.tun.enabled`, `capture.tun.interface`, and all `[service]` fields
-  require a process restart.
+- control/ingress binds and capacity limits, `ipv6`, `dns_mapping`,
+  `persistence`, `capture.tun.enabled`, `capture.tun.interface`, and all
+  `[service]` fields require a process restart.
 - mixed candidates containing any restart-required field are rejected as a
   whole; hot fields from that candidate are not partially applied.
 - new decisions carry `configGeneration`; the execution layer retains a bounded
@@ -217,7 +245,8 @@ The current reload contract is all-or-nothing:
 bind = "127.0.0.1:9977"
 
 [ingress.dns]
-bind = "127.0.0.1:1053"
+bind = "[::]:1053"
+max_sessions = 256
 
 [ingress.tcp]
 bind = "127.0.0.1:18080"
@@ -243,6 +272,19 @@ tcp_idle_timeout_ms = 2000
 udp_idle_timeout_ms = 2000
 udp_response_timeout_ms = 1500
 
+[ipv6]
+enabled = true
+
+[persistence]
+retention_hours = 24
+max_bytes = 67108864
+
+# Optional and inert until `dynet dns-mapping apply` is run. Dual-stack
+# redirect requires DNS ingress to bind an unspecified IPv6 address such as [::].
+[dns_mapping]
+interface = "br-lan"
+source_port = 53
+
 [service]
 manager = "auto"
 user = "dynet"
@@ -261,6 +303,16 @@ id = "default"
 mode = "smart"
 members = ["default-node"]
 ```
+
+With IPv6 enabled, a forwarding rule's optional `ipv6 = "allow" | "deny" |
+"inherit"` controls dynet-owned DNS/TCP/UDP participation. `inherit` is the
+default and resolves to the global allow policy; `allow` never means direct
+egress, because the selected group/node graph still applies. Nodes may declare
+`ipv6 = false`; an IPv6 selection then fails explicitly instead of silently
+crossing groups or falling back to direct. An explicit rule deny can filter an
+AAAA response and reject matching IPv6 TCP/UDP selection, but it is not a
+security boundary during fail-open cleanup. Callers must enforce hard deny
+requirements in their firewall.
 
 For the historical local Linux VM capture experiment using Mihomo TUN as an
 external capture frontend, see `docs/lab/mihomo-tun.md`. That lab is a reference
@@ -282,7 +334,13 @@ dynet service cleanup --config /etc/dynet/dynet.toml
 must resolve to a stable non-root UID; `hooks apply` derives its `meta skuid`
 bypass from that identity instead of assuming a fixed numeric UID. Service
 artifacts contain an ownership marker and content hash. A symlink, foreign file,
-or modified owned file is a hard refusal for apply and cleanup.
+or modified owned file is a hard refusal for apply and cleanup. The procd
+supervisor drops to that UID while retaining only `CAP_NET_ADMIN` for the child,
+so OpenWrt does not require `setcap`/`libcap-bin` on the deployed binary. When
+capture is enabled, the root supervisor pre-opens `/dev/net/tun`, passes that
+single descriptor across exec, and drops its copy after spawn. This lets the
+child bind `dynet0` even when OpenWrt exposes the device as `0600 root:root`,
+without changing global device ownership or mode.
 
 For the first protocol-backed experiment, `dynet.toml` can hold a local
 dual-protocol Shadowsocks node. Keep `dynet.toml` uncommitted.
@@ -405,3 +463,16 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 scripts/smoke/ingress.sh
 ```
+
+Build the self-contained x86_64-musl binary used by OpenWrt without installing
+a host cross-toolchain:
+
+```bash
+scripts/build-openwrt.sh
+```
+
+The script uses a disposable `rust:1.96-bookworm` container, installs only its
+container-local musl compiler, and writes
+`target/x86_64-unknown-linux-musl/release/dynet`. `native-tls` enables vendored
+OpenSSL for musl builds so the artifact does not depend on OpenWrt's shared
+OpenSSL ABI; normal glibc development builds continue to use the system backend.

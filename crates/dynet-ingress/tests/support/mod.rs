@@ -15,8 +15,9 @@ use aes_gcm::{
 };
 use dynet_runtime::{
     DnsUpstream, DnsUpstreamId, DnsUpstreamTransport, EventStore, ForwardGroup, ForwardNode,
-    GroupId, GroupMember, GroupThresholds, IngressEvent, IngressEventKind, NextRef, NodeId,
-    RouteMatcher, RouteRule, RuleId, RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy,
+    GroupId, GroupMember, GroupThresholds, IngressEvent, IngressEventKind, Ipv6RulePolicy, NextRef,
+    NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed, RuntimeState, RuntimeStore,
+    SchedulerPolicy,
 };
 use hkdf::Hkdf;
 use md5::{Digest, Md5};
@@ -365,6 +366,7 @@ pub fn runtime_with_dns(upstream: SocketAddr) -> RuntimeState {
 
 pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
     RuntimeSeed {
+        ipv6_enabled: false,
         nodes: vec![
             ForwardNode::new("default-node", "direct", true),
             ForwardNode::new("routed-node", "direct", true),
@@ -406,6 +408,7 @@ pub fn route_selected_seed(dns_addr: SocketAddr) -> RuntimeSeed {
             enabled: true,
             matcher: RouteMatcher::DomainExact("routed.example".to_string()),
             group_id: GroupId::new("routed"),
+            ipv6: Ipv6RulePolicy::Inherit,
         }],
         dns_upstreams: vec![DnsUpstream {
             id: DnsUpstreamId::new("test"),

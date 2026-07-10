@@ -6,7 +6,10 @@ use dynet_ingress::{
     relay_captured_tcp_graph, relay_captured_udp_graph, EgressNodeConfig, ReloadableEgress,
     ShadowsocksConfig, ShadowsocksMethod,
 };
-use dynet_runtime::{IngressEventKind, RuntimeSeed, RuntimeState};
+use dynet_runtime::{
+    GroupId, IngressEventKind, Ipv6RulePolicy, RouteMatcher, RouteRule, RuleId, RuntimeSeed,
+    RuntimeState,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
@@ -99,6 +102,49 @@ async fn captured_tcp_protocol_idle() {
 }
 
 #[tokio::test]
+async fn captured_ipv6_tcp_direct() {
+    let listener = TcpListener::bind("[::1]:0")
+        .await
+        .expect("bind IPv6 tcp target");
+    let target = listener.local_addr().expect("IPv6 target addr");
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept IPv6 target");
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request).await.expect("read request");
+        stream.write_all(b"pong").await.expect("write response");
+    });
+    let mut seed = RuntimeSeed::single_node("direct");
+    seed.ipv6_enabled = true;
+    let runtime = RuntimeState::from_seed(seed);
+    let (mut client, captured) = tokio::io::duplex(1024);
+    let relay = tokio::spawn(relay_captured_tcp_graph(
+        captured,
+        "[::1]:40002".parse().expect("IPv6 peer"),
+        target,
+        direct_nodes(),
+        runtime,
+        Duration::from_millis(200),
+    ));
+
+    client.write_all(b"ping").await.expect("write captured");
+    let mut response = [0_u8; 4];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("read response");
+
+    assert_eq!(&response, b"pong");
+    assert_eq!(
+        relay
+            .await
+            .expect("relay task")
+            .expect("relay succeeds")
+            .target,
+        target
+    );
+}
+
+#[tokio::test]
 async fn captured_udp_graph() {
     let upstream = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -148,6 +194,101 @@ async fn captured_udp_graph() {
         .iter()
         .any(|event| event.kind == IngressEventKind::UdpSessionClose
             && event.fields.get("inbound").map(String::as_str) == Some("tun")));
+}
+
+#[tokio::test]
+async fn captured_ipv6_udp_direct() {
+    let upstream = UdpSocket::bind("[::1]:0")
+        .await
+        .expect("bind IPv6 udp target");
+    let target = upstream.local_addr().expect("IPv6 udp target");
+    tokio::spawn(async move {
+        let mut buffer = [0_u8; 64];
+        let (size, peer) = upstream.recv_from(&mut buffer).await.expect("udp request");
+        assert_eq!(&buffer[..size], b"query");
+        upstream
+            .send_to(b"answer", peer)
+            .await
+            .expect("udp response");
+    });
+    let mut seed = RuntimeSeed::single_node("direct");
+    seed.ipv6_enabled = true;
+    let runtime = RuntimeState::from_seed(seed);
+    let (mut client, captured) = tokio::io::duplex(1024);
+    let relay = tokio::spawn(relay_captured_udp_graph(
+        captured,
+        "[::1]:40003".parse().expect("IPv6 peer"),
+        target,
+        direct_nodes(),
+        runtime,
+        Duration::from_millis(200),
+        Duration::from_secs(1),
+    ));
+
+    client.write_all(b"query").await.expect("write query");
+    let mut response = [0_u8; 6];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("read response");
+
+    assert_eq!(&response, b"answer");
+    assert_eq!(
+        relay
+            .await
+            .expect("relay task")
+            .expect("relay succeeds")
+            .target,
+        target
+    );
+}
+
+#[tokio::test]
+async fn captured_ipv6_deny_observable() {
+    let target: SocketAddr = "[2001:db8::10]:443".parse().expect("IPv6 target");
+    let mut seed = RuntimeSeed::single_node("direct");
+    seed.ipv6_enabled = true;
+    seed.route_rules = vec![RouteRule {
+        id: RuleId::new("deny-v6-target"),
+        priority: 100,
+        enabled: true,
+        matcher: RouteMatcher::IpExact(target.ip()),
+        group_id: GroupId::new("default"),
+        ipv6: Ipv6RulePolicy::Deny,
+    }];
+    let runtime = RuntimeState::from_seed(seed);
+    let (_client, captured) = tokio::io::duplex(1024);
+
+    let error = relay_captured_tcp_graph(
+        captured,
+        "[2001:db8::20]:40000".parse().expect("IPv6 peer"),
+        target,
+        direct_nodes(),
+        runtime.clone(),
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("IPv6 rule denies selection");
+
+    assert!(error.contains("deny-v6-target"));
+    let event = runtime
+        .events()
+        .snapshot()
+        .into_iter()
+        .find(|event| event.kind == IngressEventKind::TcpError)
+        .expect("selection error event");
+    assert_eq!(
+        event.fields.get("errorCode").map(String::as_str),
+        Some("ipv6-policy-deny")
+    );
+    assert_eq!(
+        event.fields.get("matchedRuleId").map(String::as_str),
+        Some("deny-v6-target")
+    );
+    assert_eq!(
+        event.fields.get("ipFamily").map(String::as_str),
+        Some("ipv6")
+    );
 }
 
 fn direct_nodes() -> BTreeMap<String, EgressNodeConfig> {

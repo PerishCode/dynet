@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{env, time::Duration};
 
 use dynet_capture::{
     ApplyOptions, CheckState, LinuxTakeover, TakeoverPlan, TakeoverReport, TakeoverStatus,
@@ -16,9 +16,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod paths;
 mod service;
 mod service_runtime;
 mod tun;
+
+use paths::resolve_runtime_path;
 
 #[tokio::main]
 async fn main() {
@@ -41,6 +44,7 @@ async fn run() -> Result<(), String> {
         Command::Cleanup => run_cleanup(),
         Command::Config { action } => run_config(action, config.as_deref()),
         Command::Hooks { action } => service::run_hooks(action, config.as_deref()),
+        Command::DnsMapping { action } => service::run_dns_mapping(action, config.as_deref()),
         Command::Service { action } => service::run(action, config.as_deref()).await,
         Command::IpStackPoc {
             interface,
@@ -96,10 +100,13 @@ async fn run_runtime(args: Args) -> Result<(), String> {
     let control = state.config.control;
     let ingress = state.config.ingress;
     let runtime_seed = state.config.forwarding.seed.clone();
-    let store = RuntimeStore::open(resolve_runtime_path(
-        &state.config.service.runtime_database,
-        config_path.as_deref(),
-    )?)
+    let store = RuntimeStore::open_with_policy(
+        resolve_runtime_path(
+            &state.config.service.runtime_database,
+            config_path.as_deref(),
+        )?,
+        state.config.persistence,
+    )
     .await
     .map_err(|error| format!("failed to open runtime store: {error}"))?;
     let runtime = RuntimeState::from_store_seed(store.clone(), runtime_seed)
@@ -363,28 +370,6 @@ fn print_check_lines(checks: &[dynet_capture::TakeoverCheck]) {
             .unwrap_or_default();
         println!("- {}: {}{}{}", check.id, check.state.label(), path, action);
     }
-}
-
-fn resolve_runtime_path(
-    path: &std::path::Path,
-    config_path: Option<&std::path::Path>,
-) -> Result<PathBuf, String> {
-    resolve_config_relative(path, config_path)
-}
-
-fn resolve_config_relative(
-    path: &std::path::Path,
-    config_path: Option<&std::path::Path>,
-) -> Result<PathBuf, String> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    if let Some(parent) = config_path.and_then(std::path::Path::parent) {
-        return Ok(parent.join(path));
-    }
-    env::current_dir()
-        .map(|directory| directory.join(path))
-        .map_err(|error| format!("failed to resolve path {}: {error}", path.display()))
 }
 
 fn spawn_ingress(

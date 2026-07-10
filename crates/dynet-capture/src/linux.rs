@@ -1,13 +1,18 @@
 use std::{
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
+mod fragments;
+use fragments::{path_dirs, rt_tables_fragment_content, sysctl_fragment_content};
+
 use crate::linux_checks::{
-    command_check, device_check, directory_auto_check, directory_check, fragment_check,
-    runtime_command_check,
+    command_check, device_check, directory_auto_check, fragment_check, runtime_command_check,
 };
-use crate::linux_nft::{nft_chain_action, nft_chain_id, nft_chain_label, run_required, NFT_CHAINS};
+use crate::linux_nft::{
+    nft_chain_action, nft_chain_id, nft_chain_label, nft_chain_owner_marker, run_required,
+    NFT_CHAINS, NFT_TABLE_OWNER_MARKER,
+};
 use crate::{
     ApplyOptions, ApplyReport, CaptureBackend, CaptureBackendInfo, CapturePlatform, CheckState,
     CleanupReport, HostRunner, SystemRunner, TakeoverCheck, TakeoverKind, TakeoverReport,
@@ -54,6 +59,10 @@ impl LinuxTakeover {
     }
 
     pub fn doctor(&self) -> TakeoverReport {
+        self.doctor_with_runner(&HostRunner)
+    }
+
+    pub fn doctor_with_runner(&self, runner: &impl SystemRunner) -> TakeoverReport {
         let sysctl_fragment = self.sysctl_fragment();
         let rt_tables_fragment = self.rt_tables_fragment();
         let checks = vec![
@@ -81,11 +90,6 @@ impl LinuxTakeover {
                 &rt_tables_fragment,
                 "create /etc/iproute2/rt_tables.d/dynet.conf",
             ),
-            directory_check(
-                "systemd.system",
-                "systemd system unit carrier",
-                &self.paths.systemd_system_dir,
-            ),
             device_check("tun.device", "Linux TUN device", &self.paths.tun_device),
             command_check(
                 "ip.command",
@@ -105,6 +109,7 @@ impl LinuxTakeover {
                 "sysctl",
                 &self.paths.command_dirs,
             ),
+            tuntap_capability_check(runner),
         ];
         TakeoverReport { checks }
     }
@@ -121,7 +126,7 @@ impl LinuxTakeover {
                 .map(|chain| self.nft_chain_status(runner, chain)),
         );
         TakeoverStatus {
-            doctor: self.doctor(),
+            doctor: self.doctor_with_runner(runner),
             runtime,
         }
     }
@@ -135,12 +140,24 @@ impl LinuxTakeover {
         options: ApplyOptions,
         runner: &impl SystemRunner,
     ) -> Result<ApplyReport, String> {
-        let before = self.doctor();
+        let before = self.doctor_with_runner(runner);
         if before.has_hard_failures() {
             return Err(before.failure_summary());
         }
         if before.needs_auto() && !options.auto {
             return Err("dynet takeover requires --auto to create isolated fragments".to_string());
+        }
+        let runtime = self.status_with_runner(runner).runtime;
+        let collisions = runtime
+            .iter()
+            .filter(|check| check.state == CheckState::InvalidHardFail)
+            .map(TakeoverCheck::summary)
+            .collect::<Vec<_>>();
+        if !collisions.is_empty() {
+            return Err(format!(
+                "dynet runtime skeleton found foreign or drifted artifacts and refuses to overwrite them: {}",
+                collisions.join("; ")
+            ));
         }
 
         let mut created = Vec::new();
@@ -289,20 +306,22 @@ impl LinuxTakeover {
         )
     }
 
-    fn nft_status(&self, runner: &impl SystemRunner) -> TakeoverCheck {
-        runtime_command_check(
+    pub(crate) fn nft_status(&self, runner: &impl SystemRunner) -> TakeoverCheck {
+        owned_nft_check(
             "nft.table",
-            "dynet nftables table",
+            "dynet-owned nftables table",
             runner.run("nft", &["list", "table", NFT_FAMILY, NFT_TABLE]),
+            NFT_TABLE_OWNER_MARKER,
             "create inet dynet nftables table",
         )
     }
 
     fn nft_chain_status(&self, runner: &impl SystemRunner, chain: &'static str) -> TakeoverCheck {
-        runtime_command_check(
+        owned_nft_check(
             nft_chain_id(chain),
             nft_chain_label(chain),
             runner.run("nft", &["list", "chain", NFT_FAMILY, NFT_TABLE, chain]),
+            nft_chain_owner_marker(chain),
             nft_chain_action(chain),
         )
     }
@@ -335,7 +354,7 @@ impl LinuxTakeover {
     ) -> Result<(), String> {
         let fragment = self.sysctl_fragment();
         let fragment_arg = fragment.to_string_lossy().into_owned();
-        run_required(runner, "sysctl", &["--load", &fragment_arg])?;
+        run_required(runner, "sysctl", &["-p", &fragment_arg])?;
         actions.push(format!(
             "loaded dynet sysctl fragment {}",
             fragment.display()
@@ -351,7 +370,23 @@ impl LinuxTakeover {
         if self.nft_status(runner).state == CheckState::Ready {
             return Ok(());
         }
-        run_required(runner, "nft", &["add", "table", NFT_FAMILY, NFT_TABLE])?;
+        if self.nft_status(runner).state == CheckState::InvalidHardFail {
+            return Err("inet dynet exists without the dynet runtime owner marker".to_string());
+        }
+        run_required(
+            runner,
+            "nft",
+            &[
+                "add",
+                "table",
+                NFT_FAMILY,
+                NFT_TABLE,
+                "{",
+                "comment",
+                "\"dynet-owned: runtime-skeleton:v1\";",
+                "}",
+            ],
+        )?;
         actions.push(format!("created nft table {NFT_FAMILY} {NFT_TABLE}"));
         Ok(())
     }
@@ -365,10 +400,18 @@ impl LinuxTakeover {
             if self.nft_chain_status(runner, chain).state == CheckState::Ready {
                 continue;
             }
+            if self.nft_chain_status(runner, chain).state == CheckState::InvalidHardFail {
+                return Err(format!(
+                    "{NFT_FAMILY} {NFT_TABLE} {chain} exists without its dynet owner marker"
+                ));
+            }
+            let owner = format!("\"{}\";", nft_chain_owner_marker(chain));
             run_required(
                 runner,
                 "nft",
-                &["add", "chain", NFT_FAMILY, NFT_TABLE, chain],
+                &[
+                    "add", "chain", NFT_FAMILY, NFT_TABLE, chain, "{", "comment", &owner, "}",
+                ],
             )?;
             actions.push(format!(
                 "created nft chain {NFT_FAMILY} {NFT_TABLE} {chain}"
@@ -396,11 +439,53 @@ impl LinuxTakeover {
         actions: &mut Vec<String>,
     ) -> Result<(), String> {
         if self.nft_status(runner).state != CheckState::Ready {
+            if self.nft_status(runner).state == CheckState::InvalidHardFail {
+                return Err(
+                    "inet dynet exists without the dynet runtime owner marker; refusing cleanup"
+                        .to_string(),
+                );
+            }
             return Ok(());
         }
         run_required(runner, "nft", &["delete", "table", NFT_FAMILY, NFT_TABLE])?;
         actions.push(format!("deleted nft table {NFT_FAMILY} {NFT_TABLE}"));
         Ok(())
+    }
+}
+
+fn owned_nft_check(
+    id: &'static str,
+    label: &'static str,
+    output: Result<crate::CommandOutput, String>,
+    owner_marker: &'static str,
+    action: &'static str,
+) -> TakeoverCheck {
+    let state = match output {
+        Ok(output) if output.success && output.stdout.contains(owner_marker) => CheckState::Ready,
+        Ok(output) if output.success => CheckState::InvalidHardFail,
+        Ok(_) => CheckState::MissingAutoCreatable,
+        Err(_) => CheckState::MissingHardFail,
+    };
+    TakeoverCheck {
+        id,
+        label,
+        path: None,
+        state,
+        auto_action: (state == CheckState::MissingAutoCreatable).then_some(action),
+    }
+}
+
+fn tuntap_capability_check(runner: &impl SystemRunner) -> TakeoverCheck {
+    let state = match runner.run("ip", &["tuntap", "show"]) {
+        Ok(output) if output.success => CheckState::Ready,
+        Ok(_) | Err(_) => CheckState::MissingHardFail,
+    };
+    TakeoverCheck {
+        id: "ip.tuntap-capability",
+        label: "functional ip tuntap support",
+        path: None,
+        state,
+        auto_action: None,
     }
 }
 
@@ -412,28 +497,4 @@ impl CaptureBackend for LinuxTakeover {
     fn doctor(&self) -> TakeoverReport {
         LinuxTakeover::doctor(self)
     }
-}
-
-fn path_dirs() -> Vec<PathBuf> {
-    env::var_os("PATH")
-        .map(|paths| env::split_paths(&paths).collect())
-        .unwrap_or_default()
-}
-
-fn sysctl_fragment_content() -> String {
-    format!(
-        "{OWNER_MARKER}\n\
-         # Installed by dynet apply --auto. Loaded by sysctl tooling, not by \
-         writing global sysctl files.\n\
-         net.ipv4.ip_forward = 1\n\
-         net.ipv4.conf.all.rp_filter = 0\n\
-         net.ipv4.conf.default.rp_filter = 0\n\
-         net.ipv4.conf.dynet0.rp_filter = 0\n\
-         net.ipv6.conf.all.disable_ipv6 = 1\n\
-         net.ipv6.conf.default.disable_ipv6 = 1\n"
-    )
-}
-
-fn rt_tables_fragment_content() -> String {
-    format!("{OWNER_MARKER}\n{DYN_TABLE_ID} dynet\n")
 }

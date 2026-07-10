@@ -28,9 +28,10 @@ fn systemd_apply_is_idempotent() {
     assert!(fixture.runner.called("systemctl daemon-reload"));
     assert!(fixture.runner.called("systemctl enable dynet.service"));
     assert!(fixture.runner.called("systemctl start dynet.service"));
-    assert!(fs::read_to_string(fixture.unit())
-        .expect("unit content")
-        .contains("apply --auto"));
+    let unit = fs::read_to_string(fixture.unit()).expect("unit content");
+    assert!(unit.contains("apply --auto"));
+    assert!(unit.contains("ExecStartPre=+") && unit.contains("dns-mapping cleanup --config"));
+    assert!(unit.contains("ExecStopPost=+") && unit.contains("hooks cleanup --config"));
 
     fixture.runner.clear_calls();
     let second = controller.apply().expect("second apply");
@@ -211,6 +212,7 @@ fn procd_supervisor_contract() {
     assert!(content.starts_with("#!/bin/sh /etc/rc.common\n# dynet-owned:"));
     assert!(content.contains("service supervise --config"));
     assert!(content.contains("hooks cleanup --config"));
+    assert!(content.contains("dns-mapping cleanup --config"));
     assert!(content.contains("procd_set_param respawn"));
     assert!(content.contains("procd_set_param limits nofile='4096 4096'"));
     assert!(fixture
@@ -221,6 +223,14 @@ fn procd_supervisor_contract() {
         .called(&format!("{} start", fixture.init().display())));
     fixture.controller().logs(42, false).expect("procd logs");
     assert!(fixture.runner.called("logread -e dynet -l 42"));
+    assert_eq!(
+        fixture
+            .controller()
+            .status()
+            .expect("procd status")
+            .main_pid,
+        Some(4242)
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

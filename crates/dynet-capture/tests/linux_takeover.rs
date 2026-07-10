@@ -1,24 +1,44 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fs;
 
-use std::{cell::RefCell, collections::BTreeMap};
+use dynet_capture::{ApplyOptions, HookOptions, LinuxTakeover, PlanSafety};
 
-use dynet_capture::{
-    ApplyOptions, CommandOutput, LinuxTakeover, LinuxTakeoverPaths, PlanSafety, SystemRunner,
-};
+mod support;
+use support::{cleanup_root, prepare_doctor_ready_root, takeover_under, temp_root, FakeRunner};
 
 #[test]
 fn missing_parent_fails() {
     let root = temp_root("missing-parent");
     let takeover = takeover_under(&root);
 
-    let report = takeover.doctor();
+    let report = takeover.doctor_with_runner(&FakeRunner::default());
 
     assert!(report.has_hard_failures());
     assert!(!report.ready());
+    cleanup_root(&root);
+}
+
+#[test]
+fn doctor_checks_tuntap() {
+    let root = temp_root("doctor-portable");
+    prepare_doctor_ready_root(&root);
+    fs::remove_dir_all(root.join("etc/systemd")).expect("remove systemd carrier");
+    let takeover = takeover_under(&root);
+    let ready = takeover.doctor_with_runner(&FakeRunner::default());
+    assert!(!ready.has_hard_failures());
+    assert!(!ready
+        .checks
+        .iter()
+        .any(|check| check.id.contains("systemd")));
+
+    let mut ip_tiny = FakeRunner::default();
+    ip_tiny.set_ready("ip tuntap show", false);
+    let report = takeover.doctor_with_runner(&ip_tiny);
+    let check = report
+        .checks
+        .iter()
+        .find(|check| check.id == "ip.tuntap-capability")
+        .expect("tuntap capability check");
+    assert_eq!(check.state, dynet_capture::CheckState::MissingHardFail);
     cleanup_root(&root);
 }
 
@@ -48,14 +68,21 @@ fn auto_creates_fragments() {
     assert!(runner.called("ip tuntap add dev dynet0 mode tun"));
     assert!(runner.called("ip link set dev dynet0 up"));
     assert!(runner.called(&format!(
-        "sysctl --load {}",
+        "sysctl -p {}",
         root.join("etc/sysctl.d/90-dynet.conf").display()
     )));
-    assert!(runner.called("nft add table inet dynet"));
-    assert!(runner.called("nft add chain inet dynet dynet_bypass"));
-    assert!(runner.called("nft add chain inet dynet dynet_dns"));
-    assert!(runner.called("nft add chain inet dynet dynet_tcp"));
-    assert!(runner.called("nft add chain inet dynet dynet_udp"));
+    assert!(
+        runner.called("nft add table inet dynet { comment \"dynet-owned: runtime-skeleton:v1\"; }")
+    );
+    assert!(runner.called(
+        "nft add chain inet dynet dynet_bypass { comment \"dynet-owned: runtime-bypass:v1\"; }"
+    ));
+    assert!(runner
+        .called("nft add chain inet dynet dynet_dns { comment \"dynet-owned: runtime-dns:v1\"; }"));
+    assert!(runner
+        .called("nft add chain inet dynet dynet_tcp { comment \"dynet-owned: runtime-tcp:v1\"; }"));
+    assert!(runner
+        .called("nft add chain inet dynet dynet_udp { comment \"dynet-owned: runtime-udp:v1\"; }"));
     cleanup_root(&root);
 }
 
@@ -179,23 +206,24 @@ fn hooks_apply_installs_capture() {
         .expect("hooks apply");
 
     assert_eq!(actions.len(), 4);
-    assert!(runner.called("ip route add default dev dynet0 table dynet"));
-    assert!(runner.called("ip rule add pref 10000 fwmark 0x51880 lookup dynet"));
+    assert!(runner.called("ip -4 route add default dev dynet0 table 51880"));
+    assert!(runner.called("ip -4 rule add pref 10000 fwmark 0x40000000/0x40000000 lookup 51880"));
     assert!(runner.called(
-        "nft add chain inet dynet dynet_output { type route hook output priority mangle; policy accept; }"
+        "nft add chain inet dynet dynet_output { type route hook output priority -150; policy accept; comment \"dynet-owned: capture-output:v1\"; }"
     ));
     assert!(runner.called("nft add rule inet dynet dynet_output meta skuid 1000 return"));
-    assert!(runner.called("nft add rule inet dynet dynet_output ip daddr 192.168.1.0/24 return"));
-    assert!(runner.called("nft add rule inet dynet dynet_output ip daddr 192.168.20.0/24 return"));
-    assert!(runner.called("nft add rule inet dynet dynet_output ip daddr 10.199.0.0/24 return"));
     assert!(
-        runner.called("nft add rule inet dynet dynet_output ip protocol tcp meta mark set 0x51880")
+        runner.called("nft add rule inet dynet dynet_output meta mark & 0x40000000 != 0 return")
     );
+    assert!(runner.called(
+        "nft add rule inet dynet dynet_output meta l4proto tcp meta mark set meta mark | 0x40000000"
+    ));
+    assert!(runner.called("nft add rule inet dynet dynet_output meta nfproto ipv6 return"));
     cleanup_root(&root);
 }
 
 #[test]
-fn hooks_reconcile_stale_uid() {
+fn hooks_reject_drift() {
     let root = temp_root("hooks-stale-service-identity");
     prepare_doctor_ready_root(&root);
     let takeover = takeover_under(&root);
@@ -211,15 +239,56 @@ fn hooks_reconcile_stale_uid() {
         dynet_capture::CheckState::Ready
     );
 
-    let actions = takeover
+    let error = takeover
         .hooks_apply_with_runner(&runner, 1000)
-        .expect("reconcile hooks");
+        .expect_err("drifted hook refused");
 
-    assert!(actions
-        .iter()
-        .any(|action| action.contains("service uid 1000")));
-    assert!(runner.called("nft delete chain inet dynet dynet_output"));
-    assert!(runner.called("nft add rule inet dynet dynet_output meta skuid 1000 return"));
+    assert!(error.contains("foreign or drifted artifacts"));
+    assert!(!runner.called("nft delete chain inet dynet dynet_output"));
+    cleanup_root(&root);
+}
+
+#[test]
+fn hooks_apply_dual_stack() {
+    let root = temp_root("hooks-apply-ipv6");
+    prepare_doctor_ready_root(&root);
+    let takeover = takeover_under(&root);
+    let runner = FakeRunner::with_ready_runtime();
+
+    takeover
+        .hooks_apply_options_with(
+            &runner,
+            HookOptions {
+                service_uid: 1000,
+                ipv6_enabled: true,
+            },
+        )
+        .expect("IPv6 hooks apply");
+
+    assert!(runner.called("ip -6 route add default dev dynet0 table 51880"));
+    assert!(runner.called("ip -6 rule add pref 10000 fwmark 0x40000000/0x40000000 lookup 51880"));
+    assert!(runner.called("nft add rule inet dynet dynet_output ip6 daddr ::1 return"));
+    assert!(runner.called("nft add rule inet dynet dynet_output ip6 daddr ff00::/8 return"));
+    assert!(!runner.called("nft add rule inet dynet dynet_output meta nfproto ipv6 return"));
+    assert!(!runner.has_call_containing("icmp"));
+    assert!(!runner.has_call_containing("meta l4proto 53"));
+    cleanup_root(&root);
+}
+
+#[test]
+fn hooks_reject_priority_collision() {
+    let root = temp_root("hooks-foreign-priority");
+    prepare_doctor_ready_root(&root);
+    let takeover = takeover_under(&root);
+    let mut runner = FakeRunner::with_ready_runtime();
+    runner.set_output("ip -4 rule show pref 10000", "10000: from all lookup main");
+
+    let error = takeover
+        .hooks_apply_with_runner(&runner, 1000)
+        .expect_err("foreign priority refused");
+
+    assert!(error.contains("foreign or drifted artifacts"));
+    assert!(!runner.called("ip -4 route add default dev dynet0 table 51880"));
     cleanup_root(&root);
 }
 
@@ -235,8 +304,8 @@ fn hooks_cleanup_removes_capture() {
 
     assert_eq!(actions.len(), 3);
     assert!(runner.called("nft delete chain inet dynet dynet_output"));
-    assert!(runner.called("ip rule del pref 10000 fwmark 0x51880 lookup dynet"));
-    assert!(runner.called("ip route del default dev dynet0 table dynet"));
+    assert!(runner.called("ip -4 rule del pref 10000 fwmark 0x40000000/0x40000000 lookup 51880"));
+    assert!(runner.called("ip -4 route del default dev dynet0 table 51880"));
     cleanup_root(&root);
 }
 
@@ -252,9 +321,9 @@ fn cleanup_removes_legacy_rule() {
 
     assert_eq!(actions.len(), 4);
     assert!(runner.called("nft delete chain inet dynet dynet_output"));
-    assert!(runner.called("ip rule del pref 10000 fwmark 0x51880 lookup dynet"));
-    assert!(runner.called("ip rule del pref 51880 fwmark 0x51880 lookup dynet"));
-    assert!(runner.called("ip route del default dev dynet0 table dynet"));
+    assert!(runner.called("ip -4 rule del pref 10000 fwmark 0x40000000/0x40000000 lookup 51880"));
+    assert!(runner.called("ip rule del pref 51880 fwmark 0x51880 lookup 51880"));
+    assert!(runner.called("ip -4 route del default dev dynet0 table 51880"));
     cleanup_root(&root);
 }
 
@@ -298,145 +367,4 @@ fn cleanup_deletes_runtime() {
     assert!(runner.called("nft delete table inet dynet"));
     assert!(runner.called("ip link delete dev dynet0"));
     cleanup_root(&root);
-}
-
-fn takeover_under(root: &Path) -> LinuxTakeover {
-    LinuxTakeover::with_paths(LinuxTakeoverPaths {
-        sysctl_dir: root.join("etc/sysctl.d"),
-        rt_tables_dir: root.join("etc/iproute2/rt_tables.d"),
-        systemd_system_dir: root.join("etc/systemd/system"),
-        tun_device: root.join("dev/net/tun"),
-        command_dirs: vec![root.join("bin")],
-    })
-}
-
-fn temp_root(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let root = env::temp_dir().join(format!("dynet-capture-{label}-{nanos}"));
-    fs::create_dir_all(&root).expect("temp root");
-    root
-}
-
-fn cleanup_root(root: &Path) {
-    let _ = fs::remove_dir_all(root);
-}
-
-fn prepare_doctor_ready_root(root: &Path) {
-    fs::create_dir_all(root.join("etc/sysctl.d")).expect("sysctl dir");
-    fs::create_dir_all(root.join("etc/iproute2/rt_tables.d")).expect("rt tables dir");
-    fs::create_dir_all(root.join("etc/systemd/system")).expect("systemd dir");
-    fs::create_dir_all(root.join("dev/net")).expect("dev net dir");
-    fs::create_dir_all(root.join("bin")).expect("bin dir");
-    fs::write(
-        root.join("etc/sysctl.d/90-dynet.conf"),
-        "# dynet-owned: full-takeover\n",
-    )
-    .expect("sysctl fragment");
-    fs::write(
-        root.join("etc/iproute2/rt_tables.d/dynet.conf"),
-        "# dynet-owned: full-takeover\n",
-    )
-    .expect("route fragment");
-    fs::write(root.join("dev/net/tun"), "").expect("tun placeholder");
-    fs::write(root.join("bin/ip"), "").expect("ip command");
-    fs::write(root.join("bin/nft"), "").expect("nft command");
-    fs::write(root.join("bin/sysctl"), "").expect("sysctl command");
-}
-
-#[derive(Default)]
-struct FakeRunner {
-    ready: BTreeMap<String, bool>,
-    calls: RefCell<Vec<String>>,
-}
-
-impl FakeRunner {
-    fn with_ready_runtime() -> Self {
-        let mut ready = BTreeMap::new();
-        ready.insert("ip -br link show dev dynet0 up".to_string(), true);
-        ready.insert("ip link show dev dynet0".to_string(), true);
-        ready.insert("nft list table inet dynet".to_string(), true);
-        ready.insert("nft list chain inet dynet dynet_bypass".to_string(), true);
-        ready.insert("nft list chain inet dynet dynet_dns".to_string(), true);
-        ready.insert("nft list chain inet dynet dynet_tcp".to_string(), true);
-        ready.insert("nft list chain inet dynet dynet_udp".to_string(), true);
-        Self {
-            ready,
-            calls: RefCell::new(Vec::new()),
-        }
-    }
-
-    fn with_existing_down_tun() -> Self {
-        let mut ready = BTreeMap::new();
-        ready.insert("ip link show dev dynet0".to_string(), true);
-        Self {
-            ready,
-            calls: RefCell::new(Vec::new()),
-        }
-    }
-
-    fn with_ready_hooks() -> Self {
-        let mut runner = Self::with_ready_runtime();
-        runner.ready.insert(
-            "ip route show table dynet default dev dynet0".to_string(),
-            true,
-        );
-        runner
-            .ready
-            .insert("ip rule show pref 10000".to_string(), true);
-        runner
-            .ready
-            .insert("nft list chain inet dynet dynet_output".to_string(), true);
-        runner
-    }
-
-    fn ready_hooks_legacy_rule() -> Self {
-        let mut runner = Self::with_ready_hooks();
-        runner
-            .ready
-            .insert("ip rule show pref 51880".to_string(), true);
-        runner
-    }
-
-    fn called(&self, command: &str) -> bool {
-        self.calls.borrow().iter().any(|called| called == command)
-    }
-}
-
-impl SystemRunner for FakeRunner {
-    fn run(&self, command: &str, args: &[&str]) -> Result<CommandOutput, String> {
-        let joined = if args.is_empty() {
-            command.to_string()
-        } else {
-            format!("{command} {}", args.join(" "))
-        };
-        self.calls.borrow_mut().push(joined.clone());
-        Ok(CommandOutput {
-            success: self.ready.get(&joined).copied().unwrap_or_else(|| {
-                joined.starts_with("ip tuntap")
-                    || joined.starts_with("ip link set")
-                    || joined.starts_with("ip link delete")
-                    || joined.starts_with("ip route add")
-                    || joined.starts_with("ip route del")
-                    || joined.starts_with("ip rule add")
-                    || joined.starts_with("ip rule del")
-                    || joined.starts_with("sysctl --load")
-                    || joined.starts_with("nft add table")
-                    || joined.starts_with("nft add chain")
-                    || joined.starts_with("nft add rule")
-                    || joined.starts_with("nft delete chain")
-                    || joined.starts_with("nft delete table")
-            }),
-            stdout: self
-                .ready
-                .get(&joined)
-                .copied()
-                .filter(|ready| *ready)
-                .map(|_| joined.clone())
-                .unwrap_or_default(),
-            stderr: String::new(),
-        })
-    }
 }

@@ -1,6 +1,32 @@
 use std::path::PathBuf;
 
-use crate::{artifact::managed_content, ServicePaths, ServiceSpec};
+use crate::{artifact::managed_content, ServicePaths, ServiceRunner, ServiceSpec, SERVICE_NAME};
+
+pub(crate) fn main_pid(runner: &impl ServiceRunner) -> Option<u32> {
+    let output = runner
+        .run(
+            "ubus",
+            &["call", "service", "list", r#"{"name":"dynet"}"#]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        )
+        .ok()?;
+    if !output.success {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(&output.stdout).ok()?;
+    value
+        .get(SERVICE_NAME)?
+        .get("instances")?
+        .as_object()?
+        .values()
+        .find(|instance| instance.get("running").and_then(|value| value.as_bool()) == Some(true))?
+        .get("pid")?
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+}
 
 pub(crate) fn init_path(paths: &ServicePaths) -> PathBuf {
     paths.procd_init_dir.join("dynet")
@@ -35,6 +61,7 @@ reload_service() {{\n\
 }}\n\n\
 stop_service() {{\n\
     {executable} hooks cleanup --config {config}\n\
+    {executable} dns-mapping cleanup --config {config}\n\
 }}\n"
     );
     Ok(managed_content(&payload))
