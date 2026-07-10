@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use dynet_cli::{Args, Command, ConfigAction, HooksAction};
+use dynet_cli::{Args, Command, ConfigAction, HooksAction, ServiceAction};
 
 #[test]
 fn parses_config_flag() {
@@ -16,13 +16,6 @@ fn parses_config_equals() {
     let args = Args::parse([OsString::from("--config=custom.toml")]).expect("args parse");
 
     assert_eq!(args.config, Some(PathBuf::from("custom.toml")));
-}
-
-#[test]
-fn parses_process_stamp() {
-    let args = Args::parse([OsString::from("--process-stamp=dynetctl:local")]).expect("args parse");
-
-    assert_eq!(args.process_stamp.as_deref(), Some("dynetctl:local"));
 }
 
 #[test]
@@ -128,6 +121,55 @@ fn parses_lifecycle_commands() {
         args.command,
         Command::Hooks {
             action: HooksAction::Cleanup
+        }
+    );
+
+    let args = Args::parse([
+        OsString::from("service"),
+        OsString::from("status"),
+        OsString::from("--config=/etc/dynet/dynet.toml"),
+    ])
+    .expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Service {
+            action: ServiceAction::Status
+        }
+    );
+    assert_eq!(args.config, Some(PathBuf::from("/etc/dynet/dynet.toml")));
+
+    let args = Args::parse([
+        OsString::from("service"),
+        OsString::from("restart"),
+        OsString::from("--cleanup-hooks"),
+        OsString::from("--config"),
+        OsString::from("/etc/dynet/dynet.toml"),
+    ])
+    .expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Service {
+            action: ServiceAction::Restart {
+                cleanup_hooks: true
+            }
+        }
+    );
+
+    let args = Args::parse([
+        OsString::from("service"),
+        OsString::from("logs"),
+        OsString::from("50"),
+        OsString::from("-f"),
+        OsString::from("--config=/etc/dynet/dynet.toml"),
+    ])
+    .expect("args parse");
+    assert_eq!(
+        args.command,
+        Command::Service {
+            action: ServiceAction::Logs {
+                lines: 50,
+                follow: true
+            }
         }
     );
 }
@@ -255,6 +297,14 @@ fn rejects_unknown_arg() {
     let error = Args::parse([OsString::from("--listen")]).expect_err("unknown arg rejected");
 
     assert!(error.contains("unknown argument"));
+}
+
+#[test]
+fn rejects_process_stamp() {
+    let error = Args::parse([OsString::from("--process-stamp=dynetctl:local")])
+        .expect_err("legacy stamp rejected");
+
+    assert!(error.contains("process-stamp"));
 }
 
 #[test]

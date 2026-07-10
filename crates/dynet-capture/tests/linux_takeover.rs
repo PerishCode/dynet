@@ -160,7 +160,7 @@ fn hooks_require_runtime_skeleton() {
     let takeover = takeover_under(&root);
 
     let error = takeover
-        .hooks_apply_with_runner(&FakeRunner::default())
+        .hooks_apply_with_runner(&FakeRunner::default(), 1000)
         .expect_err("missing runtime rejected");
 
     assert!(error.contains("requires ready runtime skeleton"));
@@ -175,7 +175,7 @@ fn hooks_apply_installs_capture() {
     let runner = FakeRunner::with_ready_runtime();
 
     let actions = takeover
-        .hooks_apply_with_runner(&runner)
+        .hooks_apply_with_runner(&runner, 1000)
         .expect("hooks apply");
 
     assert_eq!(actions.len(), 4);
@@ -191,6 +191,35 @@ fn hooks_apply_installs_capture() {
     assert!(
         runner.called("nft add rule inet dynet dynet_output ip protocol tcp meta mark set 0x51880")
     );
+    cleanup_root(&root);
+}
+
+#[test]
+fn hooks_reconcile_stale_uid() {
+    let root = temp_root("hooks-stale-service-identity");
+    prepare_doctor_ready_root(&root);
+    let takeover = takeover_under(&root);
+    let runner = FakeRunner::with_ready_hooks();
+
+    let status = takeover.hooks_status_for_with(&runner, 1000);
+    assert_ne!(
+        status
+            .iter()
+            .find(|check| check.id == "nft.chain.output")
+            .expect("output status")
+            .state,
+        dynet_capture::CheckState::Ready
+    );
+
+    let actions = takeover
+        .hooks_apply_with_runner(&runner, 1000)
+        .expect("reconcile hooks");
+
+    assert!(actions
+        .iter()
+        .any(|action| action.contains("service uid 1000")));
+    assert!(runner.called("nft delete chain inet dynet dynet_output"));
+    assert!(runner.called("nft add rule inet dynet dynet_output meta skuid 1000 return"));
     cleanup_root(&root);
 }
 

@@ -133,6 +133,12 @@ pub(crate) fn plan_reload(current: &Config, next: &Config) -> ReloadPlan {
         "capture.tun.interface",
         current.capture.tun.interface != next.capture.tun.interface,
     );
+    restart_field(
+        &mut changed,
+        &mut restart,
+        "service",
+        current.service != next.service,
+    );
 
     hot_field(
         &mut changed,

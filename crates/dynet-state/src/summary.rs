@@ -25,6 +25,17 @@ pub fn redacted_summary_lines(config: &Config) -> Vec<String> {
             config.capture.tun.udp_response_timeout.as_millis()
         ),
         format!(
+            "service manager={} user={} runtime_database={} environment_file={}",
+            config.service.manager.label(),
+            config.service.user,
+            config.service.runtime_database.display(),
+            config
+                .service
+                .environment_file
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |path| path.display().to_string())
+        ),
+        format!(
             "forwarding.default_group={}",
             seed.default_group_id.as_str()
         ),

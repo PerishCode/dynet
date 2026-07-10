@@ -9,12 +9,15 @@ const ROUTE_TABLE: &str = "dynet";
 const NFT_FAMILY: &str = "inet";
 const NFT_TABLE: &str = "dynet";
 const OUTPUT_CHAIN: &str = "dynet_output";
-const SERVICE_UID: &str = "1000";
 const BYPASS_IPV4_CIDRS: &[&str] = &["192.168.1.0/24", "192.168.20.0/24", "10.199.0.0/24"];
 
 impl LinuxTakeover {
     pub fn hooks_status(&self) -> Vec<TakeoverCheck> {
         self.hooks_status_with_runner(&crate::HostRunner)
+    }
+
+    pub fn hooks_status_for(&self, service_uid: u32) -> Vec<TakeoverCheck> {
+        self.hooks_status_for_with(&crate::HostRunner, service_uid)
     }
 
     pub fn hooks_status_with_runner(&self, runner: &impl SystemRunner) -> Vec<TakeoverCheck> {
@@ -43,14 +46,33 @@ impl LinuxTakeover {
         ]
     }
 
-    pub fn hooks_apply(&self) -> Result<Vec<String>, String> {
-        self.hooks_apply_with_runner(&crate::HostRunner)
+    pub fn hooks_status_for_with(
+        &self,
+        runner: &impl SystemRunner,
+        service_uid: u32,
+    ) -> Vec<TakeoverCheck> {
+        let mut checks = self.hooks_status_with_runner(runner);
+        if let Some(output) = checks
+            .iter_mut()
+            .find(|check| check.id == "nft.chain.output")
+        {
+            *output = output_status_for(runner, service_uid);
+        }
+        checks
+    }
+
+    pub fn hooks_apply(&self, service_uid: u32) -> Result<Vec<String>, String> {
+        self.hooks_apply_with_runner(&crate::HostRunner, service_uid)
     }
 
     pub fn hooks_apply_with_runner(
         &self,
         runner: &impl SystemRunner,
+        service_uid: u32,
     ) -> Result<Vec<String>, String> {
+        if service_uid == 0 {
+            return Err("dynet hooks refuse uid 0 as the service bypass identity".to_string());
+        }
         let status = self.status_with_runner(runner);
         if status.has_hard_failures() {
             return Err(status.doctor.failure_summary());
@@ -67,7 +89,7 @@ impl LinuxTakeover {
         let mut actions = Vec::new();
         self.ensure_hook_route(runner, &mut actions)?;
         self.ensure_hook_rule(runner, &mut actions)?;
-        self.ensure_output_chain(runner, &mut actions)?;
+        self.ensure_output_chain(runner, &mut actions, service_uid)?;
         Ok(actions)
     }
 
@@ -143,9 +165,20 @@ impl LinuxTakeover {
         &self,
         runner: &impl SystemRunner,
         actions: &mut Vec<String>,
+        service_uid: u32,
     ) -> Result<(), String> {
-        if output_chain_status(runner).state == CheckState::Ready {
+        if output_status_for(runner, service_uid).state == CheckState::Ready {
             return Ok(());
+        }
+        if output_chain_status(runner).state == CheckState::Ready {
+            run_required(
+                runner,
+                "nft",
+                &["delete", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
+            )?;
+            actions.push(format!(
+                "replaced nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN} for service uid {service_uid}"
+            ));
         }
         run_required(
             runner,
@@ -171,8 +204,9 @@ impl LinuxTakeover {
         actions.push(format!(
             "created nft output hook {NFT_FAMILY} {NFT_TABLE} {OUTPUT_CHAIN}"
         ));
-        for rule in output_rules() {
-            run_required(runner, "nft", &rule)?;
+        for rule in output_rules(service_uid) {
+            let args = rule.iter().map(String::as_str).collect::<Vec<_>>();
+            run_required(runner, "nft", &args)?;
         }
         actions.push("installed output capture marking rules".to_string());
         Ok(())
@@ -284,6 +318,30 @@ fn output_chain_status(runner: &impl SystemRunner) -> TakeoverCheck {
     )
 }
 
+fn output_status_for(runner: &impl SystemRunner, service_uid: u32) -> TakeoverCheck {
+    let output = runner.run(
+        "nft",
+        &["list", "chain", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN],
+    );
+    let expected = format!("meta skuid {service_uid} return");
+    match output {
+        Ok(output) if output.success && output.stdout.contains(&expected) => TakeoverCheck {
+            id: "nft.chain.output",
+            label: "dynet output capture hook",
+            path: None,
+            state: CheckState::Ready,
+            auto_action: None,
+        },
+        Ok(_) | Err(_) => TakeoverCheck {
+            id: "nft.chain.output",
+            label: "dynet output capture hook",
+            path: None,
+            state: CheckState::MissingAutoCreatable,
+            auto_action: Some("reconcile output capture hook service identity"),
+        },
+    }
+}
+
 fn hook_check(
     id: &'static str,
     label: &'static str,
@@ -357,26 +415,43 @@ impl HookOutputReady for crate::CommandOutput {
     }
 }
 
-fn output_rules() -> Vec<Vec<&'static str>> {
+fn output_rules(service_uid: u32) -> Vec<Vec<String>> {
     let mut rules = vec![
-        nft_rule(&["meta", "skuid", SERVICE_UID, "return"]),
-        nft_rule(&["ip", "daddr", "127.0.0.0/8", "return"]),
-        nft_rule(&["tcp", "sport", "22", "return"]),
-        nft_rule(&["tcp", "dport", "22", "return"]),
+        nft_rule(&[
+            "meta".to_string(),
+            "skuid".to_string(),
+            service_uid.to_string(),
+            "return".to_string(),
+        ]),
+        nft_rule_strings(&["ip", "daddr", "127.0.0.0/8", "return"]),
+        nft_rule_strings(&["tcp", "sport", "22", "return"]),
+        nft_rule_strings(&["tcp", "dport", "22", "return"]),
     ];
     for cidr in BYPASS_IPV4_CIDRS {
-        rules.push(nft_rule(&["ip", "daddr", cidr, "return"]));
+        rules.push(nft_rule_strings(&["ip", "daddr", cidr, "return"]));
     }
     rules.extend([
-        nft_rule(&["udp", "dport", "53", "meta", "mark", "set", DYN_MARK_HEX]),
-        nft_rule(&["ip", "protocol", "tcp", "meta", "mark", "set", DYN_MARK_HEX]),
-        nft_rule(&["ip", "protocol", "udp", "meta", "mark", "set", DYN_MARK_HEX]),
+        nft_rule_strings(&["udp", "dport", "53", "meta", "mark", "set", DYN_MARK_HEX]),
+        nft_rule_strings(&["ip", "protocol", "tcp", "meta", "mark", "set", DYN_MARK_HEX]),
+        nft_rule_strings(&["ip", "protocol", "udp", "meta", "mark", "set", DYN_MARK_HEX]),
     ]);
     rules
 }
 
-fn nft_rule(rule: &[&'static str]) -> Vec<&'static str> {
-    let mut args = vec!["add", "rule", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN];
-    args.extend(rule);
+fn nft_rule(rule: &[String]) -> Vec<String> {
+    let mut args = ["add", "rule", NFT_FAMILY, NFT_TABLE, OUTPUT_CHAIN]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    args.extend_from_slice(rule);
     args
+}
+
+fn nft_rule_strings(rule: &[&str]) -> Vec<String> {
+    nft_rule(
+        &rule
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>(),
+    )
 }

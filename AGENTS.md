@@ -13,6 +13,9 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
 - `dynet` owns its capture lifecycle, system routing, DNS takeover, nftables
   state, sysctl state, service lifecycle expectations, forwarding decisions,
   and observability feedback loop.
+- `dynet run` is foreground-only. Optional background lifecycle is owned by the
+  backend-neutral `dynet service` control plane; Linux cold start supports
+  systemd and OpenWrt procd without external process-state or log-file runners.
 - System integration must be isolated through dynet-owned `.d` fragments,
   dedicated nftables tables/chains, dedicated route tables/rules, and explicit
   owner markers. If an isolation carrier is unavailable, hard fail.
@@ -42,6 +45,9 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   configuration reload audit state, persisted observation ID watermarks, and
   the SQLite forwarding mirror. Keep hot runtime state and persistence hooks
   here instead of hiding them inside ingress adapters.
+- `crates/dynet-service/` owns backend-neutral service lifecycle contracts,
+  strict generated-artifact ownership, systemd/procd rendering, native manager
+  commands, and the privileged procd supervisor used for fail-open cleanup.
 - `crates/dynet-state/` owns the current in-memory `AppState { config }` shape
   plus reload field classification and semantic configuration fingerprints.
 - `docs/lab/` owns historical external capture-frontend lab runbooks and sample
@@ -86,3 +92,8 @@ scripts/smoke/ingress.sh
 Run `dynet ipstack-poc`, `dynet hooks apply`, `dynet hooks cleanup`, and any
 command that creates TUN/nft/route/sysctl state only inside the Proxmox dynet
 experiment VM.
+
+Service artifacts must remain isolated, atomically replaced, content-hashed,
+and idempotent. Never execute, overwrite, or remove a foreign/drifted artifact.
+Service startup and every terminal runtime exit must clean capture hooks. Keep
+normal runtime shutdown bounded and flush persistence before returning.

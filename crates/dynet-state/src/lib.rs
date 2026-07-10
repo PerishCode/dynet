@@ -15,10 +15,12 @@ use serde::Deserialize;
 mod forwarding_config;
 mod method_config;
 mod reload;
+mod service_config;
 mod socks_config;
 mod summary;
 use forwarding_config::FileForwardingConfig;
 pub use reload::{ReloadDisposition, ReloadPlan};
+pub use service_config::{ServiceConfig, ServiceManager};
 use socks_config::FileSocks5IngressConfig;
 pub use summary::redacted_summary_lines;
 
@@ -33,6 +35,7 @@ pub struct Config {
     pub ingress: IngressConfig,
     pub capture: CaptureConfig,
     pub forwarding: ForwardingConfig,
+    pub service: ServiceConfig,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -69,6 +72,7 @@ impl Default for Config {
             ingress: IngressConfig::default(),
             capture: CaptureConfig::default(),
             forwarding: ForwardingConfig::default(),
+            service: ServiceConfig::default(),
         }
     }
 }
@@ -164,6 +168,7 @@ fn apply_env(config: &mut Config) -> Result<(), String> {
         "DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS",
         config.capture.tun.udp_response_timeout,
     )?;
+    service_config::apply_env(&mut config.service)?;
     Ok(())
 }
 
@@ -250,6 +255,7 @@ struct FileConfig {
     ingress: Option<FileIngressConfig>,
     capture: Option<FileCaptureConfig>,
     forwarding: Option<FileForwardingConfig>,
+    service: Option<service_config::FileServiceConfig>,
 }
 
 impl FileConfig {
@@ -265,6 +271,9 @@ impl FileConfig {
         }
         if let Some(forwarding) = self.forwarding {
             config.forwarding = forwarding.load()?;
+        }
+        if let Some(service) = self.service {
+            service.apply(&mut config.service)?;
         }
         Ok(())
     }

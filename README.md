@@ -34,22 +34,44 @@ dynet tun-probe       # VM-only /dev/net/tun TUNSETIFF probe for dynet0
 dynet ipstack-poc     # VM-only direct TCP/UDP TUN consumption probe
 dynet ipstack-runtime-poc
                       # VM-only TUN -> runtime selection -> graph egress probe
-dynet hooks status    # VM-only capture hook status; no writes
-dynet hooks apply     # VM-only install of the current output capture hook
-dynet hooks cleanup   # VM-only removal of current hook route/rule state
+dynet hooks status --config dynet.toml
+                      # validate hook state against the configured service UID
+dynet hooks apply --config dynet.toml
+                      # VM-only install/reconcile of the output capture hook
+dynet hooks cleanup --config dynet.toml
+                      # VM-only removal of current hook route/rule state
 dynet config summary --config dynet.toml
                       # redacted config inventory; no proxy secrets or endpoints
 dynet config validate --config dynet.toml
                       # load config and environment overrides, then exit
+dynet service plan|doctor|status --config dynet.toml
+dynet service apply|cleanup --config dynet.toml
+dynet service start|stop|restart --config dynet.toml
+dynet service reload --config dynet.toml
+dynet service logs 120 --config dynet.toml
+                      # optional native systemd/procd lifecycle control
 dynet cleanup         # remove dynet-owned isolated fragments only
 dynet run --config dynet.toml
-                      # long-running runtime; optional [capture.tun] consumes dynet0
+                      # foreground-only runtime; optional [capture.tun] consumes dynet0
 ```
 
-The long-running runtime handles `SIGHUP` as an explicit configuration reload.
-It parses and validates the complete candidate before publishing anything.
-Invalid candidates and changes that require a restart keep the last-good
-generation active. A no-op is audited without incrementing the generation.
+`dynet run` remains foreground-only. The optional Linux service control plane
+generates one strictly owned systemd unit or OpenWrt procd init script. Apply is
+idempotent, refuses foreign or externally drifted artifacts, enables boot start,
+and never installs traffic capture hooks. Before every runtime spawn it cleans
+stale hooks and runs the idempotent takeover `apply --auto`, so a cold boot or a
+restart from fully stopped state restores a persistent, UP TUN skeleton before
+the non-root runtime starts. Managed definition changes are written but require
+an explicit restart when the service is already active.
+
+The runtime handles `SIGHUP` as an explicit configuration reload and
+`SIGTERM`/`SIGINT` as bounded graceful shutdown. Reload parses and validates the
+complete candidate before publishing anything. Invalid candidates and changes
+that require a restart keep the last-good generation active. A no-op is audited
+without incrementing the generation. Shutdown stops accepting new work, drains
+active tasks within a fixed budget, and flushes queued persistence before exit.
+Both service backends clean capture hooks before startup and after every
+terminal runtime exit so manager-driven restart fails open to direct routing.
 
 Missing parent carriers, missing kernel/device capabilities, or missing
 required host commands are hard failures. `apply --auto` only creates
@@ -144,6 +166,10 @@ DYNET_CAPTURE_TUN_INTERFACE
 DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS
 DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS
 DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS
+DYNET_SERVICE_MANAGER             # auto, systemd, or procd
+DYNET_SERVICE_USER
+DYNET_RUNTIME_DB
+DYNET_SERVICE_ENVIRONMENT_FILE
 ```
 
 `dynet` also reads a TOML config file. `--config <path>` selects a file; without
@@ -173,7 +199,8 @@ The current reload contract is all-or-nothing:
 
 - `forwarding` and the three `capture.tun` timeout values are hot reloadable.
 - control/ingress binds, fixed ingress upstreams and capacity limits,
-  `capture.tun.enabled`, and `capture.tun.interface` require a process restart.
+  `capture.tun.enabled`, `capture.tun.interface`, and all `[service]` fields
+  require a process restart.
 - mixed candidates containing any restart-required field are rejected as a
   whole; hot fields from that candidate are not partially applied.
 - new decisions carry `configGeneration`; the execution layer retains a bounded
@@ -216,6 +243,12 @@ tcp_idle_timeout_ms = 2000
 udp_idle_timeout_ms = 2000
 udp_response_timeout_ms = 1500
 
+[service]
+manager = "auto"
+user = "dynet"
+runtime_database = "/var/lib/dynet/dynet.sqlite"
+# environment_file = "/etc/dynet/dynet.env"
+
 [forwarding]
 default_group = "default"
 
@@ -233,19 +266,23 @@ For the historical local Linux VM capture experiment using Mihomo TUN as an
 external capture frontend, see `docs/lab/mihomo-tun.md`. That lab is a reference
 only; dynet's target architecture absorbs the capture layer.
 
-For local long-running validation, `scripts/dynetctl.sh` manages one stamped
-background dynet process:
+For a Linux host that should keep dynet running across reboots, use the native
+service control plane after the takeover skeleton and config validate cleanly:
 
 ```bash
-scripts/dynetctl.sh start
-scripts/dynetctl.sh status
-scripts/dynetctl.sh log -f
-scripts/dynetctl.sh stop
+dynet service doctor --config /etc/dynet/dynet.toml
+dynet service apply --config /etc/dynet/dynet.toml
+dynet service status --config /etc/dynet/dynet.toml
+dynet service logs 120 --config /etc/dynet/dynet.toml
+dynet service stop --cleanup-hooks --config /etc/dynet/dynet.toml
+dynet service cleanup --config /etc/dynet/dynet.toml
 ```
 
-The script defaults to `dynet.toml`, `target/dynet-user-sim.sqlite`, and logs
-under `.tmp/logs/`. The running process carries a `--process-stamp=...` argv
-marker so `status` and `stop` do not rely on port scans alone.
+`manager = "auto"` detects systemd first and then procd. The configured account
+must resolve to a stable non-root UID; `hooks apply` derives its `meta skuid`
+bypass from that identity instead of assuming a fixed numeric UID. Service
+artifacts contain an ownership marker and content hash. A symlink, foreign file,
+or modified owned file is a hard refusal for apply and cleanup.
 
 For the first protocol-backed experiment, `dynet.toml` can hold a local
 dual-protocol Shadowsocks node. Keep `dynet.toml` uncommitted.

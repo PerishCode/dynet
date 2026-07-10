@@ -10,7 +10,8 @@ not cold-start compatibility requirements.
 ## Runtime Shape
 
 ```text
-dynet.service
+dynet service apply
+  -> reconcile a strictly owned systemd/procd service artifact
   -> doctor checks isolated host integration points
   -> apply --auto creates only dynet-owned .d fragments
   -> Linux TUN backend owns dynet0 and routing state
@@ -41,10 +42,37 @@ Initial carriers:
 - dynet-owned nftables table, initially `inet dynet`
 - `dynet0` TUN device
 - systemd service or drop-in paths under `/etc/systemd/system`
+- OpenWrt procd init scripts under `/etc/init.d`
 
 `dynet apply --auto` may create missing dynet-owned fragments when the parent
 carrier exists. It must not edit `/etc/sysctl.conf`, `/etc/iproute2/rt_tables`,
 the distribution nftables root config, or resolver files in place.
+
+## Service Lifecycle
+
+`dynet run` is always a foreground process. `dynet service` is an optional,
+backend-neutral Linux control plane with systemd and OpenWrt procd backends. It
+owns exactly one generated artifact, records a payload hash, writes atomically,
+and refuses symlinks, foreign content, and external drift. Apply enables boot
+start and starts an inactive service; changing an active service definition
+reports restart-required instead of silently replacing the running process.
+Every manager-driven spawn first cleans stale hooks and reconciles the takeover
+skeleton with `apply --auto`. This is required because an API listener can be
+healthy while a newly created TUN interface is still DOWN; service health must
+include both the control API and takeover runtime readiness.
+
+The configured service account must be stable and non-root. Capture hook apply
+resolves that account and verifies the nft output bypass against its current
+UID. Both backends clean hooks before runtime startup and after terminal exit.
+The systemd backend uses privileged pre/post commands around a non-root runtime;
+the procd backend keeps a privileged supervisor, drops the child UID/GID, forwards
+HUP/TERM/INT, enforces a shutdown timeout, and cleans hooks before returning to
+procd respawn.
+
+Runtime reload and shutdown remain dynet responsibilities. HUP publishes only a
+fully valid hot-reload generation and records applied, no-op, invalid, or
+restart-required audit outcomes. TERM/INT stop ingress, bound connection drain,
+flush persistence, and exit cleanly.
 
 ## Module Boundary
 

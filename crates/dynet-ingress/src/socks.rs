@@ -5,8 +5,10 @@ use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream, UdpSocket},
     sync::{mpsc, Semaphore},
+    task::JoinSet,
     time::{sleep, Duration},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     egress::{EgressNode, TcpRelaySession, UdpDownstream, UdpRelayAssociation},
@@ -14,11 +16,13 @@ use crate::{
     Socks5IngressConfig, DATAGRAM_LIMIT,
 };
 mod events;
+mod model;
 mod protocol;
 use events::{
     base_socks_fields, egress_error_fields, record_socks_error, socks_session_fields,
     SOCKS5_INBOUND,
 };
+use model::{SocksUdpLoop, SocksUdpTask, UdpAssociationSender};
 use protocol::{
     negotiate_no_auth, parse_udp_packet, read_request, write_reply, SocksDestination, SocksError,
     SocksRequest, SOCKS_CMD_BIND, SOCKS_CMD_CONNECT, SOCKS_CMD_UDP_ASSOCIATE,
@@ -29,6 +33,7 @@ pub async fn run_socks5<O>(
     config: Socks5IngressConfig,
     egress: O,
     runtime: RuntimeState,
+    shutdown: CancellationToken,
 ) -> Result<(), String>
 where
     O: EgressNode,
@@ -37,8 +42,17 @@ where
         .await
         .map_err(|error| format!("failed to bind SOCKS5 ingress {}: {error}", config.bind))?;
     let capacity = Arc::new(Semaphore::new(config.max_sessions));
+    let mut sessions = JoinSet::new();
     loop {
-        let (client, peer) = match listener.accept().await {
+        let accepted = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            completed = sessions.join_next(), if !sessions.is_empty() => {
+                log_session_result(completed);
+                continue;
+            }
+            accepted = listener.accept() => accepted,
+        };
+        let (client, peer) = match accepted {
             Ok(connection) => connection,
             Err(error) => {
                 eprintln!("dynet: socks5 accept failed: {error}");
@@ -60,7 +74,7 @@ where
         };
         let egress = egress.clone();
         let runtime = runtime.clone();
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             let _permit = permit;
             let session_id = runtime.events().next_session_id();
             if let Err(error) =
@@ -75,6 +89,16 @@ where
                 );
             }
         });
+    }
+    while let Some(completed) = sessions.join_next().await {
+        log_session_result(Some(completed));
+    }
+    Ok(())
+}
+
+fn log_session_result(result: Option<Result<(), tokio::task::JoinError>>) {
+    if let Some(Err(error)) = result {
+        eprintln!("dynet: SOCKS5 session task failed: {error}");
     }
 }
 async fn handle_client<O>(
@@ -263,16 +287,6 @@ fn spawn_udp_control_watch(mut control: TcpStream) -> mpsc::Receiver<()> {
     });
     rx
 }
-struct SocksUdpLoop<O> {
-    downstream: Arc<UdpSocket>,
-    egress: O,
-    runtime: RuntimeState,
-    config: Socks5IngressConfig,
-    peer: SocketAddr,
-    session_id: u64,
-    completion: mpsc::Receiver<()>,
-}
-
 async fn run_socks_udp_loop<O>(mut task: SocksUdpLoop<O>) -> Result<(), SocksError>
 where
     O: EgressNode,
@@ -312,7 +326,7 @@ where
                         tx,
                     };
                     associations.insert(key, sender.clone());
-                    spawn_socks_udp_association(SocksUdpAssociationTask {
+                    spawn_socks_udp_association(SocksUdpTask {
                         udp_peer,
                         target,
                         target_context: target_context.clone(),
@@ -350,28 +364,12 @@ where
     }
 }
 
-struct SocksUdpAssociationTask<O> {
-    udp_peer: SocketAddr,
-    target: SocketAddr,
-    target_context: TargetContext,
-    response_target: SocketAddr,
-    destination: SocksDestination,
-    downstream: Arc<UdpSocket>,
-    downstream_rx: mpsc::Receiver<Vec<u8>>,
-    complete_tx: mpsc::Sender<(SocketAddr, SocketAddr)>,
-    session_id: u64,
-    decision: dynet_runtime::SelectionDecision,
-    runtime: RuntimeState,
-    egress: O,
-    idle_timeout: std::time::Duration,
-}
-
-fn spawn_socks_udp_association<O>(task: SocksUdpAssociationTask<O>)
+fn spawn_socks_udp_association<O>(task: SocksUdpTask<O>)
 where
     O: EgressNode,
 {
     tokio::spawn(async move {
-        let SocksUdpAssociationTask {
+        let SocksUdpTask {
             udp_peer,
             target,
             target_context,
@@ -489,12 +487,4 @@ fn response_target_for_destination(
         SocksDestination::Socket(address) => *address,
         SocksDestination::Domain { .. } => target,
     }
-}
-
-#[derive(Debug, Clone)]
-struct UdpAssociationSender {
-    node_protocol: &'static str,
-    decision: dynet_runtime::SelectionDecision,
-    target_context: TargetContext,
-    tx: mpsc::Sender<Vec<u8>>,
 }

@@ -136,4 +136,11 @@ impl MatrixService {
             ObservationSink::stats_snapshot,
         )
     }
+
+    pub(crate) async fn flush_persistence(&self) -> Result<(), String> {
+        match &self.inner.observation_sink {
+            Some(sink) => sink.flush().await,
+            None => Ok(()),
+        }
+    }
 }
