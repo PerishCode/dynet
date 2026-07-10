@@ -2,7 +2,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 use super::{
     parse_usize_arg, set_config, split_config_arg, Args, Command, ConfigAction, DnsMappingAction,
-    HooksAction, ServiceAction,
+    HooksAction, RouterHooksAction, ServiceAction,
 };
 
 pub(super) fn parse_config_args(
@@ -60,6 +60,28 @@ pub(super) fn parse_hooks_args(
     };
     parse_only_config(parsed, "hooks", args)?;
     Ok(Command::Hooks { action })
+}
+
+pub(super) fn parse_router_hooks_args(
+    parsed: &mut Args,
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Command, String> {
+    let mut args = args.into_iter();
+    let Some(action) = args.next() else {
+        return Err(
+            "router-hooks requires an action: plan, doctor, status, apply, cleanup".to_string(),
+        );
+    };
+    let action = match action.to_string_lossy().as_ref() {
+        "plan" => RouterHooksAction::Plan,
+        "doctor" => RouterHooksAction::Doctor,
+        "status" => RouterHooksAction::Status,
+        "apply" => RouterHooksAction::Apply,
+        "cleanup" => RouterHooksAction::Cleanup,
+        other => return Err(format!("unknown router-hooks action {other}")),
+    };
+    parse_only_config(parsed, "router-hooks", args)?;
+    Ok(Command::RouterHooks { action })
 }
 
 pub(super) fn parse_service_args(

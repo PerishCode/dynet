@@ -60,6 +60,7 @@ reload_service() {{\n\
     procd_send_signal dynet '*' HUP\n\
 }}\n\n\
 stop_service() {{\n\
+    {executable} router-hooks cleanup --config {config}\n\
     {executable} hooks cleanup --config {config}\n\
     {executable} dns-mapping cleanup --config {config}\n\
 }}\n"

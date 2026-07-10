@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum IpVersion {
+pub(crate) enum IpVersion {
     V4,
     V6,
 }
@@ -36,11 +36,11 @@ impl IpVersion {
     }
 }
 
-pub(super) fn family_status(runner: &impl SystemRunner, family: IpVersion) -> Vec<TakeoverCheck> {
+pub(crate) fn family_status(runner: &impl SystemRunner, family: IpVersion) -> Vec<TakeoverCheck> {
     vec![route_status(runner, family), rule_status(runner, family)]
 }
 
-pub(super) fn route_status(runner: &impl SystemRunner, family: IpVersion) -> TakeoverCheck {
+pub(crate) fn route_status(runner: &impl SystemRunner, family: IpVersion) -> TakeoverCheck {
     let output = runner.run(
         "ip",
         &[family.flag(), "route", "show", "table", ROUTE_TABLE],
@@ -60,7 +60,7 @@ pub(super) fn route_status(runner: &impl SystemRunner, family: IpVersion) -> Tak
     )
 }
 
-pub(super) fn rule_status(runner: &impl SystemRunner, family: IpVersion) -> TakeoverCheck {
+pub(crate) fn rule_status(runner: &impl SystemRunner, family: IpVersion) -> TakeoverCheck {
     let output = runner.run(
         "ip",
         &[family.flag(), "rule", "show", "pref", RULE_PRIORITY],
@@ -96,7 +96,7 @@ pub(super) fn legacy_rule_status(runner: &impl SystemRunner) -> TakeoverCheck {
     )
 }
 
-pub(super) fn output_chain_status(
+pub(crate) fn output_chain_status(
     runner: &impl SystemRunner,
     options: Option<HookOptions>,
 ) -> TakeoverCheck {
@@ -181,7 +181,7 @@ fn missing_check(id: &'static str, label: &'static str, action: &'static str) ->
     }
 }
 
-pub(super) fn reject_hook_collisions(checks: &[TakeoverCheck]) -> Result<(), String> {
+pub(crate) fn reject_hook_collisions(checks: &[TakeoverCheck]) -> Result<(), String> {
     let collisions = checks
         .iter()
         .filter(|check| check.state == CheckState::InvalidHardFail)
@@ -201,6 +201,9 @@ pub(super) fn reject_cleanup_collisions(runner: &impl SystemRunner) -> Result<()
     let mut checks = family_status(runner, IpVersion::V4);
     checks.extend(family_status(runner, IpVersion::V6));
     checks.push(output_chain_status(runner, None));
+    checks.push(crate::linux_router_ingress::router_chain_status(
+        runner, None,
+    ));
     checks.push(legacy_rule_status(runner));
     reject_hook_collisions(&checks)
 }

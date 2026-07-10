@@ -44,6 +44,7 @@ async fn run() -> Result<(), String> {
         Command::Cleanup => run_cleanup(),
         Command::Config { action } => run_config(action, config.as_deref()),
         Command::Hooks { action } => service::run_hooks(action, config.as_deref()),
+        Command::RouterHooks { action } => service::run_router_hooks(action, config.as_deref()),
         Command::DnsMapping { action } => service::run_dns_mapping(action, config.as_deref()),
         Command::Service { action } => service::run(action, config.as_deref()).await,
         Command::IpStackPoc {

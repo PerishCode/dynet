@@ -17,6 +17,10 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   observability feedback loop. The caller owns firewall admission, DHCP,
   dnsmasq/UCI/fw4, and port-53 mapping; dynet's optional mapping helper is
   explicit, strictly owned, and never a security boundary during fail-open.
+- Router-forwarded capture is a separate explicit lifecycle from the
+  VM-originated output hook. It requires a caller-supplied ingress interface and
+  source CIDRs, preserves foreign mark bits, and requires caller-owned later
+  interceptors such as TProxy chains to bypass the dynet mark.
 - `dynet run` is foreground-only. Optional background lifecycle is owned by the
   backend-neutral `dynet service` control plane; Linux cold start supports
   systemd and OpenWrt procd without external process-state or log-file runners.
@@ -37,8 +41,11 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   binary entrypoint and the cold-start lifecycle command surface.
 - `crates/dynet-capture/` owns platform capture backends and host takeover
   lifecycle. The first backend is Linux TUN with `.d` isolation probing;
-  `src/linux/hooks/` separates hook ownership/status parsing, and
-  `tests/support/` owns shared fake host fixtures for capture integration tests.
+  `src/linux/hooks/` separates output-hook ownership/status parsing,
+  `src/linux/router_ingress.rs` owns source-scoped prerouting capture, and
+  `src/linux/scope.rs` owns the shared interface/source CIDR contract. The
+  optional DNS mapping consumes that same scope; `tests/support/` owns shared
+  fake host fixtures for capture integration tests.
 - `crates/dynet-api/` owns the local control-plane HTTP API shape under
   `/api/v1`.
 - `crates/dynet-ingress/` owns the fixed-upstream transparent DNS/TCP/UDP relay
@@ -56,6 +63,8 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   commands, and the privileged procd supervisor used for fail-open cleanup.
 - `crates/dynet-state/` owns the current in-memory `AppState { config }` shape
   plus reload field classification and semantic configuration fingerprints.
+  `src/integration_config/` owns caller-facing router source scope and optional
+  DNS mapping config; keep both on one shared integration boundary.
 - `docs/lab/` owns historical external capture-frontend lab runbooks and sample
   configs. Keep them as references while the full-takeover runtime replaces
   that model.

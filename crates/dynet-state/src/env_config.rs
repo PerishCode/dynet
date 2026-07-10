@@ -1,7 +1,7 @@
 use std::{env, net::SocketAddr, time::Duration};
 
 use super::{
-    dns_mapping_config, non_empty_string, persistence_config, service_config, socks_config, Config,
+    integration_config, non_empty_string, persistence_config, service_config, socks_config, Config,
 };
 
 pub(super) fn apply_env(config: &mut Config) -> Result<(), String> {
@@ -38,7 +38,7 @@ pub(super) fn apply_env(config: &mut Config) -> Result<(), String> {
         config.capture.tun.udp_response_timeout,
     )?;
     config.ipv6.enabled = env_bool("DYNET_IPV6_ENABLED", config.ipv6.enabled)?;
-    dns_mapping_config::apply_env(&mut config.dns_mapping)?;
+    integration_config::apply_dns_env(&mut config.dns_mapping)?;
     persistence_config::apply_env(&mut config.persistence)?;
     service_config::apply_env(&mut config.service)?;
     Ok(())
