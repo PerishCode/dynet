@@ -9,6 +9,7 @@ impl ForwardNode {
             tag: tag.into(),
             enabled,
             fingerprint,
+            supports_ipv6: true,
         }
     }
 
@@ -23,6 +24,12 @@ impl ForwardNode {
             tag: tag.into(),
             enabled,
             fingerprint: fingerprint.into(),
+            supports_ipv6: true,
         }
+    }
+
+    pub fn with_capabilities(mut self, supports_ipv6: bool) -> Self {
+        self.supports_ipv6 = supports_ipv6;
+        self
     }
 }

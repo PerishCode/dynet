@@ -17,6 +17,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
             tag text not null,
             enabled integer not null,
             fingerprint text not null default '',
+            supports_ipv6 integer not null default 1,
             updated_at_unix_ms integer not null
         )",
     )
@@ -70,6 +71,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
             matcher_kind text not null,
             matcher_value text not null,
             group_id text not null,
+            ipv6_policy text not null default 'inherit',
             updated_at_unix_ms integer not null
         )",
     )
@@ -103,7 +105,9 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
             next text not null,
             reason text not null,
             scheduler text not null,
-            candidate_count integer not null
+            candidate_count integer not null,
+            ip_family text not null default 'ipv4',
+            ipv6_policy_source text
         )",
     )
     .execute(pool)
@@ -193,6 +197,34 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), RuntimeStoreError> 
         "runtime_nodes",
         "fingerprint",
         "alter table runtime_nodes add column fingerprint text not null default ''",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "runtime_nodes",
+        "supports_ipv6",
+        "alter table runtime_nodes add column supports_ipv6 integer not null default 1",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "runtime_route_rules",
+        "ipv6_policy",
+        "alter table runtime_route_rules add column ipv6_policy text not null default 'inherit'",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "selection_decisions",
+        "ip_family",
+        "alter table selection_decisions add column ip_family text not null default 'ipv4'",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "selection_decisions",
+        "ipv6_policy_source",
+        "alter table selection_decisions add column ipv6_policy_source text",
     )
     .await?;
     ensure_column(

@@ -1,6 +1,17 @@
 use crate::SystemRunner;
 
 pub(crate) const NFT_CHAINS: &[&str] = &["dynet_bypass", "dynet_dns", "dynet_tcp", "dynet_udp"];
+pub(crate) const NFT_TABLE_OWNER_MARKER: &str = "dynet-owned: runtime-skeleton:v1";
+
+pub(crate) fn nft_chain_owner_marker(chain: &str) -> &'static str {
+    match chain {
+        "dynet_bypass" => "dynet-owned: runtime-bypass:v1",
+        "dynet_dns" => "dynet-owned: runtime-dns:v1",
+        "dynet_tcp" => "dynet-owned: runtime-tcp:v1",
+        "dynet_udp" => "dynet-owned: runtime-udp:v1",
+        _ => "dynet-owned: runtime-unknown:v1",
+    }
+}
 
 pub(crate) fn nft_chain_id(chain: &str) -> &'static str {
     match chain {

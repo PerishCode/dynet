@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     model::MatrixCandidateInput, DnsUpstream, DnsUpstreamId, ForwardGroup, ForwardNode, GroupId,
-    GroupMember, GroupThresholds, NextRef, NodeId, RouteRule, SchedulerPolicy, SelectionTerminal,
-    SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
+    GroupMember, GroupThresholds, IpFamily, Ipv6RulePolicy, NextRef, NodeId, RouteRule,
+    SchedulerPolicy, SelectionTerminal, SelectionTraceHop, TargetContext, DEFAULT_NODE_ID,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -56,6 +56,7 @@ struct DnsUpstreamStoreInner {
 pub(crate) struct RouteMatch {
     pub(crate) group_id: Option<GroupId>,
     pub(crate) rule_id: Option<crate::RuleId>,
+    pub(crate) ipv6: Ipv6RulePolicy,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -119,6 +120,15 @@ impl NodeStore {
             .nodes
             .get(node_id)
             .is_some_and(|node| node.enabled)
+    }
+
+    pub fn is_eligible(&self, node_id: &NodeId, family: IpFamily) -> bool {
+        self.inner
+            .read()
+            .expect("node store lock poisoned")
+            .nodes
+            .get(node_id)
+            .is_some_and(|node| node.enabled && (family == IpFamily::Ipv4 || node.supports_ipv6))
     }
 
     fn enabled_node_id(&self, id: &str) -> Option<NodeId> {
@@ -206,6 +216,7 @@ impl GroupStore {
         &self,
         group_id: &GroupId,
         nodes: &NodeStore,
+        family: IpFamily,
         mut select_node: F,
     ) -> Result<GroupSelection, String>
     where
@@ -219,7 +230,7 @@ impl GroupStore {
             if seen.insert(current.clone(), ()).is_some() {
                 return Err(format!("group next cycle includes {current}"));
             }
-            let hop = select_group_hop(&store, &current, nodes, &mut select_node)?;
+            let hop = select_group_hop(&store, &current, nodes, family, &mut select_node)?;
             let next = hop.next.clone();
             trace.push(hop);
             match next {
@@ -272,6 +283,7 @@ impl GroupStore {
         &self,
         group_id: &GroupId,
         nodes: &NodeStore,
+        family: IpFamily,
     ) -> Result<Vec<MatrixCandidateInput>, String> {
         let store = self.inner.read().expect("group store lock poisoned");
         let group = store
@@ -287,7 +299,7 @@ impl GroupStore {
             .ok_or_else(|| format!("forwarding group {group_id} has no enabled node"))?;
         Ok(members
             .iter()
-            .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
+            .filter(|member| member.enabled && nodes.is_eligible(&member.node_id, family))
             .map(|member| MatrixCandidateInput {
                 node_id: member.node_id.clone(),
                 priority: member.priority,
@@ -300,6 +312,7 @@ fn select_group_hop(
     store: &GroupStoreInner,
     group_id: &GroupId,
     nodes: &NodeStore,
+    family: IpFamily,
     select_node: &mut impl FnMut(&GroupCandidateSet) -> Option<NodeId>,
 ) -> Result<SelectionTraceHop, String> {
     let group = store
@@ -315,10 +328,13 @@ fn select_group_hop(
         .ok_or_else(|| format!("forwarding group {group_id} has no enabled node"))?;
     let candidates = members
         .iter()
-        .filter(|member| member.enabled && nodes.is_enabled(&member.node_id))
+        .filter(|member| member.enabled && nodes.is_eligible(&member.node_id, family))
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        return Err(format!("forwarding group {group_id} has no enabled node"));
+        return Err(format!(
+            "forwarding group {group_id} has no {}-capable enabled node",
+            family.as_str()
+        ));
     }
     let candidate_inputs = candidates
         .iter()
@@ -364,12 +380,14 @@ impl RouteRuleStore {
                 return RouteMatch {
                     group_id: Some(rule.group_id.clone()),
                     rule_id: Some(rule.id.clone()),
+                    ipv6: rule.ipv6,
                 };
             }
         }
         RouteMatch {
             group_id: None,
             rule_id: None,
+            ipv6: Ipv6RulePolicy::Inherit,
         }
     }
 

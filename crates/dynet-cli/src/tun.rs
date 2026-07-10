@@ -51,10 +51,6 @@ pub(crate) fn spawn_capture(
             Box::pin(async move {
                 let local = tcp.local_addr();
                 let target = tcp.peer_addr();
-                if !target.ip().is_ipv4() {
-                    eprintln!("dynet: TUN tcp skipped local={local} peer={target} reason=non-ipv4");
-                    return Ok(());
-                }
                 eprintln!("dynet: TUN tcp accepted local={local} peer={target}");
                 let outcome = dynet_ingress::relay_captured_tcp_reloadable(
                     tcp,
@@ -86,10 +82,6 @@ pub(crate) fn spawn_capture(
             Box::pin(async move {
                 let local = udp.local_addr();
                 let target = udp.peer_addr();
-                if !target.ip().is_ipv4() {
-                    eprintln!("dynet: TUN udp skipped local={local} peer={target} reason=non-ipv4");
-                    return Ok(());
-                }
                 eprintln!("dynet: TUN udp accepted local={local} peer={target}");
                 let outcome = dynet_ingress::relay_captured_udp_reloadable(
                     udp,
@@ -174,12 +166,6 @@ pub(crate) async fn run_runtime_poc(
                 async move {
                     let local = tcp.local_addr();
                     let target = tcp.peer_addr();
-                    if !target.ip().is_ipv4() {
-                        println!(
-                            "ipstack-runtime-poc: skipped tcp local={local} peer={target} reason=non-ipv4"
-                        );
-                        return Ok(false);
-                    }
                     println!("ipstack-runtime-poc: accepted tcp local={local} peer={target}");
                     let outcome = dynet_ingress::relay_captured_tcp_graph(
                         tcp,
@@ -210,12 +196,6 @@ pub(crate) async fn run_runtime_poc(
                 async move {
                     let local = udp.local_addr();
                     let target = udp.peer_addr();
-                    if !target.ip().is_ipv4() {
-                        println!(
-                            "ipstack-runtime-poc: skipped udp local={local} peer={target} reason=non-ipv4"
-                        );
-                        return Ok(false);
-                    }
                     println!("ipstack-runtime-poc: accepted udp local={local} peer={target}");
                     let outcome = dynet_ingress::relay_captured_udp_graph(
                         udp,

@@ -1,24 +1,27 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
     time::Duration,
 };
 
 use dynet_ingress::{EgressNodeConfig, ShadowsocksConfig, TrojanConfig, VlessConfig, VmessConfig};
 use dynet_runtime::{
-    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, NextRef, NodeId,
-    RouteMatcher, RouteRule, RuleId, RuntimeSeed, SchedulerPolicy,
+    ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, NextRef, NodeId, RuntimeSeed,
+    SchedulerPolicy,
 };
 use serde::Deserialize;
 
-use crate::{method_config::parse_shadowsocks_method, ForwardingConfig};
+use crate::ForwardingConfig;
 
 mod dns_upstream;
 mod group_thresholds;
+mod method;
 mod node_fingerprint;
+mod route_rule;
 mod validation;
 use dns_upstream::FileDnsUpstreamConfig;
 use group_thresholds::load_thresholds;
+use method::parse_shadowsocks_method;
+use route_rule::FileRouteRuleConfig;
 use validation::{validate_execution_node, validate_thresholds};
 
 #[derive(Debug, Deserialize)]
@@ -59,18 +62,6 @@ struct FileGroupThresholds {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FileRouteRuleConfig {
-    id: String,
-    priority: i64,
-    #[serde(rename = "match")]
-    matcher: String,
-    value: String,
-    group: String,
-    enabled: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct FileForwardNodeConfig {
     id: String,
     enabled: Option<bool>,
@@ -96,6 +87,7 @@ struct FileForwardNodeConfig {
     #[serde(rename = "skip-cert-verify")]
     skip_cert_verify: Option<bool>,
     udp: Option<bool>,
+    ipv6: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +169,7 @@ fn build_graph(
     )?;
     Ok(ForwardingConfig {
         seed: RuntimeSeed {
+            ipv6_enabled: false,
             nodes: runtime_nodes,
             default_group_id: GroupId::new(default_group),
             groups: runtime_groups,
@@ -273,46 +266,17 @@ fn push_group_members(
     Ok(())
 }
 
-impl FileRouteRuleConfig {
-    fn load(self) -> Result<RouteRule, String> {
-        let id = non_empty("forwarding.rules[].id", self.id)?;
-        let matcher = match self.matcher.as_str() {
-            "domain-exact" => RouteMatcher::DomainExact(self.value.to_ascii_lowercase()),
-            "domain-suffix" => RouteMatcher::DomainSuffix(self.value.to_ascii_lowercase()),
-            "ip-exact" => parse_ip_exact_rule(&id, &self.value)?,
-            "ip-cidr" => RouteMatcher::IpCidr(self.value),
-            _ => {
-                return Err(format!(
-                    "forwarding rule {id:?} match {:?} is unsupported",
-                    self.matcher
-                ));
-            }
-        };
-        Ok(RouteRule {
-            id: RuleId::new(id),
-            priority: self.priority,
-            enabled: self.enabled.unwrap_or(true),
-            matcher,
-            group_id: GroupId::new(non_empty("forwarding.rules[].group", self.group)?),
-        })
-    }
-}
-
-fn parse_ip_exact_rule(id: &str, value: &str) -> Result<RouteMatcher, String> {
-    Ok(RouteMatcher::IpExact(value.parse::<IpAddr>().map_err(
-        |error| format!("forwarding rule {id:?} value must be an IP: {error}"),
-    )?))
-}
-
 impl FileForwardNodeConfig {
     fn load_execution_node(self) -> Result<(ForwardNode, EgressNodeConfig), String> {
         let id = non_empty("forwarding.nodes[].id", self.id.clone())?;
         let enabled = self.enabled.unwrap_or(true);
+        let supports_ipv6 = self.ipv6.unwrap_or(true);
         let tag = self.kind.clone();
         let fingerprint = self.stable_fingerprint();
         let node_config = self.load_execution_config()?;
         Ok((
-            ForwardNode::with_fingerprint(id, tag, enabled, fingerprint),
+            ForwardNode::with_fingerprint(id, tag, enabled, fingerprint)
+                .with_capabilities(supports_ipv6),
             node_config,
         ))
     }

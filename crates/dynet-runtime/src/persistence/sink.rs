@@ -4,10 +4,14 @@ use std::sync::{
 };
 
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{self, Duration};
 
 use crate::{unix_ms, IngressEvent, MatrixShadowDecision, SelectionContext, SelectionDecision};
 
 use super::{RuntimeStore, RuntimeStoreError, OBSERVATION_QUEUE_CAPACITY};
+
+const MAINTENANCE_EVERY_OBSERVATIONS: u64 = 128;
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservationSink {
@@ -51,6 +55,7 @@ impl RuntimeStore {
             store: self.clone(),
             receiver,
             stats,
+            observations_since_maintenance: 0,
         };
         tokio::spawn(worker.run());
         sink
@@ -129,36 +134,85 @@ struct ObservationSinkWorker {
     store: RuntimeStore,
     receiver: mpsc::Receiver<RuntimeObservation>,
     stats: PersistenceStats,
+    observations_since_maintenance: u64,
 }
 
 impl ObservationSinkWorker {
     async fn run(mut self) {
-        while let Some(observation) = self.receiver.recv().await {
-            if let Err(error) = self.persist(observation).await {
-                self.stats.record_sink_error();
-                tracing::warn!(%error, "runtime persistence observation write failed");
+        let mut maintenance = time::interval(MAINTENANCE_INTERVAL);
+        maintenance.tick().await;
+        loop {
+            tokio::select! {
+                observation = self.receiver.recv() => {
+                    let Some(observation) = observation else { break };
+                    if let Err(error) = self.persist(observation).await {
+                        self.stats.record_sink_error();
+                        tracing::warn!(%error, "runtime persistence observation write failed");
+                    }
+                }
+                _ = maintenance.tick() => {
+                    self.run_maintenance().await;
+                }
             }
         }
     }
 
-    async fn persist(&self, observation: RuntimeObservation) -> Result<(), RuntimeStoreError> {
+    async fn persist(&mut self, observation: RuntimeObservation) -> Result<(), RuntimeStoreError> {
+        let observation = match observation {
+            RuntimeObservation::Flush(sender) => {
+                self.store.maintain_persistence().await?;
+                self.observations_since_maintenance = 0;
+                let _ = sender.send(());
+                return Ok(());
+            }
+            observation => observation,
+        };
+
+        let result = self.persist_data(&observation).await;
+        if let Err(error) = result {
+            if !error.is_database_full() {
+                return Err(error);
+            }
+            super::maintenance::maintain(&self.store, true).await?;
+            self.persist_data(&observation).await?;
+        }
+
+        self.observations_since_maintenance = self.observations_since_maintenance.saturating_add(1);
+        if self.observations_since_maintenance >= MAINTENANCE_EVERY_OBSERVATIONS {
+            self.store.maintain_persistence().await?;
+            self.observations_since_maintenance = 0;
+        }
+        Ok(())
+    }
+
+    async fn persist_data(
+        &self,
+        observation: &RuntimeObservation,
+    ) -> Result<(), RuntimeStoreError> {
         match observation {
-            RuntimeObservation::Event(event) => self.store.insert_event(&event).await,
+            RuntimeObservation::Event(event) => self.store.insert_event(event).await,
             RuntimeObservation::SelectionDecision {
                 observed_at_unix_ms,
                 context,
                 decision,
             } => {
                 self.store
-                    .insert_selection_decision(observed_at_unix_ms, &context, &decision)
+                    .insert_selection_decision(*observed_at_unix_ms, context, decision)
                     .await
             }
             RuntimeObservation::MatrixShadow(decision) => {
-                self.store.insert_matrix_shadow(&decision).await
+                self.store.insert_matrix_shadow(decision).await
             }
-            RuntimeObservation::Flush(sender) => {
-                let _ = sender.send(());
-                Ok(())
+            RuntimeObservation::Flush(_) => unreachable!("flush handled before data persistence"),
+        }
+    }
+
+    async fn run_maintenance(&mut self) {
+        match self.store.maintain_persistence().await {
+            Ok(()) => self.observations_since_maintenance = 0,
+            Err(error) => {
+                self.stats.record_sink_error();
+                tracing::warn!(%error, "runtime persistence maintenance failed");
             }
         }
     }

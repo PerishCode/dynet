@@ -174,6 +174,11 @@ impl ServiceRunner for FakeRunner {
                 _ => success(""),
             });
         }
+        if command == "ubus" {
+            return Ok(success(
+                r#"{"dynet":{"instances":{"instance1":{"running":true,"pid":4242}}}}"#,
+            ));
+        }
         if Path::new(command)
             .file_name()
             .is_some_and(|name| name == "dynet")

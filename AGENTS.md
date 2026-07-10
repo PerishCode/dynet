@@ -9,10 +9,14 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
 ## Product Boundary
 
 - `dynet` has exactly one product runtime shape: full DNS / UDP / TCP takeover.
-- Linux cold start is TUN-first and IPv4-only.
-- `dynet` owns its capture lifecycle, system routing, DNS takeover, nftables
-  state, sysctl state, service lifecycle expectations, forwarding decisions,
-  and observability feedback loop.
+- Linux cold start is TUN-first and dual-stack when `[ipv6].enabled = true`;
+  enabling IPv6 default-passes dynet-owned DNS/TCP/UDP policy unless a rule
+  explicitly denies it, and never disables host IPv6 when false.
+- `dynet` owns its capture lifecycle, strictly marked routing/nftables/sysctl
+  artifacts, service lifecycle expectations, forwarding decisions, and
+  observability feedback loop. The caller owns firewall admission, DHCP,
+  dnsmasq/UCI/fw4, and port-53 mapping; dynet's optional mapping helper is
+  explicit, strictly owned, and never a security boundary during fail-open.
 - `dynet run` is foreground-only. Optional background lifecycle is owned by the
   backend-neutral `dynet service` control plane; Linux cold start supports
   systemd and OpenWrt procd without external process-state or log-file runners.
@@ -32,7 +36,9 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
 - `crates/dynet-cli/` currently contains only the minimal installable Rust
   binary entrypoint and the cold-start lifecycle command surface.
 - `crates/dynet-capture/` owns platform capture backends and host takeover
-  lifecycle. The first backend is Linux TUN with `.d` isolation probing.
+  lifecycle. The first backend is Linux TUN with `.d` isolation probing;
+  `src/linux/hooks/` separates hook ownership/status parsing, and
+  `tests/support/` owns shared fake host fixtures for capture integration tests.
 - `crates/dynet-api/` owns the local control-plane HTTP API shape under
   `/api/v1`.
 - `crates/dynet-ingress/` owns the fixed-upstream transparent DNS/TCP/UDP relay
@@ -55,6 +61,9 @@ old APIs or module boundaries unless the user explicitly reintroduces them.
   that model.
 - `scripts/smoke/` owns small local shell smoke checks. Keep it dependency-light
   and do not rebuild the old Python/VM experiment system here.
+- `scripts/build-openwrt.sh` owns the reproducible x86_64-musl release build
+  used by the OpenWrt canary. It may use a disposable container toolchain but
+  must leave the host workspace user-owned and emit only the dynet binary.
 - `prototype/shadowsocks/` owns the experimental hand-written Shadowsocks
   client protocol implementation. Keep protocol mechanics here; `dynet-ingress`
   should only adapt it behind the egress/dial boundary.
@@ -89,9 +98,10 @@ cargo test --locked --workspace
 scripts/smoke/ingress.sh
 ```
 
-Run `dynet ipstack-poc`, `dynet hooks apply`, `dynet hooks cleanup`, and any
-command that creates TUN/nft/route/sysctl state only inside the Proxmox dynet
-experiment VM.
+Run commands that create TUN/nft/route/sysctl state only inside explicitly
+scoped Proxmox VM canaries. The real OpenWrt VM additionally requires a frozen
+service.lan decision card and must keep production hooks/mappings inactive until
+that card explicitly admits a traffic slice.
 
 Service artifacts must remain isolated, atomically replaced, content-hashed,
 and idempotent. Never execute, overwrite, or remove a foreign/drifted artifact.

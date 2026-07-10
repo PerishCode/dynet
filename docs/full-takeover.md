@@ -3,9 +3,9 @@
 `dynet` has one product runtime shape: it fully owns DNS, UDP, and TCP capture,
 forwarding decisions, egress execution, and observability feedback.
 
-Linux cold start is TUN-first, IPv4-only, and intentionally scoped to router or
-VM environments. Desktop and mobile platform capture are future backend work,
-not cold-start compatibility requirements.
+Linux cold start is TUN-first, dual-stack-capable, and intentionally scoped to
+router or VM environments. IPv6 participation is explicit; host IPv6 remains
+caller-owned. Desktop and mobile capture are future backend work.
 
 ## Runtime Shape
 
@@ -27,8 +27,32 @@ dynet service apply
 - No partial product modes.
 - No external capture frontend as the target architecture.
 - No fallback to direct global file overwrites.
-- No silent IPv6 leakage in the first IPv4-only implementation.
+- No host-wide IPv6 disable/drop policy.
+- No implicit firewall admission or port-53 mapping.
+- No overwrite or removal of foreign route/nft/service artifacts.
 - No routing or nftables business decisions outside dynet.
+
+## IPv6 and Caller Integration Contract
+
+- `[ipv6].enabled = false` means dynet does not participate in IPv6. It does not
+  mutate host IPv6 or install a deny rule.
+- `[ipv6].enabled = true` defaults IPv6 to allow. Matching forwarding rules may
+  set `ipv6 = allow`, `deny`, or `inherit`; the selected graph still determines
+  egress, and no cross-group/direct fallback is allowed.
+- Nodes can declare `ipv6 = false`. IPv6 selection fails explicitly when the
+  chosen group has no eligible node.
+- Dynet capture helpers only mark TCP/UDP. ICMPv6 and other protocols remain
+  outside the product boundary.
+- Rule-level deny is routing/DNS policy, not a security boundary during
+  fail-open cleanup. The caller firewall owns hard security policy.
+- The stable integration ABI is mark `0x40000000/0x40000000`, rule priority
+  `10000`, route table ID `51880`, and nft output priority `-150`. Marking ORs
+  the reserved bit and preserves all unrelated caller bits.
+- Port 53 remains caller-owned. `dns-mapping apply` is an optional explicit
+  helper scoped to a configured interface; it touches neither firewall
+  admission, DHCP, dnsmasq, UCI, nor fw4. Service start never applies it.
+- Owned hooks/mappings are cleaned before startup and after terminal runtime
+  exit. Foreign artifacts are left untouched and reported as hard collisions.
 
 ## Isolation Model
 
@@ -65,14 +89,25 @@ The configured service account must be stable and non-root. Capture hook apply
 resolves that account and verifies the nft output bypass against its current
 UID. Both backends clean hooks before runtime startup and after terminal exit.
 The systemd backend uses privileged pre/post commands around a non-root runtime;
-the procd backend keeps a privileged supervisor, drops the child UID/GID, forwards
-HUP/TERM/INT, enforces a shutdown timeout, and cleans hooks before returning to
-procd respawn.
+the procd backend keeps a privileged supervisor, drops the child UID/GID while
+retaining only `CAP_NET_ADMIN`, forwards HUP/TERM/INT, enforces a shutdown
+timeout, and cleans hooks plus optional DNS mappings before returning to procd
+respawn. It does not require `setcap` on OpenWrt. For capture-enabled starts it
+pre-opens `/dev/net/tun` as root, passes the validated non-CLOEXEC descriptor to
+the child through a private process ABI, and drops the supervisor copy after
+spawn. The child still performs `TUNSETIFF` with its retained capability; global
+device permissions remain untouched.
 
 Runtime reload and shutdown remain dynet responsibilities. HUP publishes only a
 fully valid hot-reload generation and records applied, no-op, invalid, or
 restart-required audit outcomes. TERM/INT stop ingress, bound connection drain,
 flush persistence, and exit cleanly.
+
+Persistent observability is resource-bounded for router use. Defaults are 24
+hours and 64 MiB, both configurable. Maintenance prunes expired completed data,
+protects active sessions from time-based pruning, evicts oldest observations
+under size pressure, caps SQLite pages, and checkpoints a bounded WAL. No packet
+payloads or credentials are stored.
 
 ## Module Boundary
 
@@ -114,7 +149,7 @@ implementations.
 4. Add TUN lifecycle skeleton: create `dynet0`, bring it up, create the
    `inet dynet` nftables table with inert `bypass` / `dns` / `tcp` / `udp`
    chains, and clean those artifacts up.
-5. Add local packet parsing for IPv4 TCP / UDP / DNS into `CapturedFlow`.
+5. Add local packet parsing for IPv4/IPv6 TCP / UDP / DNS into `CapturedFlow`.
 6. Add real TUN open / `TUNSETIFF` binding and packet read/write primitives,
    validated only inside the VM with `dynet tun-probe dynet0`.
 7. Add a VM-only output hook slice: route marked VM-originated TCP/UDP traffic
@@ -135,7 +170,7 @@ policy rules, nft hooks, or packet redirection. The nft chains created by
 VM-only stage for the first route and nft hook probe, so the skeleton stays
 safe and the hook layer can be removed independently with `hooks cleanup`.
 
-The local-safe packet slice parses IPv4 TCP / UDP / DNS packet metadata from
+The local-safe packet slice parses IPv4 and IPv6 TCP / UDP / DNS packet metadata from
 bytes and maps it into normalized captured flow context. Real `/dev/net/tun`
 open/read/write and capture hooks remain VM-only. Current hook validation is
 limited to VM-originated output traffic; router-forwarded prerouting/forwarding
@@ -148,12 +183,12 @@ The first userspace-stack POC uses `ipstack 1.0.0` behind the VM-only
 the TUN consumption and kernel reinjection path before connecting captured
 flows to runtime selection and protocol-backed egress.
 
-Validated on `dynet.lan` on 2026-07-04:
+Historical IPv4 validation on `dynet.lan` on 2026-07-04 (superseded by the
+dual-stack contract above):
 
-- `apply --auto` creates or updates `/etc/sysctl.d/90-dynet.conf` and loads it
-  with `sysctl --load`. The fragment enables IPv4 forwarding, disables IPv6 for
-  the first IPv4-only slice, and sets `rp_filter = 0` for `all`, `default`, and
-  `dynet0`.
+- The historical build disabled IPv6 in its sysctl fragment. Current dynet no
+  longer writes any `net.ipv6.conf.*.disable_ipv6` value; callers migrating a
+  live host must explicitly undo stale runtime sysctls left by that old build.
 - `hooks apply` installs the fwmark rule at priority `10000`, before Linux's
   default `main` rule. The earlier `51880` priority sits after `main` and lets
   marked packets escape through the normal default route.
@@ -246,8 +281,9 @@ Dedicated service.lan VM validation on 2026-07-09:
 - `dynet run` was started as UID `1000` service user with `cap_net_admin` on the
   binary, matching the output hook's `meta skuid 1000 return` bypass so dynet
   egress is not recaptured.
-- `dynet apply --auto` created the expected dynet-owned fragments, `dynet0`,
-  and inert nft skeleton. The IPv4-only sysctl disabled VM IPv6 as intended.
+- The then-current `dynet apply --auto` created the expected fragments,
+  `dynet0`, and inert nft skeleton; its IPv6-disable behavior is historical and
+  must not be copied into current deployments.
 - A short `hooks apply` window validated root VM-originated TCP and DNS:
   `curl http://1.1.1.1/` returned HTTP `301`, and a UDP DNS query to
   `1.1.1.1:53` for `example.com` returned `rcode=0` with two answers.
@@ -259,6 +295,40 @@ Dedicated service.lan VM validation on 2026-07-09:
   A short hook window confirmed all three return rules were present, while the
   public IPv4 TCP and UDP/DNS probes still passed. Cleanup again left no active
   output hook, fwmark rule, or `dynet` route-table default.
+
+Dedicated dual-stack validation on `dynet-lab.lan` on 2026-07-10:
+
+- `[ipv6].enabled = true` preserved host IPv6 and installed symmetric masked
+  IPv4/IPv6 rules only during the explicit hook window.
+- A veth/netns loop ran 12 TCP and 12 UDP/DNS flows; four of each used IPv6.
+  Current-generation TUN close events recorded all IPv6 flows before cleanup.
+- The optional DNS mapping helper created a strictly owned, interface-scoped
+  UDP/TCP mapping chain, reported ready, and removed it without touching the
+  caller firewall. A subsequent service restart also removed an explicitly
+  applied mapping through terminal fail-open cleanup.
+- Runtime persistence recorded the 24-hour and 64 MiB defaults; the active VM
+  database remained about 1.1 MiB plus a small WAL on the 2 GiB lab VM.
+
+Real OpenWrt procd canary validation on `openwrt.lan` on 2026-07-10:
+
+- OpenWrt 25.12.4 x86_64/musl required `ip-full`, `kmod-tun`, an explicit
+  `rt_tables.d` carrier, and narrow shadow account tools; the base image had
+  `ip-tiny`, no TUN device, no account applets, and no `install` utility.
+- A static-pie musl release with vendored OpenSSL ran from `/usr/bin/dynet`.
+  The procd supervisor remained root while the runtime ran as UID/GID 999 with
+  only `CAP_NET_ADMIN` and about 10.6 MiB RSS.
+- The first start proved fail-open but exposed `/dev/net/tun` mode 0600: the
+  child could not open the device, procd respawned, and no hook, mapping, rule,
+  or route appeared. A full rollback restored the byte-exact apk world and all
+  stable network hashes before the inherited-fd fix was deployed.
+- After that fix, plan/doctor/status, first and repeated apply, reload, restart,
+  stop/start, logs, service cleanup, takeover cleanup, cold rebuild, procd
+  respawn after a killed runtime child, and the enabled boot action all passed.
+  API generation/readiness, main supervisor PID, resource bounds, gateway/AP
+  probes, and local DNS remained healthy.
+- Hooks and DNS mapping were never applied. The canary created only `dynet0`
+  plus the inert `inet dynet` skeleton; pref 10000, table 51880 routes,
+  `dynet_output`, and `dynet_dns_mapping` remained absent.
 
 All verification that creates TUN devices, nftables state, route tables, sysctl
 fragments, or other host networking state must run inside the Proxmox dynet

@@ -1,8 +1,9 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::{CapturedFlow, CapturedTarget, CapturedTransport};
 
 const IPV4_MIN_HEADER_LEN: usize = 20;
+const IPV6_HEADER_LEN: usize = 40;
 const TCP_PROTOCOL: u8 = 6;
 const UDP_PROTOCOL: u8 = 17;
 const DNS_PORT: u16 = 53;
@@ -28,10 +29,19 @@ impl PacketFlow {
     pub fn into_captured_flow(self, flow_id: u64) -> CapturedFlow {
         CapturedFlow {
             flow_id,
-            peer: Some(IpAddr::V4(source_ip(self.source))),
+            peer: Some(self.source.ip()),
             target: CapturedTarget::packet_destination(self.destination),
             transport: self.transport,
         }
+    }
+}
+
+pub fn parse_ip_packet(packet: &[u8]) -> Result<PacketFlow, PacketParseError> {
+    let first = packet.first().ok_or(PacketParseError::TooShort)?;
+    match first >> 4 {
+        4 => parse_ipv4_packet(packet),
+        6 => parse_ipv6_packet(packet),
+        version => Err(PacketParseError::UnsupportedVersion(version)),
     }
 }
 
@@ -74,6 +84,42 @@ pub fn parse_ipv4_packet(packet: &[u8]) -> Result<PacketFlow, PacketParseError> 
     }
 }
 
+pub fn parse_ipv6_packet(packet: &[u8]) -> Result<PacketFlow, PacketParseError> {
+    if packet.len() < IPV6_HEADER_LEN {
+        return Err(PacketParseError::TooShort);
+    }
+    let version = packet[0] >> 4;
+    if version != 6 {
+        return Err(PacketParseError::UnsupportedVersion(version));
+    }
+    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+    let total_len = IPV6_HEADER_LEN + payload_len;
+    if packet.len() < total_len {
+        return Err(PacketParseError::TruncatedPacket);
+    }
+    let protocol = packet[6];
+    let source = Ipv6Addr::from(
+        <[u8; 16]>::try_from(&packet[8..24]).expect("IPv6 source slice has fixed length"),
+    );
+    let destination = Ipv6Addr::from(
+        <[u8; 16]>::try_from(&packet[24..40]).expect("IPv6 destination slice has fixed length"),
+    );
+    let transport = &packet[IPV6_HEADER_LEN..total_len];
+    match protocol {
+        TCP_PROTOCOL => parse_ports(transport).map(|(source_port, destination_port)| PacketFlow {
+            source: SocketAddr::new(IpAddr::V6(source), source_port),
+            destination: SocketAddr::new(IpAddr::V6(destination), destination_port),
+            transport: classify_tcp(source_port, destination_port),
+        }),
+        UDP_PROTOCOL => parse_ports(transport).map(|(source_port, destination_port)| PacketFlow {
+            source: SocketAddr::new(IpAddr::V6(source), source_port),
+            destination: SocketAddr::new(IpAddr::V6(destination), destination_port),
+            transport: classify_udp(source_port, destination_port),
+        }),
+        protocol => Err(PacketParseError::UnsupportedProtocol(protocol)),
+    }
+}
+
 fn parse_ports(packet: &[u8]) -> Result<(u16, u16), PacketParseError> {
     if packet.len() < 4 {
         return Err(PacketParseError::MissingTransportHeader);
@@ -97,12 +143,5 @@ fn classify_udp(source_port: u16, destination_port: u16) -> CapturedTransport {
         CapturedTransport::DnsUdp
     } else {
         CapturedTransport::Udp
-    }
-}
-
-fn source_ip(address: SocketAddr) -> Ipv4Addr {
-    match address.ip() {
-        IpAddr::V4(address) => address,
-        IpAddr::V6(_) => unreachable!("packet parser only emits IPv4 addresses"),
     }
 }

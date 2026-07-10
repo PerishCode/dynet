@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use dynet_runtime::{
     ForwardGroup, ForwardNode, GroupId, GroupMember, GroupThresholds, InboundKind,
-    IngressEventKind, NextRef, NodeId, RouteMatcher, RouteRule, RuleId, RuntimeSeed, RuntimeState,
-    RuntimeStore, SchedulerPolicy, SelectionContext, TargetContext,
+    IngressEventKind, Ipv6RulePolicy, NextRef, NodeId, RouteMatcher, RouteRule, RuleId,
+    RuntimeSeed, RuntimeState, RuntimeStore, SchedulerPolicy, SelectionContext, TargetContext,
 };
 
 #[tokio::test]
@@ -355,6 +355,7 @@ async fn runtime_from_seed(seed: RuntimeSeed) -> RuntimeState {
 
 fn github_seed() -> RuntimeSeed {
     RuntimeSeed {
+        ipv6_enabled: false,
         nodes: vec![
             ForwardNode::new("airport-primary", "ss", true),
             ForwardNode::new("airport-backup", "ss", true),
@@ -387,6 +388,7 @@ fn github_seed() -> RuntimeSeed {
             enabled: true,
             matcher: RouteMatcher::DomainExact("github.com".to_string()),
             group_id: GroupId::new("GitHub"),
+            ipv6: Ipv6RulePolicy::Inherit,
         }],
         dns_upstreams: RuntimeSeed::single_node("direct").dns_upstreams,
         dns_policy: RuntimeSeed::single_node("direct").dns_policy,

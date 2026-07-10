@@ -2,7 +2,7 @@ use std::{
     fs::File,
     future::Future,
     io::{self, Read, Write},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::Pin,
     sync::Arc,
     task::{ready, Context, Poll},
@@ -241,10 +241,6 @@ fn done(options: &IpStackPocOptions, report: &IpStackPocReport) -> bool {
 async fn handle_tcp(mut downstream: IpStackTcpStream) -> Result<bool, String> {
     let local = downstream.local_addr();
     let target = downstream.peer_addr();
-    if !target.ip().is_ipv4() {
-        println!("ipstack-poc: skipped tcp local={local} peer={target} reason=non-ipv4");
-        return Ok(false);
-    }
     println!("ipstack-poc: accepted tcp local={local} peer={target}");
     let mut upstream = TcpStream::connect(target)
         .await
@@ -326,10 +322,6 @@ async fn handle_udp(
 ) -> Result<bool, String> {
     let local = downstream.local_addr();
     let target = downstream.peer_addr();
-    if !target.ip().is_ipv4() {
-        println!("ipstack-poc: skipped udp local={local} peer={target} reason=non-ipv4");
-        return Ok(false);
-    }
     let mut payload = vec![0_u8; 65_535];
     let len = downstream
         .read(&mut payload)
@@ -342,7 +334,7 @@ async fn handle_udp(
     );
     let bind = match target.ip() {
         IpAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
-        IpAddr::V6(_) => unreachable!("non-ipv4 target returned earlier"),
+        IpAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
     };
     let socket = UdpSocket::bind(bind)
         .await

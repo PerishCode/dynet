@@ -6,7 +6,7 @@ use std::{
 };
 
 use dynet_ingress::{EgressNodeConfig, ShadowsocksMethod};
-use dynet_runtime::DnsUpstreamTransport;
+use dynet_runtime::{DnsUpstreamTransport, Ipv6RulePolicy};
 use dynet_state::Config;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -42,6 +42,28 @@ udp = true
     assert_eq!(node_config.method, ShadowsocksMethod::Aes256Gcm);
     assert_eq!(node_config.password, "fake-password");
 
+    fs::remove_file(config_path).expect("remove config");
+}
+
+#[test]
+fn loads_node_ipv6_capability() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let _guard = EnvGuard::set(&[]);
+    let config_path = temp_config_path("loads_node_ipv6_capability");
+    fs::write(
+        &config_path,
+        graph_config(
+            r#"
+type = "direct"
+ipv6 = false
+"#,
+        ),
+    )
+    .expect("write config");
+
+    let config = Config::from_config_path(Some(&config_path)).expect("config loads");
+
+    assert!(!config.forwarding.seed.nodes[0].supports_ipv6);
     fs::remove_file(config_path).expect("remove config");
 }
 
@@ -261,6 +283,7 @@ priority = 100
 match = "domain-suffix"
 value = "example.org"
 group = "Tunnel"
+ipv6 = "deny"
 "#,
     )
     .expect("write config");
@@ -277,6 +300,10 @@ group = "Tunnel"
         .expect("Tunnel group");
     assert_eq!(tunnel.next.label(), "Private");
     assert_eq!(config.forwarding.seed.route_rules.len(), 1);
+    assert_eq!(
+        config.forwarding.seed.route_rules[0].ipv6,
+        Ipv6RulePolicy::Deny
+    );
 
     fs::remove_file(config_path).expect("remove config");
 }

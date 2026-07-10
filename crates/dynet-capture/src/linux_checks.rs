@@ -2,23 +2,6 @@ use std::path::{Path, PathBuf};
 
 use crate::{CheckState, CommandOutput, TakeoverCheck};
 
-pub(crate) fn directory_check(id: &'static str, label: &'static str, path: &Path) -> TakeoverCheck {
-    let state = if path.is_dir() {
-        CheckState::Ready
-    } else if path.exists() {
-        CheckState::InvalidHardFail
-    } else {
-        CheckState::MissingHardFail
-    };
-    TakeoverCheck {
-        id,
-        label,
-        path: Some(path.to_path_buf()),
-        state,
-        auto_action: None,
-    }
-}
-
 pub(crate) fn directory_auto_check(
     id: &'static str,
     label: &'static str,

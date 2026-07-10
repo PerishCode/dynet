@@ -5,7 +5,9 @@ use std::{
 
 mod nested_args;
 mod runtime_reload;
-use nested_args::{parse_config_args, parse_hooks_args, parse_service_args};
+use nested_args::{
+    parse_config_args, parse_dns_mapping_args, parse_hooks_args, parse_service_args,
+};
 pub use runtime_reload::{ReloadResult, RuntimeReload};
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -31,6 +33,9 @@ pub enum Command {
     },
     Hooks {
         action: HooksAction,
+    },
+    DnsMapping {
+        action: DnsMappingAction,
     },
     Service {
         action: ServiceAction,
@@ -58,6 +63,15 @@ pub enum Command {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum HooksAction {
+    Status,
+    Apply,
+    Cleanup,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DnsMappingAction {
+    Plan,
+    Doctor,
     Status,
     Apply,
     Cleanup,
@@ -128,6 +142,10 @@ impl Args {
                 }
                 "hooks" => {
                     parsed.command = parse_hooks_args(&mut parsed, args)?;
+                    return Ok(parsed);
+                }
+                "dns-mapping" => {
+                    parsed.command = parse_dns_mapping_args(&mut parsed, args)?;
                     return Ok(parsed);
                 }
                 "service" => {

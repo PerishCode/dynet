@@ -9,6 +9,7 @@ description = "Optional platform service-manager integration for dynet."
 [dependencies]
 dynet-state = { path = "../dynet-state" }
 libc = "0.2"
+serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["process", "signal", "time"] }
 

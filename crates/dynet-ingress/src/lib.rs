@@ -23,10 +23,12 @@ const DATAGRAM_LIMIT: usize = 65_535;
 pub const DEFAULT_TCP_MAX_SESSIONS: usize = 1024;
 pub const DEFAULT_UDP_MAX_SESSIONS: usize = 1024;
 pub const DEFAULT_SOCKS5_MAX_SESSIONS: usize = 1024;
+pub const DEFAULT_DNS_MAX_SESSIONS: usize = 256;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct DnsRelayConfig {
     pub bind: SocketAddr,
+    pub max_sessions: usize,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -135,6 +137,7 @@ impl Default for DnsRelayConfig {
     fn default() -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 1053)),
+            max_sessions: DEFAULT_DNS_MAX_SESSIONS,
         }
     }
 }
@@ -384,6 +387,11 @@ pub(crate) fn push_decision_fields(
     fields.push(("selectionReason", decision.reason.as_str().to_string()));
     fields.push(("scheduler", decision.scheduler.as_str().to_string()));
     fields.push(("candidateCount", decision.candidate_count.to_string()));
+    fields.push(("ipFamily", decision.ip_family.as_str().to_string()));
+    if let Some(source) = decision.ipv6_policy_source {
+        fields.push(("ipv6Policy", "allow".to_string()));
+        fields.push(("ipv6PolicySource", source.as_str().to_string()));
+    }
 }
 
 pub(crate) fn push_endpoint_fields(

@@ -55,7 +55,7 @@ impl LinuxTakeover {
                 plan_item(
                     "packet.parser",
                     PlanPhase::VmOnlyCapture,
-                    "parse IPv4 TCP/UDP/DNS packet metadata from captured bytes",
+                    "parse IPv4/IPv6 TCP/UDP/DNS packet metadata from captured bytes",
                     PlanSafety::LocalSafe,
                 ),
                 plan_item(

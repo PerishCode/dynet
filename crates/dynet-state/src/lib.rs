@@ -9,15 +9,19 @@ use std::{
 use dynet_ingress::{
     DnsRelayConfig, EgressNodeConfig, IngressConfig, TcpRelayConfig, UdpRelayConfig,
 };
-use dynet_runtime::RuntimeSeed;
+use dynet_runtime::{PersistencePolicy, RuntimeSeed};
 use serde::Deserialize;
 
+mod dns_mapping_config;
+mod env_config;
 mod forwarding_config;
-mod method_config;
+mod persistence_config;
 mod reload;
 mod service_config;
 mod socks_config;
 mod summary;
+pub use dns_mapping_config::DnsMappingConfig;
+use env_config::apply_env;
 use forwarding_config::FileForwardingConfig;
 pub use reload::{ReloadDisposition, ReloadPlan};
 pub use service_config::{ServiceConfig, ServiceManager};
@@ -34,6 +38,9 @@ pub struct Config {
     pub control: ControlConfig,
     pub ingress: IngressConfig,
     pub capture: CaptureConfig,
+    pub ipv6: Ipv6Config,
+    pub dns_mapping: DnsMappingConfig,
+    pub persistence: PersistencePolicy,
     pub forwarding: ForwardingConfig,
     pub service: ServiceConfig,
 }
@@ -41,6 +48,11 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ControlConfig {
     pub bind: SocketAddr,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct Ipv6Config {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -71,6 +83,9 @@ impl Default for Config {
             },
             ingress: IngressConfig::default(),
             capture: CaptureConfig::default(),
+            ipv6: Ipv6Config::default(),
+            dns_mapping: DnsMappingConfig::default(),
+            persistence: PersistencePolicy::default(),
             forwarding: ForwardingConfig::default(),
             service: ServiceConfig::default(),
         }
@@ -118,6 +133,7 @@ impl Config {
     pub fn from_env() -> Result<Self, String> {
         let mut config = Self::default();
         apply_env(&mut config)?;
+        sync_runtime_policy(&mut config);
         Ok(config)
     }
 
@@ -125,6 +141,7 @@ impl Config {
         let mut config = Self::default();
         apply_config_file(&mut config, path)?;
         apply_env(&mut config)?;
+        sync_runtime_policy(&mut config);
         Ok(config)
     }
 
@@ -137,39 +154,8 @@ impl Config {
     }
 }
 
-fn apply_env(config: &mut Config) -> Result<(), String> {
-    config.control.bind = env_socket("DYNET_CONTROL_BIND", config.control.bind)?;
-    config.ingress.dns.bind = env_socket("DYNET_DNS_BIND", config.ingress.dns.bind)?;
-    config.ingress.tcp.bind = env_socket("DYNET_TCP_BIND", config.ingress.tcp.bind)?;
-    config.ingress.tcp.upstream = env_socket("DYNET_TCP_UPSTREAM", config.ingress.tcp.upstream)?;
-    config.ingress.tcp.max_sessions =
-        env_positive_usize("DYNET_TCP_MAX_SESSIONS", config.ingress.tcp.max_sessions)?;
-    config.ingress.udp.bind = env_socket("DYNET_UDP_BIND", config.ingress.udp.bind)?;
-    config.ingress.udp.upstream = env_socket("DYNET_UDP_UPSTREAM", config.ingress.udp.upstream)?;
-    config.ingress.udp.idle_timeout =
-        env_duration_ms("DYNET_UDP_IDLE_TIMEOUT_MS", config.ingress.udp.idle_timeout)?;
-    config.ingress.udp.max_sessions =
-        env_positive_usize("DYNET_UDP_MAX_SESSIONS", config.ingress.udp.max_sessions)?;
-    socks_config::apply_env(&mut config.ingress.socks5)?;
-    config.capture.tun.enabled = env_bool("DYNET_CAPTURE_TUN_ENABLED", config.capture.tun.enabled)?;
-    config.capture.tun.interface = env_non_empty_string(
-        "DYNET_CAPTURE_TUN_INTERFACE",
-        config.capture.tun.interface.clone(),
-    )?;
-    config.capture.tun.tcp_idle_timeout = env_duration_ms(
-        "DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS",
-        config.capture.tun.tcp_idle_timeout,
-    )?;
-    config.capture.tun.udp_idle_timeout = env_duration_ms(
-        "DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS",
-        config.capture.tun.udp_idle_timeout,
-    )?;
-    config.capture.tun.udp_response_timeout = env_duration_ms(
-        "DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS",
-        config.capture.tun.udp_response_timeout,
-    )?;
-    service_config::apply_env(&mut config.service)?;
-    Ok(())
+fn sync_runtime_policy(config: &mut Config) {
+    config.forwarding.seed.ipv6_enabled = config.ipv6.enabled;
 }
 
 fn apply_config_file(config: &mut Config, path: Option<&Path>) -> Result<(), String> {
@@ -195,65 +181,15 @@ fn default_config_path() -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to resolve current directory: {error}"))
 }
 
-fn env_socket(name: &str, fallback: SocketAddr) -> Result<SocketAddr, String> {
-    match env::var(name) {
-        Ok(value) => value
-            .parse()
-            .map_err(|error| format!("{name} must be a socket address: {error}")),
-        Err(env::VarError::NotPresent) => Ok(fallback),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
-fn env_duration_ms(name: &str, fallback: Duration) -> Result<Duration, String> {
-    match env::var(name) {
-        Ok(value) => value
-            .parse::<u64>()
-            .map(Duration::from_millis)
-            .map_err(|error| format!("{name} must be an integer millisecond value: {error}")),
-        Err(env::VarError::NotPresent) => Ok(fallback),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
-fn env_bool(name: &str, fallback: bool) -> Result<bool, String> {
-    match env::var(name) {
-        Ok(value) => parse_bool(name, &value),
-        Err(env::VarError::NotPresent) => Ok(fallback),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
-fn env_non_empty_string(name: &str, fallback: String) -> Result<String, String> {
-    match env::var(name) {
-        Ok(value) => non_empty_string(name, value),
-        Err(env::VarError::NotPresent) => Ok(fallback),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
-fn env_positive_usize(name: &str, fallback: usize) -> Result<usize, String> {
-    match env::var(name) {
-        Ok(value) => {
-            let parsed = value
-                .parse::<usize>()
-                .map_err(|error| format!("{name} must be a positive integer: {error}"))?;
-            if parsed == 0 {
-                return Err(format!("{name} must be a positive integer"));
-            }
-            Ok(parsed)
-        }
-        Err(env::VarError::NotPresent) => Ok(fallback),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     control: Option<FileControlConfig>,
     ingress: Option<FileIngressConfig>,
     capture: Option<FileCaptureConfig>,
+    ipv6: Option<FileIpv6Config>,
+    dns_mapping: Option<dns_mapping_config::FileDnsMappingConfig>,
+    persistence: Option<persistence_config::FilePersistenceConfig>,
     forwarding: Option<FileForwardingConfig>,
     service: Option<service_config::FileServiceConfig>,
 }
@@ -269,6 +205,15 @@ impl FileConfig {
         if let Some(capture) = self.capture {
             capture.apply(&mut config.capture)?;
         }
+        if let Some(ipv6) = self.ipv6 {
+            ipv6.apply(&mut config.ipv6);
+        }
+        if let Some(dns_mapping) = self.dns_mapping {
+            dns_mapping.apply(&mut config.dns_mapping)?;
+        }
+        if let Some(persistence) = self.persistence {
+            persistence.apply(&mut config.persistence)?;
+        }
         if let Some(forwarding) = self.forwarding {
             config.forwarding = forwarding.load()?;
         }
@@ -276,6 +221,20 @@ impl FileConfig {
             service.apply(&mut config.service)?;
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileIpv6Config {
+    enabled: Option<bool>,
+}
+
+impl FileIpv6Config {
+    fn apply(self, config: &mut Ipv6Config) {
+        if let Some(enabled) = self.enabled {
+            config.enabled = enabled;
+        }
     }
 }
 
@@ -371,12 +330,16 @@ impl FileIngressConfig {
 #[serde(deny_unknown_fields)]
 struct FileDnsRelayConfig {
     bind: Option<String>,
+    max_sessions: Option<usize>,
 }
 
 impl FileDnsRelayConfig {
     fn apply(self, config: &mut DnsRelayConfig) -> Result<(), String> {
         if let Some(bind) = self.bind {
             config.bind = parse_socket("ingress.dns.bind", &bind)?;
+        }
+        if let Some(max_sessions) = self.max_sessions {
+            config.max_sessions = positive_usize("ingress.dns.max_sessions", max_sessions)?;
         }
         Ok(())
     }
@@ -436,24 +399,6 @@ fn parse_socket(name: &str, value: &str) -> Result<SocketAddr, String> {
     value
         .parse()
         .map_err(|error| format!("{name} must be a socket address: {error}"))
-}
-
-fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
-    if value.eq_ignore_ascii_case("true")
-        || value.eq_ignore_ascii_case("yes")
-        || value.eq_ignore_ascii_case("on")
-        || value == "1"
-    {
-        return Ok(true);
-    }
-    if value.eq_ignore_ascii_case("false")
-        || value.eq_ignore_ascii_case("no")
-        || value.eq_ignore_ascii_case("off")
-        || value == "0"
-    {
-        return Ok(false);
-    }
-    Err(format!("{name} must be a boolean"))
 }
 
 fn non_empty_string(name: &str, value: String) -> Result<String, String> {

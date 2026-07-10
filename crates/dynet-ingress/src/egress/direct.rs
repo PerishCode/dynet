@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    time::Duration,
+};
 
 use tokio::{
     io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -28,15 +31,17 @@ impl EgressNode for DirectEgress {
         &self,
         mut association: UdpRelayAssociation,
     ) -> Result<UdpRelayOutcome, EgressError> {
-        let upstream_socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
-            .await
-            .map_err(|error| {
-                EgressError::new(
-                    "egress-bind",
-                    None,
-                    format!("failed to bind UDP egress socket: {error}"),
-                )
-            })?;
+        let bind = match association.target.ip() {
+            IpAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+            IpAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
+        };
+        let upstream_socket = UdpSocket::bind(bind).await.map_err(|error| {
+            EgressError::new(
+                "egress-bind",
+                None,
+                format!("failed to bind UDP egress socket: {error}"),
+            )
+        })?;
         upstream_socket
             .connect(association.target)
             .await

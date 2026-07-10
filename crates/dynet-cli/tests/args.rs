@@ -1,6 +1,6 @@
 use std::{ffi::OsString, path::PathBuf};
 
-use dynet_cli::{Args, Command, ConfigAction, HooksAction, ServiceAction};
+use dynet_cli::{Args, Command, ConfigAction, DnsMappingAction, HooksAction, ServiceAction};
 
 #[test]
 fn parses_config_flag() {
@@ -123,6 +123,23 @@ fn parses_lifecycle_commands() {
             action: HooksAction::Cleanup
         }
     );
+
+    for (name, action) in [
+        ("plan", DnsMappingAction::Plan),
+        ("doctor", DnsMappingAction::Doctor),
+        ("status", DnsMappingAction::Status),
+        ("apply", DnsMappingAction::Apply),
+        ("cleanup", DnsMappingAction::Cleanup),
+    ] {
+        let args = Args::parse([
+            OsString::from("dns-mapping"),
+            OsString::from(name),
+            OsString::from("--config=/etc/dynet/dynet.toml"),
+        ])
+        .expect("dns mapping args parse");
+        assert_eq!(args.command, Command::DnsMapping { action });
+        assert_eq!(args.config, Some(PathBuf::from("/etc/dynet/dynet.toml")));
+    }
 
     let args = Args::parse([
         OsString::from("service"),

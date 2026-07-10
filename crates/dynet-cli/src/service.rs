@@ -1,24 +1,27 @@
 use std::{env, path::Path, time::Duration};
 
-use dynet_capture::{CheckState, LinuxTakeover};
-use dynet_cli::{HooksAction, ServiceAction};
+use dynet_capture::{CheckState, DnsMappingOptions, HookOptions, LinuxTakeover};
+use dynet_cli::{DnsMappingAction, HooksAction, ServiceAction};
 use dynet_service::{HostRunner, ServiceController, ServiceSpec};
 use dynet_state::AppState;
 
-use crate::{resolve_config_relative, resolve_runtime_path, service_runtime};
+use crate::{
+    paths::{resolve_config_relative, resolve_runtime_path},
+    service_runtime,
+};
 
 pub(crate) fn run_hooks(action: HooksAction, config_path: Option<&Path>) -> Result<(), String> {
     let checks = match action {
         HooksAction::Status => {
-            let identity = ServiceController::new(spec(config_path)?).identity()?;
-            LinuxTakeover::default().hooks_status_for(identity.uid)
+            let options = configured_hook_options(config_path)?;
+            LinuxTakeover::default().hooks_status_for_options(options)
         }
         HooksAction::Apply => {
-            let identity = ServiceController::new(spec(config_path)?).identity()?;
-            for action in LinuxTakeover::default().hooks_apply(identity.uid)? {
+            let options = configured_hook_options(config_path)?;
+            for action in LinuxTakeover::default().hooks_apply_for(options)? {
                 println!("{action}");
             }
-            LinuxTakeover::default().hooks_status_for(identity.uid)
+            LinuxTakeover::default().hooks_status_for_options(options)
         }
         HooksAction::Cleanup => {
             for action in LinuxTakeover::default().hooks_cleanup()? {
@@ -29,6 +32,76 @@ pub(crate) fn run_hooks(action: HooksAction, config_path: Option<&Path>) -> Resu
     };
     crate::print_checks("hooks status", &checks);
     Ok(())
+}
+
+pub(crate) fn run_dns_mapping(
+    action: DnsMappingAction,
+    config_path: Option<&Path>,
+) -> Result<(), String> {
+    let takeover = LinuxTakeover::default();
+    if action == DnsMappingAction::Cleanup {
+        for action in takeover.dns_mapping_cleanup()? {
+            println!("{action}");
+        }
+        return Ok(());
+    }
+    let options = configured_dns_mapping_options(config_path)?;
+    match action {
+        DnsMappingAction::Plan => {
+            println!("dynet DNS mapping plan:");
+            for item in takeover.dns_mapping_plan(&options)? {
+                println!("- {item}");
+            }
+        }
+        DnsMappingAction::Doctor => {
+            let checks = takeover.dns_mapping_doctor_for(&options)?;
+            crate::print_checks("dns-mapping doctor", &checks);
+            if checks.iter().any(|check| check.state != CheckState::Ready) {
+                return Err("dns mapping doctor requires the owned runtime skeleton".to_string());
+            }
+        }
+        DnsMappingAction::Status => {
+            let checks = takeover.dns_mapping_status_for(&options)?;
+            crate::print_checks("dns-mapping status", &checks);
+        }
+        DnsMappingAction::Apply => {
+            for action in takeover.dns_mapping_apply(&options)? {
+                println!("{action}");
+            }
+            let checks = takeover.dns_mapping_status_for(&options)?;
+            crate::print_checks("dns-mapping status", &checks);
+            if checks.iter().any(|check| check.state != CheckState::Ready) {
+                return Err("DNS mapping apply did not converge".to_string());
+            }
+        }
+        DnsMappingAction::Cleanup => unreachable!("cleanup handled without configuration"),
+    }
+    Ok(())
+}
+
+fn configured_hook_options(config_path: Option<&Path>) -> Result<HookOptions, String> {
+    let service_spec = spec(config_path)?;
+    let identity = ServiceController::new(service_spec.clone()).identity()?;
+    let state = AppState::from_config_path(Some(&service_spec.config))?;
+    Ok(HookOptions {
+        service_uid: identity.uid,
+        ipv6_enabled: state.config.ipv6.enabled,
+    })
+}
+
+fn configured_dns_mapping_options(config_path: Option<&Path>) -> Result<DnsMappingOptions, String> {
+    let config_path =
+        config_path.ok_or_else(|| "dns-mapping requires an explicit --config path".to_string())?;
+    let state = AppState::from_config_path(Some(config_path))?;
+    let interface = state.config.dns_mapping.interface.ok_or_else(|| {
+        "dns-mapping requires dns_mapping.interface in the configuration".to_string()
+    })?;
+    Ok(DnsMappingOptions {
+        interface,
+        source_port: state.config.dns_mapping.source_port,
+        target: state.config.ingress.dns.bind,
+        ipv6_enabled: state.config.ipv6.enabled,
+    })
 }
 
 pub(crate) async fn run(action: ServiceAction, config_path: Option<&Path>) -> Result<(), String> {
@@ -42,7 +115,10 @@ pub(crate) async fn run(action: ServiceAction, config_path: Option<&Path>) -> Re
         .bind;
     if action == ServiceAction::Supervise {
         return dynet_service::supervise(&spec, || {
-            LinuxTakeover::default().hooks_cleanup().map(|_| ())
+            let takeover = LinuxTakeover::default();
+            takeover.hooks_cleanup()?;
+            takeover.dns_mapping_cleanup()?;
+            Ok(())
         })
         .await;
     }

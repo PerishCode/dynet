@@ -41,6 +41,8 @@ pub(super) async fn query_https_upstream(
         upstream,
         query_info,
         response_info,
+        ipv6_filtered: false,
+        matched_rule_id: None,
     })
 }
 

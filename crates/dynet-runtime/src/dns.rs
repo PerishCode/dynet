@@ -6,7 +6,7 @@ use std::{
 
 use tokio::{net::UdpSocket, sync::mpsc, time};
 
-use crate::{unix_ms, DnsUpstream, DnsUpstreamTransport, RuntimeState};
+use crate::{unix_ms, DnsUpstream, DnsUpstreamTransport, RuleId, RuntimeState};
 
 mod https;
 
@@ -37,6 +37,8 @@ pub struct DnsResolution {
     pub source: SocketAddr,
     pub query_info: Option<DnsQueryInfo>,
     pub response_info: Option<DnsResponseInfo>,
+    pub ipv6_filtered: bool,
+    pub matched_rule_id: Option<RuleId>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -48,6 +50,10 @@ impl RuntimeState {
     pub async fn resolve_dns_wire(&self, query: Vec<u8>) -> Result<DnsResolution, DnsResolveError> {
         let (policy, upstream_store) = self.dns_config();
         let query_info = sniff_dns_query(&query);
+        let ipv6_deny_rule = query_info
+            .as_ref()
+            .filter(|info| info.query_type == "AAAA")
+            .and_then(|info| self.dns_ipv6_deny_rule(&info.query_name));
         let upstreams = enabled_upstreams(upstream_store.snapshot());
         if upstreams.is_empty() {
             return Err(DnsResolveError::new(
@@ -93,7 +99,10 @@ impl RuntimeState {
                         ));
                     };
                     match result {
-                        Ok(resolution) => {
+                        Ok(mut resolution) => {
+                            if let Some(rule_id) = &ipv6_deny_rule {
+                                apply_ipv6_dns_filter(&mut resolution, rule_id.clone())?;
+                            }
                             if only_fake_answers(&resolution) {
                                 fake_candidate.get_or_insert(resolution);
                                 continue;
@@ -276,7 +285,34 @@ async fn query_udp_upstream(
         source,
         query_info,
         response_info,
+        ipv6_filtered: false,
+        matched_rule_id: None,
     })
+}
+
+fn apply_ipv6_dns_filter(
+    resolution: &mut DnsResolution,
+    rule_id: RuleId,
+) -> Result<(), DnsResolveError> {
+    let question_end = dns_question_end(&resolution.response)
+        .ok_or_else(|| DnsResolveError::new("cannot filter malformed AAAA response"))?;
+    resolution.response[6..12].fill(0);
+    resolution.response.truncate(question_end);
+    resolution.response_info = sniff_dns_response(&resolution.response);
+    resolution.ipv6_filtered = true;
+    resolution.matched_rule_id = Some(rule_id);
+    Ok(())
+}
+
+fn dns_question_end(packet: &[u8]) -> Option<usize> {
+    let qdcount = u16_at(packet, 4)?;
+    let mut offset = 12;
+    for _ in 0..qdcount {
+        let (_, next) = read_name(packet, offset)?;
+        offset = next.checked_add(4)?;
+        packet.get(..offset)?;
+    }
+    Some(offset)
 }
 
 fn validate_response_info(

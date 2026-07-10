@@ -8,17 +8,21 @@ use std::{
 
 mod cidr;
 mod forward_node;
+mod ip_family;
 mod matrix_active;
 mod matrix_service;
 mod matrix_shadow;
 mod matrix_stats;
+mod selection_error;
 mod target_context;
 use cidr::ip_matches_cidr;
+pub use ip_family::{IpFamily, Ipv6PolicySource, Ipv6RulePolicy};
 pub(crate) use matrix_active::select_active_candidate;
 pub use matrix_service::{MatrixService, SelectorMatrix};
 pub(crate) use matrix_shadow::{MatrixCandidateInput, MATRIX_SHADOW_LIMIT};
 pub use matrix_shadow::{MatrixShadowCandidate, MatrixShadowDecision};
 pub use matrix_stats::{MatrixErrorSignalStats, MatrixNodeStats, MatrixTargetNodeStats};
+pub use selection_error::SelectionError;
 
 pub(crate) const DEFAULT_NODE_ID: &str = "default-node";
 pub(crate) const DEFAULT_GROUP_ID: &str = "default";
@@ -41,6 +45,7 @@ pub struct ForwardNode {
     pub tag: String,
     pub enabled: bool,
     pub fingerprint: String,
+    pub supports_ipv6: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -67,6 +72,7 @@ pub struct RouteRule {
     pub enabled: bool,
     pub matcher: RouteMatcher,
     pub group_id: GroupId,
+    pub ipv6: Ipv6RulePolicy,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -161,6 +167,7 @@ pub struct SelectionContext {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeSeed {
+    pub ipv6_enabled: bool,
     pub nodes: Vec<ForwardNode>,
     pub default_group_id: GroupId,
     pub groups: Vec<ForwardGroup>,
@@ -183,6 +190,8 @@ pub struct SelectionDecision {
     pub reason: SelectionReason,
     pub scheduler: SchedulerPolicy,
     pub candidate_count: usize,
+    pub ip_family: IpFamily,
+    pub ipv6_policy_source: Option<Ipv6PolicySource>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -203,11 +212,6 @@ pub enum SelectionTerminal {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SelectionReason {
     SingleNode,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct SelectionError {
-    message: String,
 }
 
 impl NodeId {
@@ -322,6 +326,7 @@ impl RuntimeSeed {
         let group = ForwardGroup::default_group();
         let member = GroupMember::default_member(node.id.clone(), group.id.clone());
         Self {
+            ipv6_enabled: false,
             nodes: vec![node],
             default_group_id: group.id.clone(),
             groups: vec![group],
@@ -460,21 +465,6 @@ impl TargetSource {
     }
 }
 
-impl SelectionError {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for SelectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for SelectionError {}
 pub(crate) fn default_dns_upstreams() -> Vec<DnsUpstream> {
     vec![
         DnsUpstream {

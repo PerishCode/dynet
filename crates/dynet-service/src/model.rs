@@ -99,3 +99,11 @@ impl ResourceState {
         matches!(self, Self::Drifted | Self::Foreign | Self::Invalid)
     }
 }
+
+pub(crate) fn valid_user_name(user: &str) -> bool {
+    !user.is_empty()
+        && !user.starts_with('-')
+        && user
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}

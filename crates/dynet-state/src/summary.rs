@@ -24,6 +24,21 @@ pub fn redacted_summary_lines(config: &Config) -> Vec<String> {
             config.capture.tun.udp_idle_timeout.as_millis(),
             config.capture.tun.udp_response_timeout.as_millis()
         ),
+        format!("ipv6.enabled={} default=allow", config.ipv6.enabled),
+        format!(
+            "dns_mapping interface={} source_port={} apply=explicit-only",
+            config
+                .dns_mapping
+                .interface
+                .as_deref()
+                .unwrap_or("unconfigured"),
+            config.dns_mapping.source_port
+        ),
+        format!(
+            "persistence retention_hours={} max_bytes={}",
+            config.persistence.retention.as_secs() / 3600,
+            config.persistence.max_bytes
+        ),
         format!(
             "service manager={} user={} runtime_database={} environment_file={}",
             config.service.manager.label(),
@@ -75,9 +90,13 @@ pub fn redacted_summary_lines(config: &Config) -> Vec<String> {
     }
 
     let mut route_counts = BTreeMap::new();
+    let mut ipv6_policy_counts = BTreeMap::new();
     for rule in &seed.route_rules {
         *route_counts
             .entry(rule.group_id.as_str().to_string())
+            .or_insert(0_usize) += 1;
+        *ipv6_policy_counts
+            .entry(rule.ipv6.as_str().to_string())
             .or_insert(0_usize) += 1;
     }
     lines.push(format!(
@@ -85,6 +104,7 @@ pub fn redacted_summary_lines(config: &Config) -> Vec<String> {
         seed.route_rules.len(),
         format_counts(&route_counts)
     ));
+    lines.push(format!("rules.ipv6 {}", format_counts(&ipv6_policy_counts)));
     lines.push(format!("dns_upstreams.total={}", seed.dns_upstreams.len()));
     lines
 }
