@@ -10,6 +10,7 @@ description = "Transparent ingress relay experiments for dynet."
 dynet-runtime = { path = "../dynet-runtime" }
 shadowsocks-prototype = { path = "../../prototype/shadowsocks" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 trojan-prototype = { path = "../../prototype/trojan" }
 vless-prototype = { path = "../../prototype/vless" }
 vmess-prototype = { path = "../../prototype/vmess" }

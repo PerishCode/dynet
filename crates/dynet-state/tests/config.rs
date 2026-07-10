@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use dynet_state::Config;
+use dynet_state::{Config, ServiceManager};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -32,6 +32,10 @@ fn env_overrides_config() {
         ("DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS", "2345"),
         ("DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS", "3456"),
         ("DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS", "4567"),
+        ("DYNET_SERVICE_MANAGER", "systemd"),
+        ("DYNET_SERVICE_USER", "service"),
+        ("DYNET_RUNTIME_DB", "/var/lib/dynet/runtime.sqlite"),
+        ("DYNET_SERVICE_ENVIRONMENT_FILE", "/etc/dynet/service.env"),
     ]);
 
     let config = Config::from_env().expect("config loads from env");
@@ -68,6 +72,16 @@ fn env_overrides_config() {
     assert_eq!(
         config.capture.tun.udp_response_timeout,
         Duration::from_millis(4567)
+    );
+    assert_eq!(config.service.manager, ServiceManager::Systemd);
+    assert_eq!(config.service.user, "service");
+    assert_eq!(
+        config.service.runtime_database,
+        PathBuf::from("/var/lib/dynet/runtime.sqlite")
+    );
+    assert_eq!(
+        config.service.environment_file,
+        Some(PathBuf::from("/etc/dynet/service.env"))
     );
 }
 
@@ -108,6 +122,12 @@ interface = "dynet-file0"
 tcp_idle_timeout_ms = 1357
 udp_idle_timeout_ms = 2468
 udp_response_timeout_ms = 3579
+
+[service]
+manager = "procd"
+user = "dynet-service"
+runtime_database = "/var/lib/dynet/service.sqlite"
+environment_file = "/etc/dynet/service.env"
 "#,
     )
     .expect("write config");
@@ -146,6 +166,12 @@ udp_response_timeout_ms = 3579
     assert_eq!(
         config.capture.tun.udp_response_timeout,
         Duration::from_millis(3579)
+    );
+    assert_eq!(config.service.manager, ServiceManager::Procd);
+    assert_eq!(config.service.user, "dynet-service");
+    assert_eq!(
+        config.service.runtime_database,
+        PathBuf::from("/var/lib/dynet/service.sqlite")
     );
 
     fs::remove_file(config_path).expect("remove config");
@@ -273,6 +299,10 @@ const ENV_KEYS: &[&str] = &[
     "DYNET_CAPTURE_TUN_TCP_IDLE_TIMEOUT_MS",
     "DYNET_CAPTURE_TUN_UDP_IDLE_TIMEOUT_MS",
     "DYNET_CAPTURE_TUN_UDP_RESPONSE_TIMEOUT_MS",
+    "DYNET_SERVICE_MANAGER",
+    "DYNET_SERVICE_USER",
+    "DYNET_RUNTIME_DB",
+    "DYNET_SERVICE_ENVIRONMENT_FILE",
 ];
 
 fn temp_config_path(name: &str) -> PathBuf {

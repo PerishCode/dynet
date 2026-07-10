@@ -8,6 +8,7 @@ use dynet_runtime::{
     MatrixTargetNodeStats, RuntimeConfigAudit, RuntimeConfigStatus, RuntimeState, TrafficSession,
 };
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use tokio::net::TcpListener;
 use utoipa::{IntoParams, OpenApi, ToSchema};
 
@@ -210,6 +211,17 @@ pub async fn serve_with_config_audit(
     config_audit: RuntimeConfigAudit,
 ) -> Result<(), std::io::Error> {
     axum::serve(listener, router_with_config_audit(runtime, config_audit)).await
+}
+
+pub async fn serve_with_audit_shutdown(
+    listener: TcpListener,
+    runtime: RuntimeState,
+    config_audit: RuntimeConfigAudit,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), std::io::Error> {
+    axum::serve(listener, router_with_config_audit(runtime, config_audit))
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 #[utoipa::path(

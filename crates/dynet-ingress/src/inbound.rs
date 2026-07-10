@@ -6,7 +6,9 @@ use dynet_runtime::{
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::{mpsc, Semaphore},
+    task::JoinSet,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::egress::{
     push_egress_error_fields, EgressError, EgressNode, TcpRelaySession, UdpDownstream,
@@ -25,6 +27,7 @@ pub async fn run_tcp<O>(
     config: TcpRelayConfig,
     egress: O,
     runtime: RuntimeState,
+    shutdown: CancellationToken,
 ) -> Result<(), String>
 where
     O: EgressNode,
@@ -33,11 +36,17 @@ where
         .await
         .map_err(|error| format!("failed to bind TCP relay {}: {error}", config.bind))?;
     let capacity = Arc::new(Semaphore::new(config.max_sessions));
+    let mut sessions = JoinSet::new();
     loop {
-        let (client, peer) = listener
-            .accept()
-            .await
-            .map_err(|error| format!("failed accepting TCP connection: {error}"))?;
+        let (client, peer) = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            completed = sessions.join_next(), if !sessions.is_empty() => {
+                log_session_result("TCP", completed);
+                continue;
+            }
+            accepted = listener.accept() => accepted
+                .map_err(|error| format!("failed accepting TCP connection: {error}"))?,
+        };
         let Ok(permit) = capacity.clone().try_acquire_owned() else {
             let session_id = runtime.events().next_session_id();
             let target = config.upstream;
@@ -52,7 +61,7 @@ where
         };
         let runtime = runtime.clone();
         let egress = egress.clone();
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             let _permit = permit;
             let session_id = runtime.events().next_session_id();
             let target = config.upstream;
@@ -124,12 +133,17 @@ where
             }
         });
     }
+    while let Some(completed) = sessions.join_next().await {
+        log_session_result("TCP", Some(completed));
+    }
+    Ok(())
 }
 
 pub async fn run_udp<O>(
     config: UdpRelayConfig,
     egress: O,
     runtime: RuntimeState,
+    shutdown: CancellationToken,
 ) -> Result<(), String>
 where
     O: EgressNode,
@@ -141,9 +155,14 @@ where
     );
     let mut sessions = BTreeMap::<SocketAddr, UdpSessionSender>::new();
     let (complete_tx, mut complete_rx) = mpsc::channel::<SocketAddr>(UDP_CHANNEL_DEPTH);
+    let mut tasks = JoinSet::new();
     let mut buffer = vec![0_u8; DATAGRAM_LIMIT];
     loop {
         tokio::select! {
+            _ = shutdown.cancelled() => break,
+            completed = tasks.join_next(), if !tasks.is_empty() => {
+                log_session_result("UDP", completed);
+            }
             completed = complete_rx.recv() => {
                 if let Some(peer) = completed {
                     sessions.remove(&peer);
@@ -209,7 +228,7 @@ where
                     spawn_udp_association(UdpAssociationTask {
                         peer,
                         config,
-                    egress: egress.clone(),
+                        egress: egress.clone(),
                         downstream: socket.clone(),
                         downstream_rx: rx,
                         complete_tx: complete_tx.clone(),
@@ -217,7 +236,7 @@ where
                         decision,
                         target_context,
                         runtime: runtime.clone(),
-                    });
+                    }, &mut tasks);
                     session
                 };
                 let target = config.upstream;
@@ -240,6 +259,12 @@ where
             }
         }
     }
+    drop(sessions);
+    drop(complete_tx);
+    while let Some(completed) = tasks.join_next().await {
+        log_session_result("UDP", Some(completed));
+    }
+    Ok(())
 }
 
 struct UdpAssociationTask<O> {
@@ -255,11 +280,11 @@ struct UdpAssociationTask<O> {
     runtime: RuntimeState,
 }
 
-fn spawn_udp_association<O>(task: UdpAssociationTask<O>)
+fn spawn_udp_association<O>(task: UdpAssociationTask<O>, tasks: &mut JoinSet<()>)
 where
     O: EgressNode,
 {
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         let UdpAssociationTask {
             peer,
             config,
@@ -334,6 +359,12 @@ where
         }
         let _ = complete_tx.send(peer).await;
     });
+}
+
+fn log_session_result(label: &str, result: Option<Result<(), tokio::task::JoinError>>) {
+    if let Some(Err(error)) = result {
+        eprintln!("dynet: {label} session task failed: {error}");
+    }
 }
 
 fn error_fields(

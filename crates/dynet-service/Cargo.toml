@@ -1,0 +1,17 @@
+[package]
+name = "dynet-service"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional platform service-manager integration for dynet."
+
+[dependencies]
+dynet-state = { path = "../dynet-state" }
+libc = "0.2"
+sha2 = "0.10"
+tokio = { version = "1", features = ["process", "signal", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }

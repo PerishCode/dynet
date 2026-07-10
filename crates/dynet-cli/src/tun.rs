@@ -8,18 +8,20 @@ use dynet_capture::IpStackPocOptions;
 use dynet_ingress::ReloadableEgress;
 use dynet_runtime::RuntimeState;
 use dynet_state::{AppState, TunCaptureConfig};
+use tokio_util::sync::CancellationToken;
 
 pub(crate) fn spawn_capture(
     config: Arc<RwLock<TunCaptureConfig>>,
     egress: ReloadableEgress,
     runtime: RuntimeState,
-) {
+    shutdown: CancellationToken,
+) -> Option<tokio::task::JoinHandle<Result<(), String>>> {
     let initial = config
         .read()
         .expect("runtime TUN config lock poisoned")
         .clone();
     if !initial.enabled {
-        return;
+        return None;
     }
 
     let interface = initial.interface.clone();
@@ -31,7 +33,7 @@ pub(crate) fn spawn_capture(
         initial.udp_response_timeout.as_millis()
     );
 
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let tcp_egress = egress.clone();
         let udp_egress = egress;
         let tcp_config = config.clone();
@@ -110,13 +112,16 @@ pub(crate) fn spawn_capture(
             }) as dynet_capture::IpStackCaptureFuture
         });
 
-        if let Err(error) =
-            dynet_capture::run_capture_forever("tun-capture", interface, handle_tcp, handle_udp)
-                .await
-        {
-            eprintln!("dynet: TUN capture stopped: {error}");
+        tokio::select! {
+            _ = shutdown.cancelled() => Ok(()),
+            result = dynet_capture::run_capture_forever(
+                "tun-capture",
+                interface,
+                handle_tcp,
+                handle_udp,
+            ) => result.map(|_| ()),
         }
-    });
+    }))
 }
 
 pub(crate) async fn run_poc(

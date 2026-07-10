@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
 };
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{unix_ms, IngressEvent, MatrixShadowDecision, SelectionContext, SelectionDecision};
 
@@ -27,7 +27,7 @@ pub struct PersistenceStatsSnapshot {
     pub sink_errors: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum RuntimeObservation {
     Event(IngressEvent),
     SelectionDecision {
@@ -36,6 +36,7 @@ pub(crate) enum RuntimeObservation {
         decision: SelectionDecision,
     },
     MatrixShadow(MatrixShadowDecision),
+    Flush(oneshot::Sender<()>),
 }
 
 impl RuntimeStore {
@@ -79,6 +80,17 @@ impl ObservationSink {
 
     pub(crate) fn stats_snapshot(&self) -> PersistenceStatsSnapshot {
         self.stats.snapshot()
+    }
+
+    pub(crate) async fn flush(&self) -> Result<(), String> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(RuntimeObservation::Flush(sender))
+            .await
+            .map_err(|_| "runtime persistence sink is closed".to_string())?;
+        receiver
+            .await
+            .map_err(|_| "runtime persistence flush was canceled".to_string())
     }
 
     fn try_send(&self, observation: RuntimeObservation) {
@@ -143,6 +155,10 @@ impl ObservationSinkWorker {
             }
             RuntimeObservation::MatrixShadow(decision) => {
                 self.store.insert_matrix_shadow(&decision).await
+            }
+            RuntimeObservation::Flush(sender) => {
+                let _ = sender.send(());
+                Ok(())
             }
         }
     }

@@ -283,6 +283,10 @@ impl RuntimeState {
         self.inner.matrix.persistence_stats()
     }
 
+    pub async fn flush_persistence(&self) -> Result<(), String> {
+        self.inner.matrix.flush_persistence().await
+    }
+
     pub fn select(&self, context: SelectionContext) -> Result<SelectionDecision, SelectionError> {
         let routing = self.routing();
         let route_match = routing.routes.match_group(&context.target);

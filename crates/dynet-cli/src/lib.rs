@@ -3,14 +3,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod nested_args;
 mod runtime_reload;
+use nested_args::{parse_config_args, parse_hooks_args, parse_service_args};
 pub use runtime_reload::{ReloadResult, RuntimeReload};
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct Args {
     pub command: Command,
     pub config: Option<PathBuf>,
-    pub process_stamp: Option<String>,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -30,6 +31,9 @@ pub enum Command {
     },
     Hooks {
         action: HooksAction,
+    },
+    Service {
+        action: ServiceAction,
     },
     IpStackPoc {
         interface: String,
@@ -63,6 +67,21 @@ pub enum HooksAction {
 pub enum ConfigAction {
     Summary,
     Validate,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ServiceAction {
+    Plan,
+    Doctor,
+    Status,
+    Apply,
+    Cleanup,
+    Start,
+    Stop { cleanup_hooks: bool },
+    Restart { cleanup_hooks: bool },
+    Reload,
+    Logs { lines: usize, follow: bool },
+    Supervise,
 }
 
 impl Args {
@@ -108,7 +127,11 @@ impl Args {
                     return Ok(parsed);
                 }
                 "hooks" => {
-                    parsed.command = parse_hooks_args(args)?;
+                    parsed.command = parse_hooks_args(&mut parsed, args)?;
+                    return Ok(parsed);
+                }
+                "service" => {
+                    parsed.command = parse_service_args(&mut parsed, args)?;
                     return Ok(parsed);
                 }
                 "ipstack-poc" => {
@@ -137,49 +160,6 @@ impl Args {
     }
 }
 
-fn parse_config_args(
-    parsed: &mut Args,
-    args: impl IntoIterator<Item = OsString>,
-) -> Result<Command, String> {
-    let mut args = args.into_iter();
-    let Some(action) = args.next() else {
-        return Err("config requires an action: summary, validate".to_string());
-    };
-    let action = match action.to_string_lossy().as_ref() {
-        "summary" => ConfigAction::Summary,
-        "validate" => ConfigAction::Validate,
-        other => return Err(format!("unknown config action {other}")),
-    };
-    while let Some(arg) = args.next() {
-        if arg == "--config" {
-            let Some(path) = args.next() else {
-                return Err("--config requires a path".to_string());
-            };
-            set_config(parsed, PathBuf::from(path))?;
-        } else if let Some(path) = split_config_arg(&arg) {
-            set_config(parsed, path)?;
-        } else {
-            return Err(format!("unknown config argument {}", arg.to_string_lossy()));
-        }
-    }
-    Ok(Command::Config { action })
-}
-
-fn parse_hooks_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
-    let mut args = args.into_iter();
-    let Some(action) = args.next() else {
-        return Err("hooks requires an action: status, apply, cleanup".to_string());
-    };
-    let action = match action.to_string_lossy().as_ref() {
-        "status" => HooksAction::Status,
-        "apply" => HooksAction::Apply,
-        "cleanup" => HooksAction::Cleanup,
-        other => return Err(format!("unknown hooks action {other}")),
-    };
-    reject_trailing("hooks", args)?;
-    Ok(Command::Hooks { action })
-}
-
 fn parse_run_arg<I>(parsed: &mut Args, arg: OsString, args: &mut I) -> Result<(), String>
 where
     I: Iterator<Item = OsString>,
@@ -189,15 +169,8 @@ where
             return Err("--config requires a path".to_string());
         };
         set_config(parsed, PathBuf::from(path))?;
-    } else if arg == "--process-stamp" {
-        let Some(stamp) = args.next() else {
-            return Err("--process-stamp requires a value".to_string());
-        };
-        set_process_stamp(parsed, stamp.to_string_lossy().to_string())?;
     } else if let Some(path) = split_config_arg(&arg) {
         set_config(parsed, path)?;
-    } else if let Some(stamp) = split_process_stamp_arg(&arg) {
-        set_process_stamp(parsed, stamp)?;
     } else {
         return Err(format!("unknown argument {}", arg.to_string_lossy()));
     }
@@ -211,13 +184,6 @@ fn split_config_arg(arg: &OsString) -> Option<PathBuf> {
         .map(|path| Path::new(path).to_path_buf())
 }
 
-fn split_process_stamp_arg(arg: &OsString) -> Option<String> {
-    let value = arg.to_str()?;
-    value
-        .strip_prefix("--process-stamp=")
-        .map(|stamp| stamp.to_string())
-}
-
 fn set_config(args: &mut Args, path: PathBuf) -> Result<(), String> {
     if args.config.is_some() {
         return Err("--config can only be provided once".to_string());
@@ -226,17 +192,6 @@ fn set_config(args: &mut Args, path: PathBuf) -> Result<(), String> {
         return Err("--config requires a non-empty path".to_string());
     }
     args.config = Some(path);
-    Ok(())
-}
-
-fn set_process_stamp(args: &mut Args, stamp: String) -> Result<(), String> {
-    if args.process_stamp.is_some() {
-        return Err("--process-stamp can only be provided once".to_string());
-    }
-    if stamp.is_empty() {
-        return Err("--process-stamp requires a non-empty value".to_string());
-    }
-    args.process_stamp = Some(stamp);
     Ok(())
 }
 

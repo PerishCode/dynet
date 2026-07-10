@@ -62,6 +62,19 @@ fn restart_fields_reject() {
 }
 
 #[test]
+fn service_change_requires_restart() {
+    let current = Config::default();
+    let mut next = current.clone();
+    next.service.user = "service".to_string();
+
+    let plan = current.plan_reload(&next);
+
+    assert_eq!(plan.disposition, ReloadDisposition::RestartRequired);
+    assert_eq!(plan.changed_fields, ["service"]);
+    assert_eq!(plan.restart_required_fields, ["service"]);
+}
+
+#[test]
 fn fingerprint_stable_opaque() {
     let first = Config::default();
     let mut second = first.clone();
