@@ -16,7 +16,7 @@ use crate::{
         TcpRelaySession, UdpDownstream, UdpRelayAssociation, UdpRelayOutcome,
     },
     push_decision_fields, push_endpoint_fields, push_target_context_fields, session_fields,
-    EgressNodeConfig, IngressEventKind, DATAGRAM_LIMIT,
+    EgressNodeConfig, IngressEventKind, ReloadableEgress, DATAGRAM_LIMIT,
 };
 
 const TUN_INBOUND: &str = "tun";
@@ -54,6 +54,35 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let egress = GraphEgress::try_from(egress_nodes)?;
+    relay_captured_tcp(stream, peer, target, egress, runtime, idle_timeout).await
+}
+
+pub async fn relay_captured_tcp_reloadable<S>(
+    stream: S,
+    peer: SocketAddr,
+    target: SocketAddr,
+    egress: ReloadableEgress,
+    runtime: RuntimeState,
+    idle_timeout: Duration,
+) -> Result<CapturedTcpRelayOutcome, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    relay_captured_tcp(stream, peer, target, egress, runtime, idle_timeout).await
+}
+
+async fn relay_captured_tcp<S, O>(
+    stream: S,
+    peer: SocketAddr,
+    target: SocketAddr,
+    egress: O,
+    runtime: RuntimeState,
+    idle_timeout: Duration,
+) -> Result<CapturedTcpRelayOutcome, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    O: EgressNode,
+{
     let session_id = runtime.events().next_session_id();
     let target_context = resolve_socket_destination(&runtime, target).await;
     let decision = match select_target(
@@ -158,7 +187,7 @@ fn tcp_close_outcome(ctx: TcpCaptureCtx<'_>, outcome: TcpRelayOutcome) -> Captur
     }
 }
 pub async fn relay_captured_udp_graph<S>(
-    mut stream: S,
+    stream: S,
     peer: SocketAddr,
     target: SocketAddr,
     egress_nodes: BTreeMap<String, EgressNodeConfig>,
@@ -168,6 +197,56 @@ pub async fn relay_captured_udp_graph<S>(
 ) -> Result<CapturedUdpRelayOutcome, String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let egress = GraphEgress::try_from(egress_nodes)?;
+    relay_captured_udp(
+        stream,
+        peer,
+        target,
+        egress,
+        runtime,
+        idle_timeout,
+        response_timeout,
+    )
+    .await
+}
+
+pub async fn relay_captured_udp_reloadable<S>(
+    stream: S,
+    peer: SocketAddr,
+    target: SocketAddr,
+    egress: ReloadableEgress,
+    runtime: RuntimeState,
+    idle_timeout: Duration,
+    response_timeout: Duration,
+) -> Result<CapturedUdpRelayOutcome, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    relay_captured_udp(
+        stream,
+        peer,
+        target,
+        egress,
+        runtime,
+        idle_timeout,
+        response_timeout,
+    )
+    .await
+}
+
+async fn relay_captured_udp<S, O>(
+    mut stream: S,
+    peer: SocketAddr,
+    target: SocketAddr,
+    egress: O,
+    runtime: RuntimeState,
+    idle_timeout: Duration,
+    response_timeout: Duration,
+) -> Result<CapturedUdpRelayOutcome, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    O: EgressNode,
 {
     let mut payload = vec![0_u8; DATAGRAM_LIMIT];
     let request_bytes = stream
@@ -179,7 +258,6 @@ where
     }
     payload.truncate(request_bytes);
 
-    let egress = GraphEgress::try_from(egress_nodes)?;
     let session_id = runtime.events().next_session_id();
     let target_context = resolve_socket_destination(&runtime, target).await;
     let decision = match select_target(
